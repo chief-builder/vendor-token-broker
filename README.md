@@ -76,6 +76,11 @@ asserts all of it on every CI run.
 
 ## Documentation
 
+Published site (all three docs, rendered diagrams):
+**https://chief-builder.github.io/vendor-token-broker-docs/**
+(regenerate with `python tools/build-pages.py`, then push `docs/index.html`
+to the public `vendor-token-broker-docs` repo)
+
 - `docs/design.md` — the normative design (API, state machine, refresh
   race, failure modes, security requirements)
 - `docs/operations.md` — custody provisioning, config reference, gateway

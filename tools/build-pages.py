@@ -8,6 +8,11 @@ Markdown is pre-rendered to static HTML here; mermaid diagrams render
 client-side (mermaid from the jsDelivr CDN), theme-matched to the
 visitor's light/dark preference. Re-run after editing any of the three
 source documents.
+
+Publishing: this repo is private, so the generated docs/index.html is
+served from the public companion repo `vendor-token-broker-docs`
+(GitHub Pages: https://chief-builder.github.io/vendor-token-broker-docs/).
+After rebuilding, copy index.html there and push.
 """
 import html
 import re
