@@ -45,6 +45,47 @@ vendor integration as a removable module.
 
 ## 3. Architecture and trust boundaries
 
+```mermaid
+flowchart LR
+    subgraph userplane["User plane"]
+        C["MCP client"]
+        UA["Browser<br/>(consent legs only)"]
+    end
+    subgraph platform["Platform — private tier"]
+        G["Egress gateway"]
+        B["Vendor Token Broker"]
+        K["Custody<br/>OpenBao / Vault KV-v2"]
+        R["Redis<br/>(multi-replica profile)"]
+    end
+    H["Workforce IdP — the hub<br/>SOLE token issuer"]
+    V["Vendor AS + API<br/>(GitHub, Notion, …)"]
+
+    C -- "tool call (hub JWT)" --> G
+    G -- "resolve — hub JWT<br/>re-validated by the broker" --> B
+    UA -- "authorize / callback<br/>(private ingress only)" --> B
+    B -. "JWKS only — the broker<br/>never mints tokens" .-> H
+    B -- "OAuth legs, per-vendor<br/>client auth" --> V
+    G -- "vendor token upstream,<br/>hub JWT STRIPPED" --> V
+    B -- "grants (CAS) +<br/>client credentials" --> K
+    B -.-> R
+
+    classDef broker fill:#6366f133,stroke:#6366f1
+    classDef vendor fill:#eab30833,stroke:#eab308
+    classDef custody fill:#10b98133,stroke:#10b981
+    classDef coord fill:#ef444433,stroke:#ef4444
+    classDef neutral fill:#94a3b833,stroke:#94a3b8
+    class B broker
+    class V vendor
+    class K custody
+    class R coord
+    class C,UA,G,H neutral
+```
+
+Two tokens never cross a boundary they shouldn't: the **hub JWT stops at
+the gateway/broker** (stripped before anything goes upstream to a vendor),
+and **vendor tokens never reach the client** (they exist only between
+gateway, broker, custody, and vendor).
+
 Callers and trust:
 
 - **Egress gateway → broker** (`/v1/tokens/resolve`): the request carries the
@@ -128,6 +169,8 @@ the CAS handle.
 
 ## 6. Consent dance (first-time)
 
+(Full sequence diagram: `token-lifecycle.md` §1.)
+
 resolve → 404 + `authorize_uri(txn)` → browser →
 `/v1/authorize/{vendor}` (PKCE verifier + single-use `state` created,
 TTL 10 min) → vendor AS consent → `/v1/callback/{vendor}?code&state&iss` →
@@ -141,22 +184,36 @@ are capped by the registry ceiling regardless of what the tool asked for.
 
 ## 7. Steady-state resolve
 
+(Sequence diagrams: `token-lifecycle.md` §2 cache hit, §3 lazy refresh.)
+
 Per-replica in-memory cache (TTL ≤ 60s, also the §10 outage grace cap) →
 custody read (audited) → serve if `expires_at - now ≥ max(min_ttl,
 REFRESH_BUFFER_S)` → otherwise inline single-flight refresh (§8).
 
 ## 8. Refresh state machine and race defense
 
+```mermaid
+stateDiagram-v2
+    classDef live fill:#10b98122,stroke:#10b981
+    classDef transient fill:#6366f122,stroke:#6366f1
+    classDef dead fill:#ef444422,stroke:#ef4444
+
+    [*] --> ACTIVE : consent (§6)<br/>gen=1
+    ACTIVE --> REFRESHING : resolve/sweep<br/>hits buffer
+    REFRESHING --> ACTIVE : success<br/>CAS gen+1
+    REFRESHING --> STALE : invalid_grant
+    ACTIVE --> STALE : invalid_grant<br/>on lazy refresh
+    STALE --> ACTIVE : re-consent (§6)<br/>fresh gen=1
+    ACTIVE --> REVOKE_PENDING : DELETE /grants,<br/>vendor down (§4.4)
+    REVOKE_PENDING --> [*] : sweeper retry<br/>revokes + deletes
+
+    class ACTIVE live
+    class REFRESHING transient
+    class STALE,REVOKE_PENDING dead
 ```
-            resolve/sweep hits buffer            success
-  ACTIVE ─────────────────────────────► REFRESHING ─────► ACTIVE (gen+1)
-    ▲                                        │
-    │  re-consent (§6)                       │ invalid_grant
-    │                                        ▼
-  (new entry, gen=1) ◄──────────────────── STALE
-                                             │ mass event → page
-  REVOKE_PENDING ◄── DELETE /grants          ▼
-```
+
+(Message-level sequences for every transition: `token-lifecycle.md`
+§§3–5, 7–8.)
 
 Rotating-refresh-token vendors (GitHub-class) burn the whole token family
 if two refreshes race. Defense in depth:
@@ -179,6 +236,8 @@ STALEs for one vendor inside `MASS_STALE_WINDOW_S` is treated as an
 org-level uninstall and pages (`broker.stale.mass`).
 
 ## 9. Failure modes
+
+(Outage sequences: `token-lifecycle.md` §9; replica-death recovery: §5.)
 
 | Failure | Detection | Behavior |
 |---|---|---|
@@ -229,6 +288,39 @@ registry flag flips, consent disabled, existing entries revoked on a drain
 schedule. The broker's success metric is its own shrinking registry.
 
 ## 14. Deployment profiles
+
+```mermaid
+flowchart TB
+    subgraph mem["memory profile — exactly 1 replica, zero extra infra"]
+        direction LR
+        B1["broker<br/>asyncio locks · local consent<br/>state · fixed-interval sweep"]
+        K1["custody KV-v2<br/>(CAS)"]
+        B1 --> K1
+    end
+    subgraph red["redis profile — N replicas, no session affinity"]
+        direction LR
+        LB["any balancer"]
+        A2["broker A"]
+        B2["broker B"]
+        R2["redis 7<br/>locks · consent state · sweep<br/>lease · invalidation pub/sub"]
+        K2["custody KV-v2<br/>(CAS = correctness backstop)"]
+        LB --> A2
+        LB --> B2
+        A2 --> R2
+        B2 --> R2
+        A2 --> K2
+        B2 --> K2
+    end
+
+    classDef broker fill:#6366f133,stroke:#6366f1
+    classDef custody fill:#10b98133,stroke:#10b981
+    classDef coord fill:#ef444433,stroke:#ef4444
+    classDef neutral fill:#94a3b833,stroke:#94a3b8
+    class B1,A2,B2 broker
+    class K1,K2 custody
+    class R2 coord
+    class LB neutral
+```
 
 ### Single replica (`COORD_BACKEND=memory`, the default)
 
