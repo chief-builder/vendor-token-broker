@@ -37,6 +37,17 @@ flowchart LR
     B -- "read/write grants (CAS)" --> V
     B -.-> R
     I -- "mounts + ACL policy +<br/>scoped token (never root)" --> V
+
+    classDef broker fill:#6366f133,stroke:#6366f1
+    classDef vendor fill:#eab30833,stroke:#eab308
+    classDef custody fill:#10b98133,stroke:#10b981
+    classDef coord fill:#ef444433,stroke:#ef4444
+    classDef neutral fill:#94a3b833,stroke:#94a3b8
+    class B broker
+    class M vendor
+    class V,I custody
+    class R coord
+    class T,H neutral
 ```
 
 The mock vendor is deliberately hostile in the ways that matter: 60-second
@@ -93,9 +104,15 @@ Observed:
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client (curl)
-    participant B as Broker
-    participant V as OpenBao
+    box rgba(148,163,184,0.14) User side
+        participant C as Client (curl)
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant V as OpenBao
+    end
     C->>B: POST /v1/tokens/resolve (hub JWT)
     Note over B: re-validate JWT: signature (JWKS),<br/>alg ∈ {PS256, ES256}, issuer,<br/>exactly one tier audience,<br/>mcp_contract, exp/iat/sub/jti
     B->>V: read vendor-tokens/mockhub/wf-smoke
@@ -140,10 +157,18 @@ shows the matching audit pair:
 ```mermaid
 sequenceDiagram
     autonumber
-    participant UA as Browser
-    participant B as Broker
-    participant M as Mock vendor AS
-    participant V as OpenBao
+    box rgba(148,163,184,0.14) User side
+        participant UA as Browser
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant M as Mock vendor AS
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant V as OpenBao
+    end
     UA->>B: GET /v1/authorize/mockhub?txn=…
     Note over B: create single-use state record<br/>{sub, vendor, PKCE verifier, issuer,<br/>scopes ≤ registry ceiling}, TTL 10 min
     B-->>UA: 307 → vendor authorize<br/>(client_id, code_challenge S256, state)
@@ -208,11 +233,19 @@ Observed:
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C1 as Caller 1
-    participant C2 as Caller 2 (concurrent)
-    participant B as Broker
-    participant M as Mock vendor
-    participant V as OpenBao
+    box rgba(148,163,184,0.14) Callers
+        participant C1 as Caller 1
+        participant C2 as Caller 2 (concurrent)
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant M as Mock vendor
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant V as OpenBao
+    end
     par inside the refresh buffer
         C1->>B: resolve
     and
@@ -327,10 +360,18 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as User (curl)
-    participant B as Broker
-    participant M as Mock vendor
-    participant V as OpenBao
+    box rgba(148,163,184,0.14) User side
+        participant U as User (curl)
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant M as Mock vendor
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant V as OpenBao
+    end
     U->>B: DELETE /v1/grants/mockhub/wf-smoke (hub JWT)
     Note over B: sub in path MUST match JWT sub<br/>(anyone else → 403 forbidden)
     B->>M: POST /revoke (RFC 7009, refresh token)
@@ -350,6 +391,9 @@ self-service; the lifecycle returns cleanly to `needs-consent`.
 
 ```mermaid
 stateDiagram-v2
+    classDef live fill:#10b98122,stroke:#10b981
+    classDef dead fill:#ef444422,stroke:#ef4444
+
     [*] --> NoGrant
     NoGrant --> ACTIVE : consent dance (test 3)<br/>gen=1
     ACTIVE --> ACTIVE : single-flight refresh (test 4)<br/>gen+1, CAS-guarded
@@ -358,6 +402,9 @@ stateDiagram-v2
     ACTIVE --> REVOKE_PENDING : DELETE grant, vendor down
     REVOKE_PENDING --> NoGrant : sweeper retry succeeds
     ACTIVE --> NoGrant : DELETE grant (test 7)<br/>revoke at vendor FIRST
+
+    class ACTIVE live
+    class STALE,REVOKE_PENDING dead
 ```
 
 ## Scorecard

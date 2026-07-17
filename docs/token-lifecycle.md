@@ -19,21 +19,35 @@ behavior), `smoke-tests.md` (hands-on verification of these same paths).
 
 ```mermaid
 stateDiagram-v2
+    classDef live fill:#10b98122,stroke:#10b981
+    classDef transient fill:#6366f122,stroke:#6366f1
+    classDef dead fill:#ef444422,stroke:#ef4444
+
     [*] --> NoGrant
-    NoGrant --> ACTIVE : §1 consent dance (gen=1)
-    ACTIVE --> ACTIVE : §2 cache-hit resolve (no transition)
-    ACTIVE --> ACTIVE : §3 lazy refresh (gen+1)
-    ACTIVE --> ACTIVE : §4 proactive refresh (gen+1)
-    ACTIVE --> REFRESHING : §5 multi-replica refresh (persisted marker)
-    REFRESHING --> ACTIVE : §5 outcome CAS (gen+1)
-    REFRESHING --> STALE : §5 takeover replay burns family
-    ACTIVE --> ACTIVE : §6 scope step-up re-consent (fresh gen=1)
-    ACTIVE --> STALE : §7 vendor says invalid_grant
-    STALE --> ACTIVE : §7 re-consent (fresh gen=1)
-    ACTIVE --> NoGrant : §8 DELETE grant (vendor revoked first)
-    ACTIVE --> REVOKE_PENDING : §8 DELETE grant, vendor down
-    REVOKE_PENDING --> NoGrant : §8 sweeper retry succeeds
+    NoGrant --> ACTIVE : §1 consent
+    ACTIVE --> ACTIVE : §2–§6 refresh
+    ACTIVE --> REFRESHING
+    REFRESHING --> ACTIVE : §5 CAS ok
+    REFRESHING --> STALE : §5 replay
+    ACTIVE --> STALE : §7 invalid_grant
+    STALE --> ACTIVE : §7 re-consent
+    ACTIVE --> NoGrant : §8 revoke
+    ACTIVE --> REVOKE_PENDING : §8 vendor down
+    REVOKE_PENDING --> NoGrant : §8 sweep retry
+
+    class ACTIVE live
+    class REFRESHING transient
+    class STALE,REVOKE_PENDING dead
 ```
+
+| Transition group | Diagram | What happens |
+|---|---|---|
+| §1 | Birth | consent dance writes `ACTIVE gen=1` |
+| §2–§4 | Steady state / refresh | cache-hit serve, lazy + proactive refresh (`gen+1`) |
+| §5 | Multi-replica | persisted `REFRESHING` marker, takeover, CAS backstop |
+| §6 | Scope step-up | re-consent union writes a fresh `gen=1` |
+| §7 | STALE | `invalid_grant` → re-consent (mass burst pages) |
+| §8 | Revocation | vendor-first delete, `REVOKE_PENDING` parking |
 
 `REFRESHING` exists only in the redis profile and never surfaces
 externally (`/v1/grants` reports it as `ACTIVE`).
@@ -47,11 +61,19 @@ Trigger: a resolve finds no entry (or a STALE one) for `{vendor, sub}`.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
-    participant UA as Browser
-    participant B as Broker
-    participant V as Vendor AS
-    participant K as Custody
+    box rgba(148,163,184,0.14) User side
+        participant C as Client
+        participant UA as Browser
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant V as Vendor AS
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant K as Custody
+    end
 
     C->>B: POST /v1/tokens/resolve (hub JWT)
     Note over B: hub JWT re-validated:<br/>PS256/ES256 pinned, issuer,<br/>exactly one tier audience, mcp_contract
@@ -94,9 +116,15 @@ Condition: `expires_at − now ≥ max(min_ttl_s, REFRESH_BUFFER_S=300)`.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
-    participant B as Broker
-    participant K as Custody
+    box rgba(148,163,184,0.14) User side
+        participant C as Client
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant K as Custody
+    end
 
     C->>B: resolve (hub JWT)
     alt per-replica cache fresh (≤ 60s)
@@ -124,11 +152,19 @@ vendor call.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C1 as Caller 1
-    participant C2 as Caller 2 (concurrent)
-    participant B as Broker
-    participant V as Vendor AS
-    participant K as Custody
+    box rgba(148,163,184,0.14) Callers
+        participant C1 as Caller 1
+        participant C2 as Caller 2 (concurrent)
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant V as Vendor AS
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant K as Custody
+    end
 
     par both inside the buffer
         C1->>B: resolve
@@ -163,11 +199,19 @@ left to lazy resolve.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant S as Sweeper (lease holder)
-    participant R as Redis
-    participant B as Broker internals
-    participant V as Vendor AS
-    participant K as Custody
+    box rgba(99,102,241,0.20) Broker
+        participant S as Sweeper (lease holder)
+        participant B as Broker internals
+    end
+    box rgba(239,68,68,0.14) Coordination
+        participant R as Redis
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant V as Vendor AS
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant K as Custody
+    end
 
     S->>R: SET vtb:sweep-lease NX PX 2×interval
     R-->>S: leader (others skip this pass)
@@ -201,11 +245,19 @@ the stored pair.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant A as Replica A
-    participant Bb as Replica B
-    participant R as Redis
-    participant V as Vendor AS
-    participant K as Custody
+    box rgba(99,102,241,0.20) Broker replicas
+        participant A as Replica A
+        participant Bb as Replica B
+    end
+    box rgba(239,68,68,0.14) Coordination
+        participant R as Redis
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant V as Vendor AS
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant K as Custody
+    end
 
     A->>R: SET vtb:lock:{vendor}:{sub} NX PX 15000
     R-->>A: acquired
@@ -243,10 +295,18 @@ The caller can never widen past the registry ceiling.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
-    participant B as Broker
-    participant V as Vendor AS
-    participant K as Custody
+    box rgba(148,163,184,0.14) User side
+        participant C as Client
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant V as Vendor AS
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant K as Custody
+    end
 
     C->>B: resolve {required_scopes: [read, write]}
     Note over B: ceiling check first: required ⊄ ceiling<br/>→ 403 scope-exceeds-ceiling (hard stop)
@@ -272,11 +332,21 @@ app.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
-    participant B as Broker
-    participant V as Vendor AS
-    participant K as Custody
-    participant O as On-call
+    box rgba(148,163,184,0.14) User side
+        participant C as Client
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant V as Vendor AS
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant K as Custody
+    end
+    box rgba(239,68,68,0.14) Ops
+        participant O as On-call
+    end
 
     C->>B: resolve (inside buffer)
     B->>V: refresh_token grant
@@ -286,7 +356,7 @@ sequenceDiagram
     B-->>C: 404 needs-consent + authorize_uri
     Note over C: self-service recovery: re-run the §1 dance
 
-    rect rgb(255, 240, 240)
+    rect rgba(239,68,68,0.12)
         Note over B,O: mass event: ≥ 3 STALEs for ONE vendor<br/>inside a 60s window = org-uninstall signature
         B->>O: audit broker.stale.mass {page: true, security_event: true}
         Note over O: page fires once per window per vendor<br/>(deduped) — per-entry behavior unchanged
@@ -306,11 +376,19 @@ vendor-side token can never outlive the broker's record of it.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as User
-    participant B as Broker
-    participant V as Vendor AS
-    participant K as Custody
-    participant S as Sweeper
+    box rgba(148,163,184,0.14) User side
+        participant U as User
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+        participant S as Sweeper
+    end
+    box rgba(234,179,8,0.16) Vendor
+        participant V as Vendor AS
+    end
+    box rgba(16,185,129,0.16) Custody
+        participant K as Custody
+    end
 
     U->>B: DELETE /v1/grants/{vendor}/{sub} (hub JWT)
     Note over B: sub in path MUST equal JWT sub<br/>(else 403 forbidden — strictly self-service)
@@ -347,12 +425,18 @@ stampede).
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
-    participant B as Broker
-    participant K as Custody (down)
-    participant R as Redis (down)
+    box rgba(148,163,184,0.14) User side
+        participant C as Client
+    end
+    box rgba(99,102,241,0.20) Broker
+        participant B as Broker
+    end
+    box rgba(239,68,68,0.14) Failed backends
+        participant K as Custody (down)
+        participant R as Redis (down)
+    end
 
-    rect rgb(255, 245, 235)
+    rect rgba(234,179,8,0.10)
         Note over C,K: custody outage — total fail-closed
         C->>B: resolve (uncached sub)
         B--xK: read fails (3s bounded timeout)
@@ -360,7 +444,7 @@ sequenceDiagram
         Note over B: only grace: entries already in the<br/>≤ 60s per-replica cache keep serving
     end
 
-    rect rgb(235, 245, 255)
+    rect rgba(59,130,246,0.10)
         Note over C,R: redis outage — refresh path only (redis profile)
         C->>B: resolve, entry NOT near expiry
         B-->>C: 200 — cache/custody path touches no redis
