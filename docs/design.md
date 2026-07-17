@@ -5,7 +5,8 @@
 Adapted from the source lab's design document; the lab's known
 implementation deltas (single-replica-only locking, `client_secret_post`-only
 vendor auth, fixed-interval sweeper) are closed by this implementation and
-replaced by the deployment profiles in §14.
+replaced by the deployment profiles in §14. Every lifecycle path described
+here is drawn as a sequence diagram in `token-lifecycle.md`.
 
 ---
 

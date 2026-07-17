@@ -82,6 +82,9 @@ asserts all of it on every CI run.
   contract, runbook
 - `docs/adr/0001-redis-coordination.md` — why Redis for multi-replica
   coordination
+- `docs/token-lifecycle.md` — the full token lifecycle as sequence
+  diagrams: consent, cache, single-flight refresh, multi-replica takeover,
+  scope step-up, STALE, revocation, outages
 - `docs/smoke-tests.md` — illustrated manual walkthrough of every security
   property (curl + browser), with sequence diagrams
 
