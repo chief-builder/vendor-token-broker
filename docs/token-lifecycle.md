@@ -60,12 +60,12 @@ sequenceDiagram
     B-->>C: 404 needs-consent + authorize_uri(txn, TTL 10 min)
     C->>UA: open authorize_uri
     UA->>B: GET /v1/authorize/{vendor}?txn=…
-    Note over B: mint PKCE verifier (S256) +<br/>single-use state {sub, vendor, issuer,<br/>scopes ≤ registry ceiling}; record whether<br/>the AS advertises RFC 9207 iss
+    Note over B: mint PKCE verifier (S256) +<br/>single-use state {sub, vendor, issuer,<br/>scopes ≤ registry ceiling} — record whether<br/>the AS advertises RFC 9207 iss
     B-->>UA: 307 → vendor authorize<br/>(client_id, code_challenge, state)
     UA->>V: user consents as themself
     V-->>UA: 302 → /v1/callback?code&state&iss
     UA->>B: GET /v1/callback/{vendor}?code&state&iss
-    Note over B: 1. state exists, unconsumed, vendor matches<br/>2. iss == recorded issuer (strict string;<br/>   omission = mix-up if advertised)<br/>3. consume state — single use, BEFORE redeem
+    Note over B: 1. state exists, unconsumed, vendor matches<br/>2. iss == recorded issuer (strict string —<br/>   omission = mix-up if advertised)<br/>3. consume state — single use, BEFORE redeem
     B->>V: POST /token (code + PKCE verifier + client auth¹)
     V-->>B: access token + refresh token (rotating)
     B->>V: GET userinfo → vendor_user_id
@@ -135,7 +135,7 @@ sequenceDiagram
     and
         C2->>B: resolve
     end
-    Note over B: per-{vendor,sub} lock — C1 acquires;<br/>C2 parks (memory) / polls 200ms±jitter (redis)
+    Note over B: per-{vendor,sub} lock — C1 acquires,<br/>C2 parks (memory) / polls 200ms±jitter (redis)
     B->>K: re-read under lock (gen = N, version = v)
     B->>V: refresh_token grant (RT gen N)
     V-->>B: new AT + rotated RT (old RT now dead)

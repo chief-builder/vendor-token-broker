@@ -218,7 +218,7 @@ sequenceDiagram
     and
         C2->>B: resolve
     end
-    Note over B: per-{vendor,sub} single-flight lock<br/>C1 wins; C2 parks — no second refresh
+    Note over B: per-{vendor,sub} single-flight lock<br/>C1 wins, C2 parks — no second refresh
     B->>M: refresh_token grant (RT gen N)
     M-->>B: new AT + rotated RT
     B->>V: CAS write gen N→N+1 (fails if version moved)
