@@ -5,14 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Vendor Token Broker — Documentation</title>
 <style>
+  /* Beige / dark-grey theme: warm paper in light mode, charcoal in dark. */
   :root {
-    --bg: #ffffff; --fg: #1f2328; --muted: #57606a; --line: #d0d7de;
-    --code-bg: #f6f8fa; --accent: #6366f1; --nav-bg: #ffffffee;
+    --bg: #f4efe3; --fg: #2b2a26; --muted: #6f6a5e; --line: #d9d0bc;
+    --code-bg: #ebe4d2; --accent: #8a6d3b; --nav-bg: #f4efe3ee;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0d1117; --fg: #e6edf3; --muted: #8b949e; --line: #30363d;
-      --code-bg: #161b22; --accent: #818cf8; --nav-bg: #0d1117ee;
+      --bg: #262521; --fg: #e9e2d0; --muted: #a49d8c; --line: #45423a;
+      --code-bg: #322f29; --accent: #d3b578; --nav-bg: #262521ee;
     }
   }
   * { box-sizing: border-box; }
@@ -1324,7 +1325,7 @@ Diagrams render client-side with mermaid.</footer>
 <script type="module">
   import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
   const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "default" });
+  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral" });
 </script>
 </body>
 </html>
