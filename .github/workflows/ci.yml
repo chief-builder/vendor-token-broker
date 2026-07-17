@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install '.[dev]'
+      - run: ruff check src tests
+      - name: Validate registry example against the normative schema
+        run: |
+          python - <<'EOF'
+          import json, jsonschema
+          schema = json.load(open("schemas/vendor-registry.schema.json"))
+          registry = json.load(open("registry.example.json"))
+          jsonschema.validate(registry, schema)
+          print("registry.example.json: schema-valid")
+          EOF
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install '.[dev,redis]'
+      - run: pytest tests/unit -q
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t vendor-token-broker:ci .

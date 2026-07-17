@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vendor-token-broker"
+version = "1.0.0"
+description = "OAuth credential custodian for third-party SaaS vendors: acquires, custodies, refreshes, and revokes vendor tokens per user. Custodian, not issuer."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.32",
+    "httpx>=0.28",
+    "hvac>=2.3",
+    "PyJWT[crypto]>=2.10",
+]
+
+[project.optional-dependencies]
+redis = ["redis>=5.0"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "requests>=2.32",
+    "jsonschema>=4.21",
+    "fakeredis>=2.23",
+    "ruff>=0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/token_broker"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "multi: requires the multi-replica compose profile (nginx + broker-a/b + redis)",
+    "external: requires real external vendor credentials (skipped unless configured)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

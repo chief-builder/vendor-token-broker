@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/kit/vendor-registry.schema.json",
+  "title": "Vendor Token Broker registry",
+  "description": "Shape of broker/registry.json per kit/blueprints/broker.md §4 and docs/vendor-token-broker-design.md §4.5. A map of vendor_id to vendor record. Client credentials never appear here — they live in the custody backend's vendor-clients mount.",
+  "type": "object",
+  "propertyNames": { "pattern": "^[a-z0-9-]+$" },
+  "additionalProperties": {
+    "type": "object",
+    "required": [
+      "vendor_id",
+      "token_endpoint_auth_method",
+      "scope_ceiling",
+      "refresh_rotation",
+      "ema_status"
+    ],
+    "oneOf": [
+      {
+        "description": "Vendor publishes RFC 8414 metadata — hardcoding endpoints is forbidden.",
+        "required": ["auth_metadata_url"],
+        "not": { "required": ["endpoints"] }
+      },
+      {
+        "description": "No metadata published — explicit endpoints allowed.",
+        "required": ["endpoints"],
+        "not": { "required": ["auth_metadata_url"] }
+      }
+    ],
+    "properties": {
+      "vendor_id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+      "auth_metadata_url": { "type": "string", "format": "uri" },
+      "endpoints": {
+        "type": "object",
+        "required": ["authorization_endpoint", "token_endpoint"],
+        "properties": {
+          "authorization_endpoint": { "type": "string", "format": "uri" },
+          "token_endpoint": { "type": "string", "format": "uri" },
+          "revocation_endpoint": { "type": "string", "format": "uri" }
+        },
+        "additionalProperties": false
+      },
+      "token_endpoint_auth_method": {
+        "enum": ["client_secret_post", "client_secret_basic", "private_key_jwt"],
+        "description": "private_key_jwt preferred where the vendor supports it (design §3)."
+      },
+      "scope_ceiling": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Hard cap on requestable scopes (EG-09). Empty means scopes are governed vendor-side (e.g. GitHub App permissions). Changing this requires token-contract-level sign-off."
+      },
+      "refresh_rotation": {
+        "type": "boolean",
+        "description": "True when the vendor rotates refresh tokens on use — activates the single-flight discipline (EG-06)."
+      },
+      "ema_status": {
+        "enum": ["none", "announced", "available"],
+        "description": "Sunset tracker (design §15)."
+      },
+      "enabled_env": {
+        "type": "string",
+        "description": "Environment variable gating this vendor's activation (lab convention)."
+      },
+      "vendor_user_endpoint": { "type": "string", "format": "uri" },
+      "revocation": {
+        "type": "object",
+        "required": ["type"],
+        "properties": { "type": { "type": "string" } },
+        "description": "Revocation strategy: RFC 7009 endpoint or a documented vendor-specific deviation (e.g. GitHub grant deletion)."
+      },
+      "_notes": { "type": "string" }
+    },
+    "additionalProperties": false
+  }
+}
