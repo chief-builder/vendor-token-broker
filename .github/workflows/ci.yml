@@ -54,7 +54,27 @@ jobs:
       - run: pip install '.[dev,redis]'
       - name: Start the acceptance stack
         run: COORD_BACKEND=${{ matrix.coord }} docker compose -f tests/stack/docker-compose.yml up -d --build --wait
-      - run: pytest tests/integration -q -m "not external"
+      - run: pytest tests/integration -q -m "not external and not multi"
       - name: Broker logs on failure
         if: failure()
         run: docker logs vtb-broker 2>&1 | tail -200
+
+  multi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install '.[dev,redis]'
+      - name: Start the multi-replica stack
+        run: docker compose -f tests/stack/docker-compose.yml --profile multi up -d --build --wait
+      - run: pytest tests/integration/test_multi_replica.py -q
+        env:
+          BROKER_URL: http://localhost:8400
+          BROKER_CONTAINERS: vtb-broker-a,vtb-broker-b
+      - name: Replica logs on failure
+        if: failure()
+        run: |
+          docker logs vtb-broker-a 2>&1 | tail -100
+          docker logs vtb-broker-b 2>&1 | tail -100

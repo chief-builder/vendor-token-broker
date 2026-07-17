@@ -97,3 +97,71 @@ services:
         condition: service_started
       redis:
         condition: service_started
+
+  # ---- multi profile: two redis-coordinated replicas behind round-robin ----
+  # docker compose -f tests/stack/docker-compose.yml --profile multi up -d --build
+  # BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
+  #   pytest tests/integration -m multi
+  broker-a:
+    build:
+      context: ../..
+    container_name: vtb-broker-a
+    profiles: ["multi"]
+    environment: &replica-env
+      HUB_ISSUER: http://hub-stub:8320
+      HUB_JWKS_URI: http://hub-stub:8320/jwks
+      BROKER_PUBLIC_URL: http://localhost:8400
+      VAULT_ADDR: http://openbao:8200
+      VAULT_TOKEN: ${BROKER_VAULT_TOKEN:-vtb-dev-broker-token}
+      REGISTRY_PATH: /app/registry.json
+      COORD_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      # Tightened TTLs so the death/takeover proofs run in test time.
+      SWEEP_INTERVAL_S: "5"
+      LOCK_TTL_MS: "4000"
+      REFRESHING_TTL_S: "8"
+    volumes:
+      - ../../registry.example.json:/app/registry.json:ro
+    ports:
+      - "8401:8300"   # direct replica access: the cross-replica tests need
+    depends_on:        # to pin which replica handles which leg
+      openbao-init:
+        condition: service_completed_successfully
+      mock-vendor:
+        condition: service_started
+      hub-stub:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  broker-b:
+    build:
+      context: ../..
+    container_name: vtb-broker-b
+    profiles: ["multi"]
+    environment: *replica-env
+    volumes:
+      - ../../registry.example.json:/app/registry.json:ro
+    ports:
+      - "8402:8300"
+    depends_on:
+      openbao-init:
+        condition: service_completed_successfully
+      mock-vendor:
+        condition: service_started
+      hub-stub:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  broker-lb:
+    image: nginx:1.27-alpine
+    container_name: vtb-broker-lb
+    profiles: ["multi"]
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8400:8400"
+    depends_on:
+      - broker-a
+      - broker-b

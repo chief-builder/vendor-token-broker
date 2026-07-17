@@ -25,15 +25,22 @@ MOCK_CONTAINER = "vtb-mock-vendor"
 
 @pytest.fixture(scope="session", autouse=True)
 def _stack_up():
-    """Fail fast with a hint if the compose stack is not running."""
-    try:
-        requests.get(f"{BROKER}/healthz", timeout=3).raise_for_status()
-        requests.get(f"{MOCK}/_test/state", timeout=3).raise_for_status()
-        requests.get(f"{HUB}/jwks", timeout=3).raise_for_status()
-    except requests.RequestException as exc:
-        pytest.exit(f"test stack not reachable ({exc}); start it with:\n"
+    """Fail with a hint if the compose stack is not running. Retries briefly:
+    a broker container may still be (re)starting from a previous run."""
+    deadline = time.time() + 30
+    while True:
+        try:
+            requests.get(f"{BROKER}/healthz", timeout=3).raise_for_status()
+            requests.get(f"{MOCK}/_test/state", timeout=3).raise_for_status()
+            requests.get(f"{HUB}/jwks", timeout=3).raise_for_status()
+            return
+        except requests.RequestException as exc:
+            if time.time() >= deadline:
+                pytest.exit(
+                    f"test stack not reachable ({exc}); start it with:\n"
                     "  docker compose -f tests/stack/docker-compose.yml up -d --build",
                     returncode=3)
+            time.sleep(2)
 
 
 def mint(sub: str = "wf-user-1", kind: str = "ps256", **extra) -> str:
