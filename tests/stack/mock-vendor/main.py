@@ -21,7 +21,8 @@ import secrets
 import time
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, Form, Request
+import jwt
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 # Browser-facing endpoints advertise localhost (host side of the port map);
@@ -31,6 +32,14 @@ INTERNAL_URL = os.environ.get("MOCK_INTERNAL_URL", "http://mock-vendor:8310")
 ISSUER = INTERNAL_URL
 CLIENT_ID = os.environ.get("MOCK_CLIENT_ID", "mcp-lab-broker")
 CLIENT_SECRET = os.environ.get("MOCK_CLIENT_SECRET", "mock-secret")
+# private_key_jwt client (RFC 7523): assertions are verified for real against
+# this public key; the broker holds the matching private key in custody.
+JWT_CLIENT_ID = os.environ.get("MOCK_JWT_CLIENT_ID", "mcp-lab-broker-jwt")
+JWT_PUBLIC_KEY = None
+if os.environ.get("MOCK_JWT_PUBLIC_KEY_FILE"):
+    with open(os.environ["MOCK_JWT_PUBLIC_KEY_FILE"]) as fh:
+        JWT_PUBLIC_KEY = fh.read()
+ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 AT_TTL = int(os.environ.get("MOCK_AT_TTL", "60"))
 MOCK_USER = {"id": "mock-4217", "login": "octocat-lab"}
 
@@ -41,12 +50,51 @@ families: dict[str, dict] = {}         # family_id -> {gen, active_rt, revoked}
 refresh_tokens: dict[str, dict] = {}   # rt -> {family, gen, consumed}
 access_tokens: dict[str, dict] = {}    # at -> {family, exp, scopes}
 counters = {"authorize": 0, "token_code": 0, "token_refresh": 0,
-            "rt_replay": 0, "revoke": 0, "mcp_calls": 0, "mcp_unauthorized": 0}
+            "rt_replay": 0, "revoke": 0, "mcp_calls": 0, "mcp_unauthorized": 0,
+            "client_assertions": 0, "bad_assertions": 0}
 issues: list[dict] = []
 
 
 def _client_ok(client_id: str | None, client_secret: str | None) -> bool:
     return client_id == CLIENT_ID and client_secret == CLIENT_SECRET
+
+
+def _assertion_ok(form: dict) -> bool:
+    """RFC 7523 §3: verified signature, iss == sub == a registered client,
+    aud identifies this AS, exp/jti present."""
+    counters["client_assertions"] += 1
+    if JWT_PUBLIC_KEY is None:
+        return False
+    try:
+        claims = jwt.decode(
+            form.get("client_assertion", ""), JWT_PUBLIC_KEY,
+            algorithms=["RS256"],
+            audience=[f"{INTERNAL_URL}/token", ISSUER],
+            options={"require": ["exp", "iss", "sub", "aud", "jti"]})
+    except Exception:
+        counters["bad_assertions"] += 1
+        return False
+    if not (claims["iss"] == claims["sub"] == JWT_CLIENT_ID):
+        counters["bad_assertions"] += 1
+        return False
+    if form.get("client_id") and form["client_id"] != JWT_CLIENT_ID:
+        counters["bad_assertions"] += 1
+        return False
+    return True
+
+
+def _authenticated(request: Request, form: dict) -> bool:
+    """Accept client_secret_post, client_secret_basic, or private_key_jwt."""
+    if form.get("client_assertion_type") == ASSERTION_TYPE:
+        return _assertion_ok(form)
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("basic "):
+        try:
+            user, _, pw = base64.b64decode(auth.split(None, 1)[1]).decode().partition(":")
+        except Exception:
+            return False
+        return _client_ok(user, pw)
+    return _client_ok(form.get("client_id"), form.get("client_secret"))
 
 
 def _mint(family_id: str, scopes: str) -> dict:
@@ -83,7 +131,8 @@ async def authorize(client_id: str, redirect_uri: str, state: str,
                     code_challenge: str, response_type: str = "code",
                     code_challenge_method: str = "S256", scope: str = ""):
     counters["authorize"] += 1
-    if client_id != CLIENT_ID or response_type != "code" or code_challenge_method != "S256":
+    if client_id not in (CLIENT_ID, JWT_CLIENT_ID) or response_type != "code" \
+            or code_challenge_method != "S256":
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     code = f"mock-code-{secrets.token_urlsafe(16)}"
     codes[code] = {"challenge": code_challenge, "redirect_uri": redirect_uri,
@@ -96,7 +145,7 @@ async def authorize(client_id: str, redirect_uri: str, state: str,
 @app.post("/token")
 async def token(request: Request):
     form = dict((await request.form()).items())
-    if not _client_ok(form.get("client_id"), form.get("client_secret")):
+    if not _authenticated(request, form):
         return JSONResponse({"error": "invalid_client"}, status_code=401)
 
     if form.get("grant_type") == "authorization_code":
@@ -134,12 +183,13 @@ async def token(request: Request):
 
 
 @app.post("/revoke")
-async def revoke(token: str = Form(...), token_type_hint: str = Form(""),
-                 client_id: str = Form(""), client_secret: str = Form("")):
+async def revoke(request: Request):
     """RFC 7009: always 200, family revoked if the token is known."""
     counters["revoke"] += 1
-    if not _client_ok(client_id, client_secret):
+    form = dict((await request.form()).items())
+    if not _authenticated(request, form):
         return JSONResponse({"error": "invalid_client"}, status_code=401)
+    token = form.get("token", "")
     fam_id = (refresh_tokens.get(token, {}) or access_tokens.get(token, {})).get("family")
     if fam_id:
         families[fam_id]["revoked"] = True

@@ -1,5 +1,6 @@
 FROM python:3.12-slim
-RUN pip install --no-cache-dir 'fastapi==0.115.*' 'uvicorn==0.32.*' 'python-multipart==0.0.*'
+RUN pip install --no-cache-dir 'fastapi==0.115.*' 'uvicorn==0.32.*' \
+    'python-multipart==0.0.*' 'PyJWT[crypto]==2.10.*'
 WORKDIR /app
 COPY main.py .
 USER 65534

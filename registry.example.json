@@ -22,5 +22,14 @@
     "refresh_rotation": true,
     "ema_status": "none",
     "_notes": "Test vendor AS (tests/stack/mock-vendor): RFC 8414 discovery, 60s access tokens, rotating refresh tokens with replay-revokes-family, RFC 7009 revocation. Exists so the single-flight and revocation gates run headless."
+  },
+  "mockhub-jwt": {
+    "vendor_id": "mockhub-jwt",
+    "auth_metadata_url": "http://mock-vendor:8310/.well-known/oauth-authorization-server",
+    "token_endpoint_auth_method": "private_key_jwt",
+    "scope_ceiling": ["issues:read", "issues:write"],
+    "refresh_rotation": true,
+    "ema_status": "none",
+    "_notes": "Same test AS via private_key_jwt (RFC 7523): the broker signs a client assertion with the private key held in vendor-clients/mockhub-jwt ({client_id, private_key, alg}); the mock verifies it for real. Exists so the pkj leg of the client-auth matrix runs headless."
   }
 }

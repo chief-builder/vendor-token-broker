@@ -45,6 +45,16 @@ curl -sf -H "X-Vault-Token: ${ROOT}" \
   -d "{\"data\":{\"client_id\":\"${MOCK_CLIENT_ID:-mcp-lab-broker}\",\"client_secret\":\"${MOCK_CLIENT_SECRET:-mock-secret}\"}}" \
   "${BAO}/v1/vendor-clients/data/mockhub" > /dev/null
 
+# private_key_jwt client: the broker-side private key (test-only keypair,
+# committed under tests/stack/keys/).
+if [ -f /keys/mockhub-jwt-private.pem ]; then
+  PK=$(awk 'BEGIN{ORS="\\n"}1' /keys/mockhub-jwt-private.pem)
+  curl -sf -H "X-Vault-Token: ${ROOT}" \
+    -d "{\"data\":{\"client_id\":\"${MOCK_JWT_CLIENT_ID:-mcp-lab-broker-jwt}\",\"private_key\":\"${PK}\",\"alg\":\"RS256\"}}" \
+    "${BAO}/v1/vendor-clients/data/mockhub-jwt" > /dev/null
+  echo "==> mockhub-jwt (private_key_jwt) client configured"
+fi
+
 if [ -n "${GITHUB_CLIENT_ID:-}" ]; then
   curl -sf -H "X-Vault-Token: ${ROOT}" \
     -d "{\"data\":{\"client_id\":\"${GITHUB_CLIENT_ID}\",\"client_secret\":\"${GITHUB_CLIENT_SECRET}\"}}" \

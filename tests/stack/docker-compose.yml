@@ -33,8 +33,10 @@ services:
       MOCK_CLIENT_SECRET: ${MOCK_CLIENT_SECRET:-mock-secret}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      MOCK_JWT_CLIENT_ID: ${MOCK_JWT_CLIENT_ID:-mcp-lab-broker-jwt}
     volumes:
       - ./openbao-init/init.sh:/init.sh:ro
+      - ./keys:/keys:ro
     entrypoint: ["sh", "/init.sh"]
 
   redis:
@@ -51,7 +53,11 @@ services:
       MOCK_INTERNAL_URL: http://mock-vendor:8310
       MOCK_CLIENT_ID: ${MOCK_CLIENT_ID:-mcp-lab-broker}
       MOCK_CLIENT_SECRET: ${MOCK_CLIENT_SECRET:-mock-secret}
+      MOCK_JWT_CLIENT_ID: ${MOCK_JWT_CLIENT_ID:-mcp-lab-broker-jwt}
+      MOCK_JWT_PUBLIC_KEY_FILE: /keys/mockhub-jwt-public.pem
       MOCK_AT_TTL: "60"
+    volumes:
+      - ./keys/mockhub-jwt-public.pem:/keys/mockhub-jwt-public.pem:ro
     ports:
       - "8310:8310"
 
