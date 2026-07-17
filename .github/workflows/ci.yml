@@ -39,3 +39,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t vendor-token-broker:ci .
+
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        coord: [memory]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install '.[dev,redis]'
+      - name: Start the acceptance stack
+        run: COORD_BACKEND=${{ matrix.coord }} docker compose -f tests/stack/docker-compose.yml up -d --build --wait
+      - run: pytest tests/integration -q -m "not external"
+      - name: Broker logs on failure
+        if: failure()
+        run: docker logs vtb-broker 2>&1 | tail -200
