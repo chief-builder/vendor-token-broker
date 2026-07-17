@@ -1,0 +1,31 @@
+# Single-replica deployment shape (COORD_BACKEND=memory).
+# Expects an existing OpenBao/Vault provisioned per docs/operations.md and
+# a reviewed registry.json next to this file. Configure via .env
+# (see ../.env.example for the full reference).
+
+services:
+  broker:
+    build: ..
+    environment:
+      HUB_ISSUER: ${HUB_ISSUER}
+      HUB_JWKS_URI: ${HUB_JWKS_URI}
+      BROKER_PUBLIC_URL: ${BROKER_PUBLIC_URL}
+      VAULT_ADDR: ${VAULT_ADDR}
+      VAULT_TOKEN_FILE: /run/secrets/broker-vault-token
+      REGISTRY_PATH: /app/registry.json
+    volumes:
+      - ./registry.json:/app/registry.json:ro
+    secrets:
+      - broker-vault-token
+    ports:
+      - "8300:8300"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8300/healthz').status==200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+secrets:
+  broker-vault-token:
+    file: ./broker-vault-token   # scoped token, never root

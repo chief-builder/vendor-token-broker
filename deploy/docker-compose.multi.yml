@@ -1,0 +1,31 @@
+# Multi-replica deployment shape (COORD_BACKEND=redis): two broker
+# replicas sharing OpenBao custody and Redis coordination behind any
+# balancer — no session affinity required (docs/design.md §14).
+
+services:
+  redis:
+    image: redis:7-alpine
+
+  broker-a: &replica
+    build: ..
+    environment: &replica-env
+      HUB_ISSUER: ${HUB_ISSUER}
+      HUB_JWKS_URI: ${HUB_JWKS_URI}
+      BROKER_PUBLIC_URL: ${BROKER_PUBLIC_URL}   # the balancer's public URL
+      VAULT_ADDR: ${VAULT_ADDR}
+      VAULT_TOKEN_FILE: /run/secrets/broker-vault-token
+      REGISTRY_PATH: /app/registry.json
+      COORD_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./registry.json:/app/registry.json:ro
+    secrets:
+      - broker-vault-token
+    depends_on:
+      - redis
+
+  broker-b: *replica
+
+secrets:
+  broker-vault-token:
+    file: ./broker-vault-token   # scoped token, never root
