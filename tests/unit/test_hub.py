@@ -4,7 +4,7 @@ the JWKS client is faked — no network."""
 import time
 
 import pytest
-from conftest import StaticJWKS, make_config, mint_hub_token
+from unit_helpers import StaticJWKS, make_config, mint_hub_token
 
 from token_broker.hub import HubAuthError, HubValidator
 

@@ -8,7 +8,7 @@ dropped — the broker API is driven directly).
 from urllib.parse import parse_qs, urlparse
 
 import requests
-from conftest import (
+from stack import (
     BROKER,
     MOCK,
     broker_audit,

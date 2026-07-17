@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests
-from conftest import (
+from stack import (
     MOCK,
     broker_audit,
     do_consent,
@@ -54,7 +54,7 @@ def test_twenty_parallel_resolves_one_vendor_refresh(alice):
 
 
 def test_generation_advances_on_next_refresh(alice):
-    from conftest import sub_of
+    from stack import sub_of
     mine = [e for e in broker_audit("broker.refresh") if e.get("sub") == sub_of(alice)]
     gen_before = mine[-1]["generation_to"]
     r = resolve(alice)

@@ -9,7 +9,7 @@ fails, an existing deployment can NOT point its plugin at this broker.
 import subprocess
 
 import requests
-from conftest import (
+from stack import (
     BROKER,
     MOCK,
     MOCK_CONTAINER,

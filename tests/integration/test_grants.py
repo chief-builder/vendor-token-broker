@@ -2,7 +2,7 @@
 (RFC 7009), grants are self-service, and /v1/grants lists only the caller's
 connections. Ported from the lab's phase5 gate 4."""
 import requests
-from conftest import BROKER, broker_audit, do_consent, mint, mock_state, resolve, sub_of
+from stack import BROKER, broker_audit, do_consent, mint, mock_state, resolve, sub_of
 
 
 def test_delete_grant_revokes_at_vendor(alice):

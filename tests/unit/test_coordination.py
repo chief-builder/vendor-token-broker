@@ -5,7 +5,7 @@ import asyncio
 import time
 
 import pytest
-from conftest import make_config
+from unit_helpers import make_config
 
 from token_broker.coordination import MemoryCoordination, RedisCoordination
 

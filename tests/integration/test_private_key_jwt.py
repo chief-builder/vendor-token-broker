@@ -2,7 +2,7 @@
 drives consent, refresh, and RFC 7009 revocation with a client assertion the
 mock vendor verifies for real."""
 import requests
-from conftest import BROKER, do_consent, mint, mock_state, resolve, revoke_grant
+from stack import BROKER, do_consent, mint, mock_state, resolve, revoke_grant
 
 VENDOR = "mockhub-jwt"
 

@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests
-from conftest import MOCK_CONTAINER, container_audit_events, mint, mock_state
+from stack import MOCK_CONTAINER, container_audit_events, mint, mock_state
 
 LB = "http://localhost:8400"
 A = "http://localhost:8401"

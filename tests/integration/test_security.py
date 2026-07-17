@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 import requests
-from conftest import (
+from stack import (
     BROKER,
     OPENBAO_CONTAINER,
     do_consent,

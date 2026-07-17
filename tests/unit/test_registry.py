@@ -4,7 +4,7 @@ import json
 
 import jsonschema
 import pytest
-from conftest import REPO_ROOT
+from unit_helpers import REPO_ROOT
 
 from token_broker.vendors import VendorClient
 

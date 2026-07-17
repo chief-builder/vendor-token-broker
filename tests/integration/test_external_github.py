@@ -4,7 +4,7 @@ written to vendor-clients/github by openbao-init)."""
 import os
 
 import pytest
-from conftest import resolve
+from stack import resolve
 
 pytestmark = pytest.mark.external
 
