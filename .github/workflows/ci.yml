@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        coord: [memory]
+        coord: [memory, redis]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

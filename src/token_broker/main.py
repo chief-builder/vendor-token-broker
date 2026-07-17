@@ -17,13 +17,16 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from . import refresh as refresh_mod
 from . import sweeper
 from . import vendors as vendors_mod
 from .audit import audit
 from .config import Config
-from .custody import CasConflict, CustodyUnavailable, VaultStore
+from .coordination import CoordinationUnavailable, make_coordination
+from .custody import CustodyUnavailable, VaultStore
 from .hub import HubAuthError, HubValidator
 from .problems import Problems
+from .refresh import entry_from_token_response
 from .vendors import VendorClient
 
 
@@ -41,21 +44,6 @@ def reconsent_scopes(held: list[str], required: list[str], ceiling: list[str]) -
     return [s for s in ceiling if s in set(held) | set(required)]
 
 
-def entry_from_token_response(tok: dict, gen: int, vendor_uid: str,
-                              scopes: list[str]) -> dict:
-    return {
-        "access_token": tok["access_token"],
-        "refresh_token": tok.get("refresh_token", ""),
-        "expires_at": time.time() + float(tok.get("expires_in", 8 * 3600)),
-        "granted_scopes": (tok.get("scope") or " ".join(scopes)).split(),
-        "vendor_user_id": vendor_uid,
-        "state": "ACTIVE",
-        "refresh_generation": gen,
-        "last_refresh_at": time.time(),
-        "created_at": time.time(),
-    }
-
-
 def ok_response(entry: dict) -> JSONResponse:
     return JSONResponse({"access_token": entry["access_token"],
                          "expires_at": entry["expires_at"],
@@ -65,32 +53,28 @@ def ok_response(entry: dict) -> JSONResponse:
 class Broker:
     """All per-process broker state; routes and the sweeper operate on this."""
 
-    def __init__(self, cfg: Config, *, custody=None, hub=None, vendors=None):
+    def __init__(self, cfg: Config, *, custody=None, hub=None, vendors=None,
+                 coord=None):
         self.cfg = cfg
+        self.instance_id = secrets.token_hex(8)
         self.problem = Problems(cfg.problem_urn_prefix)
         self.custody = custody or VaultStore(cfg)
         self.hub = hub or HubValidator(cfg)
         self.vendors = vendors or VendorClient(cfg, self.custody)
-        self.locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self.coord = coord or make_coordination(cfg, self.instance_id)
         self.cache: dict[tuple[str, str], tuple[dict, int, float]] = {}
-        self.txns: dict[str, dict] = {}    # txn_id -> {sub, vendor, scopes, created_at}
-        self.states: dict[str, dict] = {}  # state -> {txn_id, pkce_verifier, issuer, consumed}
-        self.stale_events: dict[str, list[float]] = {}  # vendor -> recent STALE timestamps
-        self.paged_vendors: dict[str, float] = {}       # vendor -> last mass-stale page ts
 
-    def lock(self, vendor: str, sub: str) -> asyncio.Lock:
-        return self.locks.setdefault((vendor, sub), asyncio.Lock())
-
-    def new_txn(self, sub: str, vendor: str, scopes: list[str]) -> str:
+    async def new_txn(self, sub: str, vendor: str, scopes: list[str]) -> str:
         txn_id = secrets.token_urlsafe(24)
-        self.txns[txn_id] = {"sub": sub, "vendor": vendor, "scopes": scopes,
-                             "created_at": time.time()}
+        await self.coord.put_txn(txn_id, {"sub": sub, "vendor": vendor,
+                                          "scopes": scopes,
+                                          "created_at": time.time()})
         return txn_id
 
-    def needs_consent(self, sub: str, vendor: str, spec: dict,
-                      scopes: list[str] | None = None) -> JSONResponse:
-        txn = self.new_txn(sub, vendor,
-                           scopes if scopes is not None else spec.get("scope_ceiling", []))
+    async def needs_consent(self, sub: str, vendor: str, spec: dict,
+                            scopes: list[str] | None = None) -> JSONResponse:
+        txn = await self.new_txn(
+            sub, vendor, scopes if scopes is not None else spec.get("scope_ceiling", []))
         return self.problem(
             404, "needs-consent", f"no usable grant for {vendor}",
             authorize_uri=f"{self.cfg.broker_public_url}/v1/authorize/{vendor}?txn={txn}")
@@ -113,21 +97,29 @@ class Broker:
     def drop_cache(self, vendor: str, sub: str) -> None:
         self.cache.pop((vendor, sub), None)
 
-    def mark_stale(self, vendor: str, sub: str, generation: int) -> None:
+    async def invalidate(self, vendor: str, sub: str) -> None:
+        """Local drop + best-effort cross-replica broadcast (revoke/STALE/
+        delete). Worst case without the broadcast is the documented ≤60s
+        per-replica cache TTL."""
+        self.drop_cache(vendor, sub)
+        try:
+            await self.coord.publish_invalidate(vendor, sub)
+        except CoordinationUnavailable:
+            pass
+
+    async def mark_stale(self, vendor: str, sub: str, generation: int) -> None:
         """Emit the per-entry broker.stale record and, when STALEs for one
         vendor burst past the threshold within the window, a mass-stale page
         (§8/§10 — the org-App-uninstall anomaly)."""
         audit("broker.stale", sub=sub, vendor=vendor, generation=generation)
-        now = time.time()
-        window = self.cfg.mass_stale_window_s
-        events = [t for t in self.stale_events.get(vendor, []) if now - t < window]
-        events.append(now)
-        self.stale_events[vendor] = events
-        if len(events) >= self.cfg.mass_stale_threshold and \
-                now - self.paged_vendors.get(vendor, 0) > window:
-            self.paged_vendors[vendor] = now
-            audit("broker.stale.mass", vendor=vendor, count=len(events),
-                  window_s=window, page=True, security_event=True)
+        try:
+            count, page = await self.coord.record_stale(vendor)
+        except CoordinationUnavailable:
+            return  # the per-entry record above still stands
+        if page:
+            audit("broker.stale.mass", vendor=vendor, count=count,
+                  window_s=self.cfg.mass_stale_window_s, page=True,
+                  security_event=True)
 
 
 def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastAPI:
@@ -136,6 +128,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await b.coord.start(on_invalidate=b.drop_cache)
         task = (asyncio.create_task(sweeper.sweep_loop(b))
                 if cfg.sweep_interval_s > 0 else None)
         try:
@@ -143,6 +136,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
         finally:
             if task is not None:
                 task.cancel()
+            await b.coord.close()
 
     app = FastAPI(title="vendor-token-broker", version="1.0", lifespan=lifespan)
     app.state.broker = b
@@ -186,15 +180,15 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             audit("broker.resolve", decision=decision, path=path,
                   hub_jti=claims.get("jti"), sub=sub, vendor=vendor, **kw)
 
-        def _insufficient_scope(entry: dict) -> JSONResponse | None:
+        async def _insufficient_scope(entry: dict) -> JSONResponse | None:
             """§4.1: an ACTIVE grant that doesn't cover the tool's required
             scopes returns 409 needs-reconsent-scope with an authorize_uri that
             re-consents for the union of held and required scopes (≤ ceiling)."""
             missing = [s for s in required if s not in entry["granted_scopes"]]
             if not missing:
                 return None
-            txn = b.new_txn(sub, vendor,
-                            reconsent_scopes(entry["granted_scopes"], required, ceiling))
+            txn = await b.new_txn(
+                sub, vendor, reconsent_scopes(entry["granted_scopes"], required, ceiling))
             _audit("deny", "insufficient-scope", missing=missing)
             return problem(
                 409, "needs-reconsent-scope",
@@ -206,16 +200,16 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             found = b.get_entry(vendor, sub)
             if found is None:
                 _audit("needs-consent", "absent")
-                return b.needs_consent(sub, vendor, spec, want)
+                return await b.needs_consent(sub, vendor, spec, want)
             entry, ver = found
             if entry["state"] == "STALE":
                 _audit("needs-consent", "stale")
-                return b.needs_consent(sub, vendor, spec, want)
+                return await b.needs_consent(sub, vendor, spec, want)
             if entry["state"] == "REVOKE_PENDING":
                 _audit("deny", "revoke-pending")
                 return problem(409, "revoke-pending", "entry is being revoked")
 
-            insufficient = _insufficient_scope(entry)
+            insufficient = await _insufficient_scope(entry)
             if insufficient is not None:
                 return insufficient
 
@@ -226,10 +220,26 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
             # Inside the refresh buffer: single-flight per {vendor, sub} (§9).
             gen_before = entry["refresh_generation"]
-            lock = b.lock(vendor, sub)
-            try:
-                await asyncio.wait_for(lock.acquire(), timeout=cfg.lock_timeout_s)
-            except TimeoutError:
+
+            async def _serve_if_gen_advanced():
+                """Waiter retry check (redis profile): re-read each retry and
+                serve without the lock if another replica's refresh already
+                advanced the generation (blueprint §3.1)."""
+                b.drop_cache(vendor, sub)
+                f = b.get_entry(vendor, sub)
+                if f and f[0]["state"] == "ACTIVE" and \
+                        f[0]["refresh_generation"] != gen_before and \
+                        f[0]["expires_at"] - time.time() >= min_ttl:
+                    _audit("allow", "refresh-waited",
+                           generation=f[0]["refresh_generation"])
+                    return ok_response(f[0])
+                return None
+
+            lock_token, early = await b.coord.wait_refresh_lock(
+                vendor, sub, _serve_if_gen_advanced)
+            if early is not None:
+                return early
+            if lock_token is None:
                 # Lock-holder death path: re-read and serve if usable (§9 rules).
                 b.drop_cache(vendor, sub)
                 found = b.get_entry(vendor, sub)
@@ -243,11 +253,22 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 found = b.get_entry(vendor, sub)
                 if found is None:
                     _audit("needs-consent", "absent")
-                    return b.needs_consent(sub, vendor, spec, want)
+                    return await b.needs_consent(sub, vendor, spec, want)
                 entry, ver = found
                 if entry["state"] == "STALE":
                     _audit("needs-consent", "stale")
-                    return b.needs_consent(sub, vendor, spec, want)
+                    return await b.needs_consent(sub, vendor, spec, want)
+                if entry["state"] == "REFRESHING" and \
+                        not refresh_mod.abandoned(entry, cfg.refreshing_ttl_s):
+                    # In flight on another replica whose lock TTL'd out from
+                    # under it. Never re-refresh (a rotating RT would burn the
+                    # family) — serve the still-valid token or ask for a retry.
+                    if entry["expires_at"] - time.time() >= min_ttl:
+                        _audit("allow", "refresh-in-progress")
+                        return ok_response(entry)
+                    _audit("deny", "refresh-in-progress")
+                    return problem(503, "vendor-unavailable",
+                                   "refresh in progress; retry")
                 if entry["refresh_generation"] != gen_before and \
                         entry["expires_at"] - time.time() >= min_ttl:
                     # A concurrent refresh already won — same token, no vendor call.
@@ -255,54 +276,41 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                            generation=entry["refresh_generation"])
                     return ok_response(entry)
 
-                try:
-                    tok = await b.vendors.refresh(vendor, entry["refresh_token"])
-                except vendors_mod.InvalidGrant:
-                    stale = {**entry, "state": "STALE"}
-                    try:
-                        b.custody.write(vendor, sub, stale, cas=ver)
-                    except CasConflict:
-                        pass
-                    b.drop_cache(vendor, sub)
-                    b.mark_stale(vendor, sub, entry["refresh_generation"])
+                outcome = await refresh_mod.attempt_refresh(b, vendor, sub, entry, ver)
+                if isinstance(outcome, refresh_mod.Refreshed):
+                    _audit("allow", "refreshed",
+                           generation=outcome.entry["refresh_generation"])
+                    return ok_response(outcome.entry)
+                if isinstance(outcome, refresh_mod.WentStale):
                     _audit("needs-consent", "stale-on-refresh")
-                    return b.needs_consent(sub, vendor, spec, want)
-                except vendors_mod.VendorUnavailable as exc:
-                    _audit("deny", "vendor-unavailable", error=str(exc))
-                    return problem(503, "vendor-unavailable", str(exc))
-
-                new_gen = entry["refresh_generation"] + 1
-                new_entry = entry_from_token_response(
-                    tok, new_gen, entry["vendor_user_id"], entry["granted_scopes"])
-                if not new_entry["refresh_token"]:
-                    new_entry["refresh_token"] = entry["refresh_token"]  # non-rotating vendor
-                try:
-                    new_ver = b.custody.write(vendor, sub, new_entry, cas=ver)
-                except CasConflict:
-                    # Another writer won (§9): discard our pair, never write the older one.
-                    b.drop_cache(vendor, sub)
-                    found = b.get_entry(vendor, sub)
-                    _audit("allow", "cas-lost")
-                    if found and found[0]["state"] == "ACTIVE":
-                        return ok_response(found[0])
-                    return problem(503, "vendor-unavailable", "refresh race lost; retry")
-                b.put_cache(vendor, sub, new_entry, new_ver)
-                audit("broker.refresh", sub=sub, vendor=vendor,
-                      generation_from=gen_before, generation_to=new_gen)
-                _audit("allow", "refreshed", generation=new_gen)
-                return ok_response(new_entry)
+                    return await b.needs_consent(sub, vendor, spec, want)
+                if isinstance(outcome, refresh_mod.VendorDown):
+                    _audit("deny", "vendor-unavailable", error=outcome.error)
+                    return problem(503, "vendor-unavailable", outcome.error)
+                # CasLost: another writer won (§9) — serve theirs, never ours.
+                found = b.get_entry(vendor, sub)
+                _audit("allow", "cas-lost")
+                if found and found[0]["state"] == "ACTIVE":
+                    return ok_response(found[0])
+                return problem(503, "vendor-unavailable", "refresh race lost; retry")
             finally:
-                lock.release()
+                await b.coord.release_refresh_lock(vendor, sub, lock_token)
         except CustodyUnavailable as exc:
             # §10: fail closed — no grace beyond the in-memory cache TTL.
             _audit("deny", "vault-unavailable", error=str(exc))
             return problem(503, "vault-unavailable", str(exc))
+        except CoordinationUnavailable as exc:
+            # Refresh path only: cache hits were already served above.
+            _audit("deny", "coordination-unavailable", error=str(exc))
+            return problem(503, "coordination-unavailable", str(exc))
 
     @app.get("/v1/authorize/{vendor}")
     async def authorize(vendor: str, txn: str):
-        record = b.txns.get(txn)
-        if (record is None or record["vendor"] != vendor
-                or time.time() - record["created_at"] > cfg.txn_ttl_s):
+        try:
+            record = await b.coord.get_txn(txn)
+        except CoordinationUnavailable as exc:
+            return problem(503, "coordination-unavailable", str(exc))
+        if record is None or record["vendor"] != vendor:
             audit("broker.consent.fail", vendor=vendor, reason="bad_txn",
                   security_event=False)
             return problem(400, "invalid-transaction", "unknown or expired transaction")
@@ -316,15 +324,18 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
         challenge = base64.urlsafe_b64encode(
             hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         state = secrets.token_urlsafe(32)
-        b.states[state] = {"txn_id": txn, "sub": record["sub"], "vendor": vendor,
-                           "pkce_verifier": verifier, "nonce": secrets.token_urlsafe(16),
-                           "issuer": eps.get("issuer"), "created_at": time.time(),
-                           "consumed": False,
-                           # RFC 9207 §2.4: if the AS advertises iss support, a
-                           # callback that omits iss is a mix-up signal (see callback).
-                           "iss_required": bool(
-                               eps.get("authorization_response_iss_parameter_supported")),
-                           "scopes": record["scopes"]}  # ≤ registry ceiling (§4.2)
+        try:
+            await b.coord.put_state(state, {
+                "txn_id": txn, "sub": record["sub"], "vendor": vendor,
+                "pkce_verifier": verifier, "nonce": secrets.token_urlsafe(16),
+                "issuer": eps.get("issuer"), "created_at": time.time(),
+                # RFC 9207 §2.4: if the AS advertises iss support, a callback
+                # that omits iss is a mix-up signal (see callback).
+                "iss_required": bool(
+                    eps.get("authorization_response_iss_parameter_supported")),
+                "scopes": record["scopes"]})  # ≤ registry ceiling (§4.2)
+        except CoordinationUnavailable as exc:
+            return problem(503, "coordination-unavailable", str(exc))
         audit("broker.consent.start", sub=record["sub"], vendor=vendor)
         params = {
             "client_id": creds.get("client_id", ""),
@@ -341,31 +352,44 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
     async def callback(vendor: str, request: Request):
         q = request.query_params
         state = q.get("state", "")
-        record = b.states.get(state)
-        if (record is None or record["consumed"] or record["vendor"] != vendor
-                or time.time() - record["created_at"] > cfg.txn_ttl_s):
-            # §4.3/§10: state replay or mismatch is a SECURITY EVENT, not a plain 400.
-            audit("broker.consent.fail", vendor=vendor,
-                  reason="state_invalid_or_replayed", security_event=True)
-            return HTMLResponse("<h1>Invalid or expired authorization state.</h1>",
-                                status_code=400)
-        # RFC 9207 mix-up defense: strict string comparison against the issuer
-        # recorded at transaction creation; applies before any code redemption.
-        # When the vendor AS advertises authorization_response_iss_parameter_supported
-        # (RFC 8414), an authorization response with no iss is itself a mix-up
-        # signal (RFC 9207 §2.4) and is rejected exactly like a mismatched one.
-        iss = q.get("iss")
-        if record["issuer"] is not None and (
-                iss is None and record["iss_required"] or
-                iss is not None and iss != record["issuer"]):
-            audit("broker.consent.fail", vendor=vendor, reason="iss_mismatch",
-                  security_event=True, iss_present=iss is not None)
-            return HTMLResponse("<h1>Issuer mismatch.</h1>", status_code=400)
-        record["consumed"] = True
-        b.txns.pop(record["txn_id"], None)
+        try:
+            record = await b.coord.peek_state(state)
+            if record is None or record["vendor"] != vendor:
+                # §4.3/§10: state replay or mismatch is a SECURITY EVENT.
+                audit("broker.consent.fail", vendor=vendor,
+                      reason="state_invalid_or_replayed", security_event=True)
+                return HTMLResponse("<h1>Invalid or expired authorization state.</h1>",
+                                    status_code=400)
+            # RFC 9207 mix-up defense: strict string comparison against the
+            # issuer recorded at transaction creation; applies before any code
+            # redemption — and before consumption, so a tampered callback does
+            # not burn the state the legitimate one still needs.
+            # When the vendor AS advertises
+            # authorization_response_iss_parameter_supported (RFC 8414), an
+            # authorization response with no iss is itself a mix-up signal
+            # (RFC 9207 §2.4) and is rejected exactly like a mismatched one.
+            iss = q.get("iss")
+            if record["issuer"] is not None and (
+                    iss is None and record["iss_required"] or
+                    iss is not None and iss != record["issuer"]):
+                audit("broker.consent.fail", vendor=vendor, reason="iss_mismatch",
+                      security_event=True, iss_present=iss is not None)
+                return HTMLResponse("<h1>Issuer mismatch.</h1>", status_code=400)
+            # Single-use consumption BEFORE redemption: exactly one callback
+            # per state ever reaches the token endpoint.
+            record = await b.coord.consume_state(state)
+            if record is None:  # lost a consumption race — treat as replay
+                audit("broker.consent.fail", vendor=vendor,
+                      reason="state_invalid_or_replayed", security_event=True)
+                return HTMLResponse("<h1>Invalid or expired authorization state.</h1>",
+                                    status_code=400)
+            await b.coord.pop_txn(record["txn_id"])
+        except CoordinationUnavailable:
+            return HTMLResponse("<h1>Coordination store unavailable.</h1>",
+                                status_code=503)
         if "error" in q:
-            # The raw vendor error goes to the audit line only; the browser gets a
-            # constant page (no reflected, attacker-controllable value → no XSS).
+            # The raw vendor error goes to the audit line only; the browser
+            # gets a constant page (no reflected attacker-controllable value).
             audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
                   reason=q.get("error"), security_event=False)
             return HTMLResponse("<h1>Authorization failed.</h1>", status_code=400)
@@ -375,8 +399,8 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 f"{cfg.broker_public_url}/v1/callback/{vendor}")
             vendor_uid = await b.vendors.vendor_user_id(vendor, tok["access_token"])
             entry = entry_from_token_response(tok, 1, vendor_uid, record["scopes"])
-            b.custody.write(vendor, record["sub"], entry, cas=None)  # re-consent = fresh gen=1
-            b.drop_cache(vendor, record["sub"])
+            b.custody.write(vendor, record["sub"], entry, cas=None)  # re-consent: gen=1
+            await b.invalidate(vendor, record["sub"])
         except vendors_mod.VendorError as exc:
             audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
                   reason=str(exc), security_event=False)
@@ -406,12 +430,12 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 await b.vendors.revoke(vendor, entry)   # §4.4: revoke at vendor FIRST
             except vendors_mod.VendorUnavailable as exc:
                 b.custody.write(vendor, sub, {**entry, "state": "REVOKE_PENDING"}, cas=ver)
-                b.drop_cache(vendor, sub)
+                await b.invalidate(vendor, sub)
                 audit("broker.revoke", sub=sub, vendor=vendor, outcome="pending",
                       error=str(exc))
                 return problem(502, "revoke-pending", "vendor revocation failed; will retry")
             b.custody.delete(vendor, sub)
-            b.drop_cache(vendor, sub)
+            await b.invalidate(vendor, sub)
         except CustodyUnavailable as exc:
             return problem(503, "vault-unavailable", str(exc))
         audit("broker.revoke", sub=sub, vendor=vendor, outcome="revoked",
@@ -434,7 +458,10 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 return problem(503, "vault-unavailable", str(exc))
             if found:
                 entry, _ = found
-                grants.append({"vendor": vendor, "state": entry["state"],
+                # REFRESHING is an internal marker (blueprint §3.2); it never
+                # surfaces externally.
+                state = "ACTIVE" if entry["state"] == "REFRESHING" else entry["state"]
+                grants.append({"vendor": vendor, "state": state,
                                "granted_scopes": entry["granted_scopes"],
                                "vendor_user_id": entry["vendor_user_id"],
                                "created_at": entry["created_at"]})

@@ -1,30 +1,24 @@
-"""Maintenance sweeper (design §8): drop abandoned consent transactions,
-retry pending revocations, and proactively refresh entries approaching
-expiry (the 5–15 min band; the 0–5 min band is served lazily by resolve).
+"""Maintenance sweeper (design §8): drop abandoned consent records, retry
+pending revocations, and proactively refresh entries approaching expiry
+(the 5–15 min band; the 0–5 min band is served lazily by resolve).
+
+Multi-replica (blueprint §3.3): only the leader-lease holder sweeps, and
+the interval is jittered ±20% so replicas never thunder together. The
+memory backend keeps the lab's fixed interval and is always the leader.
 """
 import asyncio
 import time
 
+from . import refresh as refresh_mod
 from . import vendors as vendors_mod
 from .audit import audit
-from .custody import CasConflict, CustodyUnavailable
+from .coordination import CoordinationUnavailable
+from .custody import CustodyUnavailable
 
 
 async def sweep_once(b) -> None:
     """One maintenance pass over every enabled vendor's entries."""
-    now = time.time()
-    for store in (b.txns, b.states):
-        for key in [k for k, v in store.items()
-                    if now - v["created_at"] > b.cfg.txn_ttl_s]:
-            store.pop(key, None)
-    for vendor in list(b.stale_events):
-        kept = [t for t in b.stale_events[vendor]
-                if now - t < b.cfg.mass_stale_window_s]
-        if kept:
-            b.stale_events[vendor] = kept
-        else:
-            b.stale_events.pop(vendor, None)
-
+    await b.coord.cleanup()
     for vendor in b.vendors.registry():
         if b.vendors.get_vendor(vendor) is None:
             continue
@@ -50,58 +44,42 @@ async def sweep_entry(b, vendor: str, sub: str) -> None:
         except vendors_mod.VendorUnavailable:
             return  # still down; retry next pass
         b.custody.delete(vendor, sub)
-        b.drop_cache(vendor, sub)
+        await b.invalidate(vendor, sub)
         audit("broker.revoke", sub=sub, vendor=vendor, outcome="revoked",
               path="sweep-retry")
         return
-    if entry["state"] != "ACTIVE":
+    takeover = refresh_mod.abandoned(entry, b.cfg.refreshing_ttl_s)
+    if entry["state"] != "ACTIVE" and not takeover:
         return
-    remaining = entry["expires_at"] - time.time()
-    if not (b.cfg.refresh_buffer_s < remaining <= b.cfg.proactive_refresh_s):
-        return
-    lock = b.lock(vendor, sub)
-    if lock.locked():
+    if not takeover:
+        remaining = entry["expires_at"] - time.time()
+        if not (b.cfg.refresh_buffer_s < remaining <= b.cfg.proactive_refresh_s):
+            return
+    lock_token = await b.coord.try_refresh_lock(vendor, sub)
+    if lock_token is None:
         return  # a resolve is already refreshing this entry
-    await lock.acquire()
     try:
         found = b.custody.read(vendor, sub)
-        if found is None or found[0]["state"] != "ACTIVE":
+        if found is None:
             return
         entry, ver = found
-        try:
-            tok = await b.vendors.refresh(vendor, entry["refresh_token"])
-        except vendors_mod.InvalidGrant:
-            try:
-                b.custody.write(vendor, sub, {**entry, "state": "STALE"}, cas=ver)
-            except CasConflict:
-                return
-            b.drop_cache(vendor, sub)
-            b.mark_stale(vendor, sub, entry["refresh_generation"])
+        if entry["state"] != "ACTIVE" and \
+                not refresh_mod.abandoned(entry, b.cfg.refreshing_ttl_s):
             return
-        except vendors_mod.VendorUnavailable:
-            return
-        from .main import entry_from_token_response
-        new_gen = entry["refresh_generation"] + 1
-        new_entry = entry_from_token_response(
-            tok, new_gen, entry["vendor_user_id"], entry["granted_scopes"])
-        if not new_entry["refresh_token"]:
-            new_entry["refresh_token"] = entry["refresh_token"]
-        try:
-            new_ver = b.custody.write(vendor, sub, new_entry, cas=ver)
-        except CasConflict:
-            b.drop_cache(vendor, sub)
-            return
-        b.put_cache(vendor, sub, new_entry, new_ver)
-        audit("broker.refresh", sub=sub, vendor=vendor, path="proactive",
-              generation_from=entry["refresh_generation"], generation_to=new_gen)
+        await refresh_mod.attempt_refresh(b, vendor, sub, entry, ver,
+                                          path="proactive")
     finally:
-        lock.release()
+        await b.coord.release_refresh_lock(vendor, sub, lock_token)
 
 
 async def sweep_loop(b) -> None:
     while True:
-        await asyncio.sleep(b.cfg.sweep_interval_s)
+        await asyncio.sleep(b.cfg.sweep_interval_s * (1 + b.coord.sweep_jitter()))
         try:
+            if not await b.coord.acquire_sweep_lease():
+                continue
             await sweep_once(b)
+        except CoordinationUnavailable:
+            continue  # no lease decision without redis; try again next tick
         except Exception as exc:
             audit("broker.sweep.error", error=str(exc))
