@@ -11,6 +11,7 @@ FULL_ENV = {
     "VAULT_ADDR": "http://vault.test:8200",
     "VAULT_TOKEN": "tok",
     "REGISTRY_PATH": "/app/registry.json",
+    "HUB_LOGIN_CLIENT_ID": "vtb-broker",
 }
 
 
@@ -19,7 +20,7 @@ def test_empty_env_lists_every_missing_name():
         Config.from_env({})
     msg = str(exc.value)
     for name in ("HUB_ISSUER", "HUB_JWKS_URI", "BROKER_PUBLIC_URL",
-                 "VAULT_ADDR", "REGISTRY_PATH", "VAULT_TOKEN"):
+                 "VAULT_ADDR", "REGISTRY_PATH", "VAULT_TOKEN", "HUB_LOGIN_CLIENT_ID"):
         assert name in msg
 
 

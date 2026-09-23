@@ -71,28 +71,42 @@ def do_consent(token: str, vendor: str = "mockhub") -> None:
     assert resolve(token, vendor).status_code == 200
 
 
-def new_consent_state(token: str, vendor: str = "mockhub") -> str:
-    """Drive resolve -> needs-consent -> /v1/authorize and capture the
-    unconsumed callback `state` from the redirect to the vendor (without
-    following it), so a probe can hit /v1/callback directly."""
+def hub_login_as(sub: str | None) -> None:
+    """Who the hub stub signs in (None: whoever the login_hint names)."""
+    requests.post(f"{HUB}/_test/login_as", json={"sub": sub}, timeout=10).raise_for_status()
+
+
+def to_vendor(token: str, vendor: str = "mockhub") -> tuple[requests.Session, str]:
+    """Walk resolve -> /v1/authorize -> hub login -> /v1/callback/_hub in one
+    browser session and return (session, the unfollowed redirect to the
+    vendor's authorize endpoint). The session holds the consent binding
+    cookie that the vendor callback requires."""
     revoke_grant(token, vendor)
     r = resolve(token, vendor)
     assert r.status_code == 404, f"expected needs-consent, got {r.status_code}: {r.text}"
-    redirect = requests.get(r.json()["authorize_uri"], allow_redirects=False, timeout=15)
-    assert redirect.status_code in (302, 307), redirect.text
-    return re.search(r"[?&]state=([^&]+)", redirect.headers["Location"]).group(1)
+    browser = requests.Session()
+    r = browser.get(r.json()["authorize_uri"], allow_redirects=False, timeout=15)
+    assert r.status_code in (302, 307), r.text                       # -> hub login
+    r = browser.get(r.headers["location"], allow_redirects=False, timeout=15)
+    assert r.status_code in (302, 307), r.text                       # -> /callback/_hub
+    r = browser.get(r.headers["location"], allow_redirects=False, timeout=15)
+    assert r.status_code in (302, 307), r.text                       # -> vendor
+    return browser, r.headers["location"]
 
 
-def walk_to_callback(token: str, vendor: str = "mockhub") -> str:
-    """Drive the dance manually and return the callback URL un-redeemed."""
-    revoke_grant(token, vendor)
-    r = resolve(token, vendor)
-    assert r.status_code == 404
-    r = requests.get(r.json()["authorize_uri"], allow_redirects=False, timeout=10)
-    assert r.status_code in (302, 307), r.status_code
-    r = requests.get(r.headers["location"], allow_redirects=False, timeout=10)
+def new_consent_state(token: str, vendor: str = "mockhub") -> tuple[requests.Session, str]:
+    """(browser session, the unconsumed vendor-callback `state`), so a probe
+    can hit /v1/callback directly from the browser that started the flow."""
+    browser, location = to_vendor(token, vendor)
+    return browser, re.search(r"[?&]state=([^&]+)", location).group(1)
+
+
+def walk_to_callback(token: str, vendor: str = "mockhub") -> tuple[requests.Session, str]:
+    """(browser session, the vendor callback URL), un-redeemed."""
+    browser, location = to_vendor(token, vendor)
+    r = browser.get(location, allow_redirects=False, timeout=15)     # vendor consents
     assert r.status_code in (302, 307)
-    return r.headers["location"]
+    return browser, r.headers["location"]
 
 
 def mock_state() -> dict:

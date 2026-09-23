@@ -66,6 +66,9 @@ services:
     container_name: vtb-hub-stub
     environment:
       HUB_STUB_ISSUER: http://hub-stub:8320
+      HUB_STUB_PUBLIC_URL: http://localhost:8320
+      HUB_STUB_LOGIN_CLIENT_ID: vtb-broker
+      HUB_STUB_LOGIN_CLIENT_SECRET: ${HUB_LOGIN_CLIENT_SECRET:-hub-login-secret}
     ports:
       - "8320:8320"
 
@@ -76,6 +79,8 @@ services:
     environment:
       HUB_ISSUER: http://hub-stub:8320
       HUB_JWKS_URI: http://hub-stub:8320/jwks
+      HUB_LOGIN_CLIENT_ID: vtb-broker
+      HUB_LOGIN_CLIENT_SECRET: ${HUB_LOGIN_CLIENT_SECRET:-hub-login-secret}
       BROKER_PUBLIC_URL: http://localhost:8300
       VAULT_ADDR: http://openbao:8200
       VAULT_TOKEN: ${BROKER_VAULT_TOKEN:-vtb-dev-broker-token}
@@ -118,6 +123,8 @@ services:
     environment: &replica-env
       HUB_ISSUER: http://hub-stub:8320
       HUB_JWKS_URI: http://hub-stub:8320/jwks
+      HUB_LOGIN_CLIENT_ID: vtb-broker
+      HUB_LOGIN_CLIENT_SECRET: ${HUB_LOGIN_CLIENT_SECRET:-hub-login-secret}
       BROKER_PUBLIC_URL: http://localhost:8400
       VAULT_ADDR: http://openbao:8200
       VAULT_TOKEN: ${BROKER_VAULT_TOKEN:-vtb-dev-broker-token}

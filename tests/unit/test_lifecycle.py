@@ -160,3 +160,19 @@ async def test_health_result_is_cached(monkeypatch):
     assert (await _health(h)).status_code == 200            # cached
     monkeypatch.setattr(lifecycle, "HEALTH_CACHE_S", 0)
     assert (await _health(h)).status_code == 503            # re-checked
+
+
+async def test_startup_waits_for_hub_discovery_then_succeeds():
+    h = Harness(startup_timeout_s=5)
+    h.custody.token = (3600, True)
+    h.hub_login.check = failing(2, HubUnavailable("hub login metadata unavailable"), None)
+    assert await lifecycle.startup_checks(h.broker) == (3600, True)
+    assert h.hub_login.check.calls["n"] == 3
+
+
+async def test_misconfigured_hub_login_aborts_startup():
+    from token_broker.hub_login import HubLoginError
+    h = Harness(startup_timeout_s=30)
+    h.hub_login.check_error = HubLoginError("discovery names another issuer")
+    with pytest.raises(lifecycle.StartupError, match="hub login misconfigured"):
+        await lifecycle.startup_checks(h.broker)

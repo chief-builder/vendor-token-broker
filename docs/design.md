@@ -135,13 +135,27 @@ requests nor enforces `required_scopes` for that vendor.
   strings are fixed text and never carry backend hostnames or raw errors.
 
 ### 4.2 `GET /v1/authorize/{vendor}?txn=…`
-Builds the vendor authorization URL: `state` = opaque handle to a
-server-side record `{sub, vendor, nonce, pkce_verifier, issuer,
-created_at, scopes}` (TTL 10 min, single use); never a JWT, never
-decodable client-side. Scopes = min(tool requirement, registry ceiling).
+Starts consent (§6). The link is single use and valid for 5 minutes. The
+broker sets an HttpOnly, `SameSite=Lax` binding cookie (`Secure` behind
+https) and sends the browser to log in at the hub: OIDC authorization code
+with PKCE and a nonce, `login_hint` = the link's `sub`. The vendor leg is
+built only after that login succeeds as the same `sub`: its `state` is an
+opaque handle to a server-side record `{sub, vendor, nonce,
+pkce_verifier, issuer, created_at, scopes, binding}` (TTL 10 min, single
+use); never a JWT, never decodable client-side. Scopes = min(tool
+requirement, registry ceiling).
 
 ### 4.3 `GET /v1/callback/{vendor}?code&state`
-Validates `state` (exists, unexpired, unconsumed, vendor match); validates
+`/v1/callback/_hub` is the hub-login return (`_` never appears in a vendor
+id): it checks the binding cookie and `iss`, consumes the login state,
+redeems the hub code, validates the ID token (signature from the hub
+JWKS, issuer, audience = the broker's client id, expiry, nonce), and
+requires its `sub` to equal the link's `sub` (403 and a security event
+otherwise) before redirecting to the vendor.
+
+For a vendor: validates `state` (exists, unexpired, unconsumed, vendor
+match, and issued for the vendor leg); requires the binding cookie
+(another browser: 400 and a security event, no code redeemed); validates
 RFC 9207 `iss` against the recorded issuer **before** consumption — a
 tampered callback never burns the state the legitimate one needs; consumes
 the state atomically **before** code redemption (exactly one callback per
@@ -205,15 +219,29 @@ mass-STALE page.
 (Full sequence diagram: `token-lifecycle.md` §1.)
 
 resolve → 404 + `authorize_uri(txn)` → browser →
-`/v1/authorize/{vendor}` (PKCE verifier + single-use `state` created,
-TTL 10 min) → vendor AS consent → `/v1/callback/{vendor}?code&state&iss` →
-state + iss validated, state consumed, code redeemed server-side →
+`/v1/authorize/{vendor}` (link used up, binding cookie set) → hub login →
+`/v1/callback/_hub` (same browser, logged-in `sub` == link `sub`) →
+vendor AS consent → `/v1/callback/{vendor}?code&state&iss` → binding,
+state and iss validated, state consumed, code redeemed server-side →
 entry written `ACTIVE gen=1` → "connected" page → retry resolves 200.
 
-Properties: the PKCE verifier and `state` never leave the broker in
-decodable form; `state` binds the callback to the initiating `sub` (a
-stolen callback URL cannot attach someone else's vendor account); scopes
-are capped by the registry ceiling regardless of what the tool asked for.
+Properties: the PKCE verifiers and `state`s never leave the broker in
+decodable form; scopes are capped by the registry ceiling regardless of
+what the tool asked for; and consent is bound to both the **user** and the
+**browser**:
+
+- The hub login proves the browser belongs to the user the link was issued
+  for. A link forwarded to someone else, or stolen from its user, is
+  refused before the vendor is ever involved. (Before 1.1, anyone holding
+  an authorize link could complete it, so an attacker could send their own
+  link to a victim and have the victim's vendor account stored under the
+  attacker's `sub`.)
+- The binding cookie ties every leg to the browser that opened the link,
+  so a forwarded hub-login callback (login CSRF) or a vendor authorization
+  URL completed elsewhere is refused. The user check alone would not stop
+  an attacker who forwards the callback of their own, successful login.
+- The broker is an OIDC *relying party* of the hub here: it consumes a hub
+  ID token and still issues nothing (§1).
 
 ## 7. Steady-state resolve
 
@@ -289,7 +317,8 @@ No issuance: no signing keys, no token or JWKS endpoint (route audit in
 CI). Token material never logged, never in errors, never in traces
 (token-in-log grep in CI). Per-user entries only — no shared vendor
 service accounts through this path. Registry scope ceilings enforced at
-authorize time. Callback host on the private tier only. The consent dance
+authorize time. Consent is bound to the hub-authenticated user and to the
+initiating browser (§6). Callback host on the private tier only. The consent dance
 (CSRF, mix-up, code injection per RFC 9700 §4) is in annual pen-test
 scope. The broker stores credentials, not business data; DLP at the
 egress gateway (not the broker) is the control preventing sensitive data

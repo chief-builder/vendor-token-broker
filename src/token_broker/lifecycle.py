@@ -20,6 +20,7 @@ import time
 from .audit import audit
 from .custody import CustodyTokenRejected, CustodyUnavailable
 from .hub import HubAuthError, HubUnavailable
+from .hub_login import HubLoginError
 
 STARTUP_RETRY_S = 1.0
 MIN_RENEW_INTERVAL_S = 1.0
@@ -35,7 +36,7 @@ class StartupError(Exception):
 async def startup_checks(b) -> tuple[int, bool]:
     """Verify custody token and hub JWKS; return (token ttl, renewable)."""
     deadline = time.monotonic() + b.cfg.startup_timeout_s
-    status, hub_ok = None, False
+    status, hub_ok, login_ok = None, False, False
     while True:
         waiting = []
         if status is None:
@@ -55,6 +56,14 @@ async def startup_checks(b) -> tuple[int, bool]:
                 waiting.append("hub JWKS unreachable at HUB_JWKS_URI")
             except HubAuthError as exc:
                 raise StartupError(f"hub JWKS unusable: {exc}") from exc
+        if not login_ok:
+            try:
+                await b.hub_login.check()
+                login_ok = True
+            except HubUnavailable:
+                waiting.append("hub OIDC discovery unreachable at HUB_ISSUER")
+            except HubLoginError as exc:
+                raise StartupError(f"hub login misconfigured: {exc}") from exc
         if not waiting:
             return status
         if time.monotonic() >= deadline:

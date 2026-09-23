@@ -8,12 +8,23 @@ working unchanged: every wire change below is additive.
 ### Wire additions (additive)
 - Problem titles `invalid-request` (400, malformed resolve body) and
   `hub-unavailable` (503, hub JWKS unreachable; was a misleading 401)
-- Audit event `broker.custody.renew_failed`; audit fields
+- Audit event `broker.custody.renew_failed`; `broker.consent.fail` reasons
+  `login_sub_mismatch` and `browser_mismatch`; audit fields
   `min_ttl_clamped_from`, `short_ttl`, `scope_widened`, `new_grant_revoked`
 - `/healthz` body `{"ok", "custody"}`; `DELETE /v1/grants` adds
   `"vendor_revocation": "unsupported"` for vendors without revocation
 
 ### Security
+- **Consent is bound to the user and the browser (breaking for operators).**
+  Before, anyone holding an authorize link could complete it, so an
+  attacker could send their own link to a victim and have the victim's
+  vendor account stored under the attacker's `sub`. Now `/v1/authorize`
+  sends the browser to sign in at the hub (OIDC code + PKCE + nonce) and
+  requires the signed-in `sub` to be the link's; an HttpOnly cookie binds
+  every leg to the browser that opened the link; links are single use and
+  expire after 5 minutes. Requires `HUB_LOGIN_CLIENT_ID` and a hub client
+  registration (`docs/operations.md`). The hub returns to
+  `/v1/callback/_hub`, so the route table is unchanged
 - Exactly 7 routes served: FastAPI's `/docs`, `/redoc`, `/openapi.json`
   are off, and the route test audits the router rather than the schema
 - Admin group must be a list claim (a string claim was a substring match)
@@ -39,6 +50,7 @@ working unchanged: every wire change below is additive.
   (`SWEEP_MAX_ENTRIES`); consent-record cleanup without the sweeper
 
 ### Configuration
+- New required: `HUB_LOGIN_CLIENT_ID` (optional `HUB_LOGIN_CLIENT_SECRET`)
 - New: `STARTUP_TIMEOUT_S`, `SWEEP_MAX_ENTRIES`, `VENDOR_TIMEOUT_S`,
   `JWKS_TIMEOUT_S`. `LOCK_TTL_MS` default 15000 → 20000, and with redis it
   must cover `VENDOR_TIMEOUT_S + 2 × VAULT_TIMEOUT_S`
@@ -47,8 +59,8 @@ working unchanged: every wire change below is additive.
   `vendor-tokens`; upgrade all replicas together (custody key migration)
 
 ### Tests and supply chain
-- 285 unit tests (offline harness over the real app) and 66 integration
-  tests (58 per coordination backend, 7 multi-replica, 1 external)
+- 319 unit tests (offline harness over the real app) and 69 integration
+  tests (61 per coordination backend, 7 multi-replica, 1 external)
 - Hash-pinned `requirements.lock` / `requirements-dev.lock`; base image
   pinned by digest; GitHub Actions pinned by commit SHA
 

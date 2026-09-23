@@ -22,6 +22,7 @@ def make_config(**overrides) -> Config:
         vault_addr="http://vault.test:8200",
         vault_token="test-token",
         registry_path=REPO_ROOT / "registry.example.json",
+        hub_login_client_id="vtb-broker",
         sweep_interval_s=0,
     )
     defaults.update(overrides)

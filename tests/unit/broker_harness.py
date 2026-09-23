@@ -8,6 +8,7 @@ integration suite's modules."""
 import asyncio
 import json
 import time
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx import ASGITransport, AsyncClient
@@ -122,6 +123,36 @@ class FakeVendors:
             raise self.revoke_error
 
 
+class FakeHubLogin:
+    """Stands in for HubLogin. The fake hub logs the browser in as the
+    `login_hint` it was sent, unless `login_as` says someone else logs in."""
+
+    AUTHORIZE = "http://hub.test/authorize"
+
+    def __init__(self):
+        self.login_as: str | None = None
+        self.exchange_error: Exception | None = None
+        self.check_error: Exception | None = None
+
+    async def check(self) -> None:
+        if self.check_error is not None:
+            raise self.check_error
+
+    async def authorization_url(self, *, state, nonce, challenge, login_hint, redirect_uri):
+        return f"{self.AUTHORIZE}?" + urlencode({
+            "state": state, "nonce": nonce, "code_challenge": challenge,
+            "login_hint": login_hint, "redirect_uri": redirect_uri})
+
+    async def exchange(self, *, code, verifier, redirect_uri, nonce):
+        if self.exchange_error is not None:
+            raise self.exchange_error
+        return {"sub": code.removeprefix("code-for-"), "nonce": nonce}
+
+
+def query(url: str) -> dict:
+    return {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+
+
 class Harness:
     def __init__(self, coord: str = "memory", **cfg_overrides):
         self.cfg = make_config(**cfg_overrides)
@@ -135,9 +166,14 @@ class Harness:
         else:
             self.coord = MemoryCoordination(self.cfg)
         hub = HubValidator(self.cfg, jwks_client=StaticJWKS(hub_key().public_key()))
+        self.hub_login = FakeHubLogin()
         self.broker = Broker(self.cfg, custody=self.custody, hub=hub,
-                             vendors=self.vendors, coord=self.coord)
+                             vendors=self.vendors, coord=self.coord,
+                             hub_login=self.hub_login)
         self.app = create_app(self.cfg, broker=self.broker)
+        # One browser: keeps the consent binding cookie across legs.
+        self.browser = AsyncClient(transport=ASGITransport(app=self.app),
+                                   base_url="http://broker.test")
 
     def token(self, sub: str = "wf-user-1", **claims) -> str:
         return mint_hub_token(hub_key(), "PS256", self.cfg, sub=sub, **claims)
@@ -153,20 +189,31 @@ class Harness:
         return AsyncClient(transport=ASGITransport(app=self.app),
                            base_url="http://broker.test")
 
-    async def start_consent(self, sub: str = "wf-user-1") -> str:
-        """Create a txn and drive /v1/authorize; return the callback `state`."""
-        from urllib.parse import parse_qs, urlparse
+    async def authorize(self, sub: str = "wf-user-1"):
+        """New txn for `sub`, then GET /v1/authorize in the browser."""
         txn = await self.broker.new_txn(sub, VENDOR, list(self.vendors.spec["scope_ceiling"]))
-        async with self.client() as c:
-            r = await c.get(f"/v1/authorize/{VENDOR}", params={"txn": txn})
+        return await self.browser.get(f"/v1/authorize/{VENDOR}", params={"txn": txn})
+
+    async def hub_callback(self, authorize_response, browser=None):
+        """Complete the fake hub login and hit /v1/callback/_hub."""
+        q = query(authorize_response.headers["location"])
+        who = self.hub_login.login_as or q["login_hint"]
+        return await (browser or self.browser).get(
+            "/v1/callback/_hub", params={"state": q["state"], "code": f"code-for-{who}"})
+
+    async def start_consent(self, sub: str = "wf-user-1") -> str:
+        """Drive authorize and the hub login; return the vendor `state`."""
+        r = await self.authorize(sub)
         assert r.status_code in (302, 307), r.text
-        return parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+        r = await self.hub_callback(r)
+        assert r.status_code in (302, 307), r.text
+        return query(r.headers["location"])["state"]
 
     async def callback(self, state: str, **params):
         params.setdefault("code", "code-1")
         params.setdefault("iss", "http://as.test")
-        async with self.client() as c:
-            return await c.get(f"/v1/callback/{VENDOR}", params={"state": state, **params})
+        return await self.browser.get(f"/v1/callback/{VENDOR}",
+                                      params={"state": state, **params})
 
     async def resolve(self, as_sub: str = "wf-user-1", **body):
         """POST /v1/tokens/resolve as `as_sub` (the hub JWT subject); body

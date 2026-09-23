@@ -13,6 +13,8 @@ services:
       VAULT_ADDR: ${VAULT_ADDR}
       VAULT_TOKEN_FILE: /run/secrets/broker-vault-token
       REGISTRY_PATH: /app/registry.json
+      HUB_LOGIN_CLIENT_ID: ${HUB_LOGIN_CLIENT_ID}
+      HUB_LOGIN_CLIENT_SECRET: ${HUB_LOGIN_CLIENT_SECRET:-}
     volumes:
       - ./registry.json:/app/registry.json:ro
     secrets:

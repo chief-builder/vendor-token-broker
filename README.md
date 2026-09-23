@@ -78,6 +78,7 @@ reference including contract pins and timing knobs):
 | `BROKER_PUBLIC_URL` | Public base URL for consent redirects |
 | `VAULT_ADDR` + `VAULT_TOKEN`(`_FILE`) | OpenBao / Vault KV-v2 custody backend |
 | `REGISTRY_PATH` | The vendor registry JSON (see below) |
+| `HUB_LOGIN_CLIENT_ID` (+`_SECRET`) | The broker's OIDC client at the hub: users sign in there before linking a vendor account (`docs/operations.md`) |
 | `COORD_BACKEND` | `memory` (single replica only) or `redis` (+`REDIS_URL`) |
 
 Provision custody per `docs/operations.md` (two KV-v2 mounts, the

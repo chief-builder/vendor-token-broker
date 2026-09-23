@@ -129,8 +129,10 @@ per-user*: no grant → no token, only a one-time consent transaction
 
 ## Test 3 — the consent dance (terminal and real browser)
 
-Follow the `authorize_uri`. In a terminal: `curl -sL "<authorize_uri>"`.
-In a real browser (what an actual user experiences):
+Follow the `authorize_uri`. In a terminal, with a cookie jar (the flow is
+bound to the browser that starts it, so cookies must persist across the
+redirects): `curl -sL -c /tmp/jar -b /tmp/jar "<authorize_uri>"`. In a real
+browser (what an actual user experiences):
 
 ```sh
 curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
@@ -138,13 +140,25 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 open "$(sed 's/.*"authorize_uri":"\([^"]*\)".*/\1/' /tmp/challenge.json)"
 ```
 
-Observed in the browser: the address bar travels
-`localhost:8300/v1/authorize/mockhub?txn=…` →
-`localhost:8310/authorize?...` → and settles on
+Observed (v1.1, captured with `curl -sL -D -`; codes, states, nonces and
+the cookie value elided): the browser travels broker → hub login → broker →
+vendor → broker:
 
 ```
-localhost:8300/v1/callback/mockhub?code=mock-code-…&state=3g2Ok-…&iss=http%3A%2F%2Fmock-vendor%3A8310
+307  location: http://localhost:8320/authorize?client_id=vtb-broker&response_type=code
+       &scope=openid&redirect_uri=http%3A%2F%2Flocalhost%3A8300%2Fv1%2Fcallback%2F_hub
+       &state=…&nonce=…&code_challenge=…&code_challenge_method=S256&login_hint=wf-smoke
+     set-cookie: vtb_consent_mockhub=…; HttpOnly; Max-Age=600; Path=/v1/callback; SameSite=lax
+307  location: http://localhost:8300/v1/callback/_hub?code=…&state=…&iss=http%3A%2F%2Fhub-stub%3A8320
+307  location: http://localhost:8310/authorize?client_id=mcp-lab-broker&response_type=code
+       &redirect_uri=http%3A%2F%2Flocalhost%3A8300%2Fv1%2Fcallback%2Fmockhub
+       &scope=issues%3Aread+issues%3Awrite&state=…&code_challenge=…&code_challenge_method=S256
+307  location: http://localhost:8300/v1/callback/mockhub?code=…&state=…&iss=http%3A%2F%2Fmock-vendor%3A8310
+200  <h1>Connected — return to your client.</h1>
 ```
+
+The hub stub signs the browser in automatically as the `login_hint`; a real
+hub shows its own sign-in page (or reuses an existing session).
 
 with the page **"Connected — return to your client."** The broker log
 shows the matching audit pair:
@@ -163,6 +177,9 @@ sequenceDiagram
     box rgba(99,102,241,0.20) Broker
         participant B as Broker
     end
+    box rgba(148,163,184,0.14) Hub
+        participant H as Hub stub (IdP)
+    end
     box rgba(234,179,8,0.16) Vendor
         participant M as Mock vendor AS
     end
@@ -170,12 +187,19 @@ sequenceDiagram
         participant V as OpenBao
     end
     UA->>B: GET /v1/authorize/mockhub?txn=…
-    Note over B: create single-use state record<br/>{sub, vendor, PKCE verifier, issuer,<br/>scopes ≤ registry ceiling}, TTL 10 min
+    Note over B: link used up (single use, ≤ 5 min)<br/>set binding cookie for this browser
+    B-->>UA: 307 → hub login (PKCE, nonce, login_hint)
+    UA->>H: sign in (auto: as the login_hint)
+    H-->>UA: 307 → /v1/callback/_hub (code, state, iss)
+    UA->>B: GET /v1/callback/_hub (binding cookie)
+    B->>H: POST /token (code + PKCE verifier)
+    H-->>B: ID token
+    Note over B: ID token valid and its sub == the link's sub<br/>create single-use vendor state record<br/>{sub, vendor, PKCE verifier, issuer,<br/>scopes ≤ registry ceiling, binding}, TTL 10 min
     B-->>UA: 307 → vendor authorize<br/>(client_id, code_challenge S256, state)
     UA->>M: GET /authorize (auto-consent as mock-4217)
     M-->>UA: 302 → broker callback (code, state, iss)
     UA->>B: GET /v1/callback/mockhub?code&state&iss
-    Note over B: validate state (exists, unconsumed,<br/>vendor match) → validate RFC 9207 iss<br/>→ consume state (single-use)<br/>→ THEN redeem code
+    Note over B: validate state (exists, unconsumed,<br/>vendor match) → validate RFC 9207 iss<br/>→ binding cookie = this browser<br/>→ consume state (single-use)<br/>→ THEN redeem code
     B->>M: POST /token (code + PKCE verifier + client auth)
     M-->>B: access token (60s) + rotating refresh token
     B->>V: write entry state=ACTIVE gen=1
@@ -197,8 +221,14 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 **What this proves:**
 - The PKCE verifier and `state` never leave the broker in decodable form;
   the vendor `code` is redeemed server-side only.
-- `state` binds the callback to the initiating `sub` — a stolen callback
-  URL cannot attach someone else's vendor account to your identity.
+- Consent is bound to the **user** (the hub login must be the link's `sub`)
+  and to the **browser** (the binding cookie). A link forwarded to or stolen
+  from someone else is refused before the vendor is involved
+  (`reason: login_sub_mismatch`), and a leg finished in another browser is
+  refused before any code is redeemed (`reason: browser_mismatch`). Both
+  are `security_event: true` audit lines.
+- The authorize link is single use: opening it again returns 400
+  `invalid-transaction`.
 - The RFC 9207 `iss` in the callback URL is string-compared against the
   issuer recorded at transaction creation *before* the code is redeemed
   (mix-up defense). An AS that advertises `iss` support but omits it is

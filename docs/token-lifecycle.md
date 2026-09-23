@@ -68,6 +68,9 @@ sequenceDiagram
     box rgba(99,102,241,0.20) Broker
         participant B as Broker
     end
+    box rgba(148,163,184,0.14) Hub
+        participant H as Hub (IdP)
+    end
     box rgba(234,179,8,0.16) Vendor
         participant V as Vendor AS
     end
@@ -79,15 +82,23 @@ sequenceDiagram
     Note over B: hub JWT re-validated:<br/>PS256/ES256 pinned, issuer,<br/>exactly one tier audience, mcp_contract
     B->>K: read entry
     K-->>B: not found
-    B-->>C: 404 needs-consent + authorize_uri(txn, TTL 10 min)
+    B-->>C: 404 needs-consent + authorize_uri(txn)
     C->>UA: open authorize_uri
     UA->>B: GET /v1/authorize/{vendor}?txn=…
-    Note over B: mint PKCE verifier (S256) +<br/>single-use state {sub, vendor, issuer,<br/>scopes ≤ registry ceiling} — record whether<br/>the AS advertises RFC 9207 iss
+    Note over B: link used up (single use, ≤ 5 min old)<br/>set binding cookie (HttpOnly, SameSite=Lax)
+    B-->>UA: 307 → hub login (PKCE, nonce, login_hint=sub)
+    UA->>H: user signs in
+    H-->>UA: 302 → /v1/callback/_hub?code&state
+    UA->>B: GET /v1/callback/_hub (with binding cookie)
+    B->>H: POST /token (code + PKCE verifier)
+    H-->>B: ID token
+    Note over B: ID token: signature, iss, aud, exp, nonce<br/>logged-in sub MUST equal the link's sub<br/>(else 403 + security event, no vendor leg)
+    Note over B: mint vendor PKCE verifier (S256) +<br/>single-use state {sub, vendor, issuer,<br/>scopes ≤ registry ceiling, binding} — record<br/>whether the AS advertises RFC 9207 iss
     B-->>UA: 307 → vendor authorize<br/>(client_id, code_challenge, state)
     UA->>V: user consents as themself
     V-->>UA: 302 → /v1/callback?code&state&iss
     UA->>B: GET /v1/callback/{vendor}?code&state&iss
-    Note over B: 1. state exists, unconsumed, vendor matches<br/>2. iss == recorded issuer (strict string —<br/>   omission = mix-up if advertised)<br/>3. consume state — single use, BEFORE redeem
+    Note over B: 1. state exists, unconsumed, vendor matches<br/>2. iss == recorded issuer (strict string —<br/>   omission = mix-up if advertised)<br/>3. binding cookie = the starting browser<br/>4. consume state — single use, BEFORE redeem
     B->>V: POST /token (code + PKCE verifier + client auth¹)
     V-->>B: access token + refresh token (rotating)
     B->>V: GET userinfo → vendor_user_id
@@ -101,7 +112,9 @@ sequenceDiagram
 `client_secret_post`, `client_secret_basic`, or `private_key_jwt`
 (RFC 7523 assertion signed with the key from `vendor-clients/{vendor}`).
 
-Defenses in this diagram: the code is redeemed server-side only; the PKCE
+Defenses in this diagram: only the user the link was issued for, in the
+browser that opened it, can complete consent (hub login + binding cookie);
+the code is redeemed server-side only; the PKCE
 verifier and state never leave the broker in decodable form; a replayed
 callback (state already consumed) is a 400 **and** a
 `security_event: true` audit line; a tampered or missing `iss` is rejected

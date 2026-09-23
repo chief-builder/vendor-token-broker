@@ -47,7 +47,9 @@ grace limited to each replica's ≤60s in-memory cache.
 
 Required (startup aborts listing every missing name):
 `HUB_ISSUER`, `HUB_JWKS_URI`, `BROKER_PUBLIC_URL`, `VAULT_ADDR`,
-`VAULT_TOKEN` or `VAULT_TOKEN_FILE`, `REGISTRY_PATH`.
+`VAULT_TOKEN` or `VAULT_TOKEN_FILE`, `REGISTRY_PATH`, `HUB_LOGIN_CLIENT_ID`.
+Optional: `HUB_LOGIN_CLIENT_SECRET` (omit for a public client; PKCE is
+always used).
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -70,6 +72,24 @@ Required (startup aborts listing every missing name):
 | `VENDOR_TIMEOUT_S` | `10` | Each vendor HTTP call (metadata, token, userinfo, revocation) |
 | `JWKS_TIMEOUT_S` | `5` | Hub JWKS fetch |
 | `STARTUP_TIMEOUT_S` | `30` | How long startup waits for an unreachable custody backend or hub JWKS |
+
+## Hub login client (consent)
+
+Consent requires the user to sign in at the hub in the browser that opened
+the authorize link (design §6). Register the broker at the hub as an OIDC
+client:
+
+- **Redirect URI:** `{BROKER_PUBLIC_URL}/v1/callback/_hub` (exact match).
+- **Grant:** authorization code, with PKCE (S256) required; scope `openid`.
+- **ID tokens** signed with an algorithm in `HUB_ALGORITHMS`, by keys the
+  hub publishes at `HUB_JWKS_URI`.
+- **Client auth:** confidential (`HUB_LOGIN_CLIENT_SECRET`, sent as
+  `client_secret_post`) or public (no secret).
+
+The broker finds the hub's endpoints at
+`{HUB_ISSUER}/.well-known/openid-configuration` and checks at startup that
+the document names `HUB_ISSUER`. Serve the broker over https so the
+consent binding cookie is marked `Secure`.
 
 ## Vendor registry review workflow
 
@@ -129,6 +149,14 @@ Frozen audit event names: `broker.resolve`, `broker.consent.start`,
 - **`broker.custody.renew_failed`**: the broker could not renew its custody
   token and is retrying with backoff (`ttl_remaining_s` says how long is
   left). If the backend is up, check the token's policies and max TTL.
+- **`broker.consent.fail` with `reason: login_sub_mismatch`**
+  (`security_event: true`): someone opened an authorize link issued to
+  another user (`sub` is the link's user, `login_sub` who signed in). One
+  event can be a user opening a colleague's link by mistake; repeats from
+  one `login_sub`, or links sent to many users, suggest a linking attack.
+- **`broker.consent.fail` with `reason: browser_mismatch`**: a consent leg
+  was finished in a browser that did not start it (a forwarded callback or
+  vendor URL). No code was redeemed.
 - **`broker.stale.mass` page**: an org-level app uninstall or credential
   rotation at one vendor. Per-entry recovery is self-service re-consent;
   investigate the vendor-side cause before mass-notifying users.

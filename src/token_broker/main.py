@@ -9,6 +9,7 @@ Run: uvicorn --factory token_broker.main:create_app
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import secrets
 import time
@@ -26,6 +27,7 @@ from .config import Config
 from .coordination import CoordinationUnavailable, make_coordination
 from .custody import CasConflict, CustodyUnavailable, VaultStore
 from .hub import HubAuthError, HubUnavailable, HubValidator
+from .hub_login import HubLogin, HubLoginError
 from .problems import Problems
 from .refresh import entry_from_token_response
 from .vendors import VendorClient
@@ -60,6 +62,27 @@ def page(text: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(f"<h1>{text}</h1>", status_code=status, headers=BROWSER_HEADERS)
 
 
+# Consent-leg login (review H1). The hub redirects back to this pseudo-vendor
+# on the existing callback route; "_" can never appear in a vendor id.
+HUB_LEG = "_hub"
+AUTHORIZE_LINK_TTL_S = 300   # an authorize link starts one flow, within 5 min
+
+
+def binding_cookie(vendor: str) -> str:
+    return f"vtb_consent_{vendor}"
+
+
+def binding_hash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def pkce_pair() -> tuple[str, str]:
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    return verifier, challenge
+
+
 def parse_resolve_body(raw: bytes) -> tuple[dict | None, str | None]:
     """Validate the resolve request body. Returns (body, None) or (None, why)."""
     try:
@@ -91,7 +114,7 @@ class Broker:
     """All per-process broker state; routes and the sweeper operate on this."""
 
     def __init__(self, cfg: Config, *, custody=None, hub=None, vendors=None,
-                 coord=None):
+                 coord=None, hub_login=None):
         self.cfg = cfg
         self.instance_id = secrets.token_hex(8)
         self.problem = Problems(cfg.problem_urn_prefix)
@@ -99,6 +122,7 @@ class Broker:
         self.hub = hub or HubValidator(cfg)
         self.vendors = vendors or VendorClient(cfg, self.custody)
         self.coord = coord or make_coordination(cfg, self.instance_id)
+        self.hub_login = hub_login or HubLogin(cfg, self.hub)
         self.cache: dict[tuple[str, str], tuple[dict, int, float]] = {}
         self._cache_pruned_at = time.time()
         self.sweep_cursor = 0   # where the next budgeted sweep pass resumes
@@ -395,20 +419,112 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             _audit("deny", "coordination-unavailable", error=str(exc))
             return problem(503, "coordination-unavailable", str(exc))
 
+    hub_redirect = f"{cfg.broker_public_url}/v1/callback/{HUB_LEG}"
+
+    def bound_to_this_browser(request: Request, record: dict) -> bool:
+        """The flow's binding cookie is present in this browser. Every consent
+        leg requires it, so no leg can be completed in another browser (a
+        forwarded link or callback is useless to whoever receives it)."""
+        value = request.cookies.get(binding_cookie(record["vendor"]), "")
+        return bool(value) and hmac.compare_digest(binding_hash(value),
+                                                   record.get("binding", ""))
+
     @app.get("/v1/authorize/{vendor}")
     async def authorize(vendor: str, txn: str):
+        """Start consent: bind the flow to this browser, then send it to log in
+        at the hub; the vendor leg starts only for the user the link was
+        issued to (review H1, design §6)."""
         try:
             record = await b.coord.get_txn(txn)
+            if record is not None:
+                await b.coord.pop_txn(txn)          # one link starts one flow
         except CoordinationUnavailable as exc:
             return problem(503, "coordination-unavailable", str(exc))
-        if record is None or record["vendor"] != vendor:
+        if record is None or record["vendor"] != vendor or \
+                time.time() - record["created_at"] > AUTHORIZE_LINK_TTL_S:
             audit("broker.consent.fail", vendor=vendor, reason="bad_txn",
                   security_event=False)
             return problem(400, "invalid-transaction", "unknown or expired transaction")
-        spec = b.vendors.get_vendor(vendor)
-        if spec is None:
+        if b.vendors.get_vendor(vendor) is None:
             return problem(404, "unknown-vendor", vendor)
 
+        binding = secrets.token_urlsafe(32)
+        hub_state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(16)
+        verifier, challenge = pkce_pair()
+        try:
+            login_url = await b.hub_login.authorization_url(
+                state=hub_state, nonce=nonce, challenge=challenge,
+                login_hint=record["sub"], redirect_uri=hub_redirect)
+        except (HubUnavailable, HubLoginError) as exc:
+            audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                  reason="hub_unavailable", security_event=False)
+            return problem(503, "hub-unavailable", str(exc))
+        try:
+            await b.coord.put_state(hub_state, {
+                "leg": "hub", "txn_id": txn, "sub": record["sub"], "vendor": vendor,
+                "scopes": record["scopes"], "nonce": nonce, "pkce_verifier": verifier,
+                "binding": binding_hash(binding), "created_at": time.time()})
+        except CoordinationUnavailable as exc:
+            return problem(503, "coordination-unavailable", str(exc))
+        audit("broker.consent.start", sub=record["sub"], vendor=vendor)
+        resp = RedirectResponse(login_url, headers=BROWSER_HEADERS)
+        resp.set_cookie(binding_cookie(vendor), binding, max_age=cfg.txn_ttl_s,
+                        path="/v1/callback", httponly=True, samesite="lax",
+                        secure=cfg.broker_public_url.startswith("https://"))
+        return resp
+
+    async def hub_callback(request: Request):
+        """The hub login came back: same browser, same user, then the vendor leg."""
+        q = request.query_params
+        state = q.get("state", "")
+        try:
+            record = await b.coord.peek_state(state)
+            if record is None or record.get("leg") != "hub":
+                audit("broker.consent.fail", vendor=HUB_LEG,
+                      reason="state_invalid_or_replayed", security_event=True)
+                return page("Invalid or expired sign-in state.", 400)
+            vendor = record["vendor"]
+            if not bound_to_this_browser(request, record):
+                audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                      reason="browser_mismatch", leg="hub", security_event=True)
+                return page("This sign-in was started in a different browser.", 400)
+            iss = q.get("iss")
+            if iss is not None and iss != cfg.hub_issuer:
+                audit("broker.consent.fail", vendor=vendor, reason="iss_mismatch",
+                      leg="hub", security_event=True, iss_present=True)
+                return page("Issuer mismatch.", 400)
+            record = await b.coord.consume_state(state)
+            if record is None:
+                audit("broker.consent.fail", vendor=vendor,
+                      reason="state_invalid_or_replayed", security_event=True)
+                return page("Invalid or expired sign-in state.", 400)
+        except CoordinationUnavailable:
+            audit("broker.consent.fail", vendor=HUB_LEG, reason="coordination_unavailable",
+                  security_event=False)
+            return page("Coordination store unavailable.", 503)
+        if "error" in q:
+            audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                  reason=q.get("error"), leg="hub", security_event=False)
+            return page("Sign-in failed.", 400)
+        try:
+            claims = await b.hub_login.exchange(
+                code=q.get("code", ""), verifier=record["pkce_verifier"],
+                redirect_uri=hub_redirect, nonce=record["nonce"])
+        except (HubLoginError, HubUnavailable) as exc:
+            audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                  reason="hub_login_failed", error=str(exc), security_event=False)
+            return page("Sign-in failed.", 502)
+        if claims["sub"] != record["sub"]:
+            # The link was opened by someone other than the user it was
+            # issued to: forwarded to a victim, or stolen from one.
+            audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                  login_sub=claims["sub"], reason="login_sub_mismatch",
+                  security_event=True)
+            return page("This link was issued to a different user.", 403)
+        return await start_vendor_leg(record)
+
+    async def start_vendor_leg(record: dict):
+        vendor = record["vendor"]
         try:
             eps = await b.vendors.endpoints(vendor)
             creds = await b.vendors.read_client(vendor)
@@ -424,23 +540,22 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
                   reason="no_client_credential", security_event=False)
             return problem(503, "vendor-unavailable", f"no client credential for {vendor}")
-        verifier = secrets.token_urlsafe(48)
-        challenge = base64.urlsafe_b64encode(
-            hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        verifier, challenge = pkce_pair()
         state = secrets.token_urlsafe(32)
         try:
             await b.coord.put_state(state, {
-                "txn_id": txn, "sub": record["sub"], "vendor": vendor,
-                "pkce_verifier": verifier, "nonce": secrets.token_urlsafe(16),
+                "leg": "vendor", "txn_id": record["txn_id"], "sub": record["sub"],
+                "vendor": vendor, "pkce_verifier": verifier,
+                "nonce": secrets.token_urlsafe(16),
                 "issuer": eps.get("issuer"), "created_at": time.time(),
                 # RFC 9207 §2.4: if the AS advertises iss support, a callback
                 # that omits iss is a mix-up signal (see callback).
                 "iss_required": bool(
                     eps.get("authorization_response_iss_parameter_supported")),
+                "binding": record["binding"],        # same browser as the hub leg
                 "scopes": record["scopes"]})  # ≤ registry ceiling (§4.2)
         except CoordinationUnavailable as exc:
             return problem(503, "coordination-unavailable", str(exc))
-        audit("broker.consent.start", sub=record["sub"], vendor=vendor)
         params = {
             "client_id": creds["client_id"],
             "response_type": "code",
@@ -455,11 +570,14 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @app.get("/v1/callback/{vendor}")
     async def callback(vendor: str, request: Request):
+        if vendor == HUB_LEG:
+            return await hub_callback(request)
         q = request.query_params
         state = q.get("state", "")
         try:
             record = await b.coord.peek_state(state)
-            if record is None or record["vendor"] != vendor:
+            if record is None or record["vendor"] != vendor or \
+                    record.get("leg", "vendor") != "vendor":
                 # §4.3/§10: state replay or mismatch is a SECURITY EVENT.
                 audit("broker.consent.fail", vendor=vendor,
                       reason="state_invalid_or_replayed", security_event=True)
@@ -479,6 +597,12 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 audit("broker.consent.fail", vendor=vendor, reason="iss_mismatch",
                       security_event=True, iss_present=iss is not None)
                 return page("Issuer mismatch.", 400)
+            # Only the browser that started the flow may finish it (H1): a
+            # vendor authorization completed elsewhere never redeems a code.
+            if not bound_to_this_browser(request, record):
+                audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                      reason="browser_mismatch", leg="vendor", security_event=True)
+                return page("This connection was started in a different browser.", 400)
             # Single-use consumption BEFORE redemption: exactly one callback
             # per state ever reaches the token endpoint.
             record = await b.coord.consume_state(state)
@@ -486,7 +610,6 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 audit("broker.consent.fail", vendor=vendor,
                       reason="state_invalid_or_replayed", security_event=True)
                 return page("Invalid or expired authorization state.", 400)
-            await b.coord.pop_txn(record["txn_id"])
         except CoordinationUnavailable:
             audit("broker.consent.fail", vendor=vendor, reason="coordination_unavailable",
                   security_event=False)

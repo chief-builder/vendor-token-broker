@@ -14,7 +14,8 @@ class ConfigError(Exception):
     pass
 
 
-_REQUIRED = ("HUB_ISSUER", "HUB_JWKS_URI", "BROKER_PUBLIC_URL", "VAULT_ADDR", "REGISTRY_PATH")
+_REQUIRED = ("HUB_ISSUER", "HUB_JWKS_URI", "BROKER_PUBLIC_URL", "VAULT_ADDR", "REGISTRY_PATH",
+             "HUB_LOGIN_CLIENT_ID")
 
 # Asymmetric signature algorithms only: RS256 (PKCS#1 v1.5) and every HMAC
 # algorithm are outside the hub contract and can never be configured.
@@ -35,12 +36,15 @@ class Config:
     vault_addr: str
     vault_token: str
     registry_path: Path
+    # The broker's OIDC client at the hub, for the consent-leg login (H1).
+    hub_login_client_id: str
 
     # Contract pins: defaulted-compatible.
     hub_tier_audience: str = "mcp://tier/internal"
     hub_algorithms: tuple[str, ...] = ("PS256", "ES256")
     hub_contract_version: str = "1.0"
     admin_group: str = "mcp-platform-admin"
+    hub_login_client_secret: str = ""   # empty: public client (PKCE only)
     problem_urn_prefix: str = "urn:vendor-token-broker"
 
     # Timing knobs (design §§7-9: cache ≤60s, txn TTL 10 min, lock hard timeout).
@@ -126,6 +130,8 @@ class Config:
             vault_addr=env["VAULT_ADDR"],
             vault_token=vault_token,
             registry_path=Path(env["REGISTRY_PATH"]),
+            hub_login_client_id=env["HUB_LOGIN_CLIENT_ID"],
+            hub_login_client_secret=env.get("HUB_LOGIN_CLIENT_SECRET", ""),
             hub_tier_audience=env.get("HUB_TIER_AUDIENCE", cls.hub_tier_audience),
             hub_algorithms=tuple(
                 a.strip() for a in env.get("HUB_ALGORITHMS", "PS256,ES256").split(",") if a.strip()

@@ -134,17 +134,23 @@ def test_authorize_on_a_callback_on_b():
     revoke_at(LB, tok)
     r = resolve_at(A, tok)
     assert r.status_code == 404
-    # Drive the authorize leg on A...
+    # Authorize on A, finish the hub login on B, the vendor leg on A again:
+    # every leg's state is shared through redis (no affinity), and the one
+    # browser carries the binding cookie across replicas (cookies ignore ports).
+    browser = requests.Session()
     auth_a = r.json()["authorize_uri"].replace(":8400", ":8401")
-    to_vendor = requests.get(auth_a, allow_redirects=False, timeout=15)
-    assert to_vendor.status_code in (302, 307)
-    back = requests.get(to_vendor.headers["location"], allow_redirects=False,
-                        timeout=15)
+    to_hub = browser.get(auth_a, allow_redirects=False, timeout=15)
+    assert to_hub.status_code in (302, 307), to_hub.text
+    back_from_hub = browser.get(to_hub.headers["location"], allow_redirects=False, timeout=15)
+    assert ":8400/v1/callback/_hub" in back_from_hub.headers["location"]
+    to_vendor = browser.get(back_from_hub.headers["location"].replace(":8400", ":8402"),
+                            allow_redirects=False, timeout=15)
+    assert to_vendor.status_code in (302, 307), to_vendor.text
+    back = browser.get(to_vendor.headers["location"], allow_redirects=False, timeout=15)
     assert back.status_code in (302, 307)
     callback_url = back.headers["location"]
     assert ":8400" in callback_url  # redirect_uri is the LB, as the vendor saw it
-    # ...and the callback leg on B: the state must be consumable cross-replica.
-    page = requests.get(callback_url.replace(":8400", ":8402"), timeout=15)
+    page = browser.get(callback_url.replace(":8400", ":8401"), timeout=15)
     assert page.status_code == 200 and "Connected" in page.text, page.text
     assert resolve_at(B, tok).status_code == 200
     assert resolve_at(A, tok).status_code == 200

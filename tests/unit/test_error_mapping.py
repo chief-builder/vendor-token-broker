@@ -103,9 +103,12 @@ async def test_unknown_signing_key_is_still_401(method, path, kw):
 # ------------------------------------------------------------ authorize
 
 async def _authorize(h):
-    txn = await h.broker.new_txn("wf-user-1", VENDOR, ["issues:read"])
-    async with h.client() as c:
-        return await c.get(f"/v1/authorize/{VENDOR}", params={"txn": txn})
+    return await h.authorize()
+
+
+async def _through_hub_login(h):
+    """Vendor-leg setup now runs after the hub login returns."""
+    return await h.hub_callback(await h.authorize())
 
 
 @pytest.mark.parametrize("setup,title,reason", [
@@ -119,7 +122,7 @@ async def _authorize(h):
 async def test_authorize_dependency_failures(setup, title, reason, capsys):
     h = Harness()
     setup(h.vendors)
-    r = await _authorize(h)
+    r = await _through_hub_login(h)
     assert r.status_code == 503 and r.json()["title"] == title
     fails = audit_events(capsys, "broker.consent.fail")
     assert fails and fails[0]["reason"] == reason
