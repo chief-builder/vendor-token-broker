@@ -212,63 +212,123 @@ contract (see <code>docs/operations.md</code>).</p>
 <p>Request: <code>{"vendor", "sub"?, "min_ttl_s"?, "required_scopes"?}</code> + hub JWT.
 The JWT's <code>sub</code> is authoritative; a mismatched body <code>sub</code> is a 400.
 <code>required_scopes</code> is capped by the registry <code>scope_ceiling</code> (403
-<code>scope-exceeds-ceiling</code> beyond it).
+<code>scope-exceeds-ceiling</code> beyond it). An empty ceiling means scopes are
+governed vendor-side (e.g. GitHub App permissions): the broker then neither
+requests nor enforces <code>required_scopes</code> for that vendor.
 - <code>200 {access_token, expires_at, granted_scopes}</code> — live for ≥ <code>min_ttl_s</code>
-  (refresh performed inline if needed)
+  (refresh performed inline if needed). <code>min_ttl_s</code> (default 120) is
+  honored up to <code>REFRESH_BUFFER_S</code>; larger values are clamped and audited
+  (<code>min_ttl_clamped_from</code>). A token the vendor has just issued is served
+  even if it lives less than <code>min_ttl_s</code>, since refreshing again cannot
+  produce a longer-lived one (audited <code>short_ttl</code>). <code>granted_scopes</code> never
+  exceeds a non-empty ceiling; extra vendor scopes are dropped and audited
+  (<code>scope_widened</code>).
 - <code>404 needs-consent {authorize_uri}</code> — no entry or STALE entry
 - <code>409 needs-reconsent-scope {missing_scopes, authorize_uri}</code> — grant
   narrower than required; re-consent unions held+required (≤ ceiling)
 - <code>409 revoke-pending</code> — entry mid-revocation
-- <code>503 vendor-unavailable | vault-unavailable | coordination-unavailable</code> —
-  retriable; entry state unchanged</p>
+- <code>400 invalid-request</code> — malformed body (not a JSON object, missing
+  <code>vendor</code>, non-integer or negative <code>min_ttl_s</code>, non-string scopes)
+- <code>401 invalid-hub-token</code> — the hub JWT failed validation
+- <code>503 vendor-unavailable | vault-unavailable | coordination-unavailable |
+  hub-unavailable</code> — retriable; entry state unchanged. Problem <code>detail</code>
+  strings are fixed text and never carry backend hostnames or raw errors.</p>
 <h3>4.2 <code>GET /v1/authorize/{vendor}?txn=…</code></h3>
-<p>Builds the vendor authorization URL: <code>state</code> = opaque handle to a
-server-side record <code>{sub, vendor, nonce, pkce_verifier, issuer,
-created_at, scopes}</code> (TTL 10 min, single use); never a JWT, never
-decodable client-side. Scopes = min(tool requirement, registry ceiling).</p>
+<p>Starts consent (§6). The link is single use and valid for 5 minutes. The
+broker sets an HttpOnly, <code>SameSite=Lax</code> binding cookie (<code>Secure</code> behind
+https) and sends the browser to log in at the hub: OIDC authorization code
+with PKCE and a nonce, <code>login_hint</code> = the link's <code>sub</code>. The vendor leg is
+built only after that login succeeds as the same <code>sub</code>: its <code>state</code> is an
+opaque handle to a server-side record <code>{sub, vendor, nonce,
+pkce_verifier, issuer, created_at, scopes, binding}</code> (TTL 10 min, single
+use); never a JWT, never decodable client-side. Scopes = min(tool
+requirement, registry ceiling).</p>
 <h3>4.3 <code>GET /v1/callback/{vendor}?code&amp;state</code></h3>
-<p>Validates <code>state</code> (exists, unexpired, unconsumed, vendor match); validates
+<p><code>/v1/callback/_hub</code> is the hub-login return (<code>_</code> never appears in a vendor
+id): it checks the binding cookie and <code>iss</code>, consumes the login state,
+redeems the hub code, validates the ID token (signature from the hub
+JWKS, issuer, audience = the broker's client id, expiry, nonce), and
+requires its <code>sub</code> to equal the link's <code>sub</code> (403 and a security event
+otherwise) before redirecting to the vendor.</p>
+<p>For a vendor: validates <code>state</code> (exists, unexpired, unconsumed, vendor
+match, and issued for the vendor leg); requires the binding cookie
+(another browser: 400 and a security event, no code redeemed); validates
 RFC 9207 <code>iss</code> against the recorded issuer <strong>before</strong> consumption — a
 tampered callback never burns the state the legitimate one needs; consumes
 the state atomically <strong>before</strong> code redemption (exactly one callback per
 state ever reaches the token endpoint); exchanges code + PKCE verifier;
-writes the entry (fresh generation 1). A <code>state</code> replay or mismatch is a
+writes the entry (fresh generation 1). If the user's previous grant is
+parked <code>REVOKE_PENDING</code>, it is revoked and removed <em>before</em> the code is
+exchanged; if the vendor cannot revoke it yet, the consent fails and the
+user retries later. An ACTIVE or STALE predecessor is simply overwritten:
+revoking it could also revoke the new grant at vendors that revoke per
+user and client. A <code>state</code> replay or mismatch is a
 security alert, not just a 400.</p>
 <h3>4.4 <code>DELETE /v1/grants/{vendor}/{sub}</code></h3>
 <p>Self-service (sub must match the hub JWT). Order: RFC 7009 revoke at
-vendor → delete custody entry → audit. Vendor failure parks the entry
-<code>REVOKE_PENDING</code> (502; unusable for resolve; sweeper retries).</p>
+vendor → delete custody entry → audit, all under the entry's refresh lock
+so no refresh can rotate the pair in between (a pair that lands after a
+lost lock is revoked too). Vendor failure parks the entry
+<code>REVOKE_PENDING</code> (502; unusable for resolve; sweeper retries). A vendor
+with no revocation endpoint cannot revoke: the entry is deleted locally,
+audited <code>outcome: "unsupported"</code>, and the response adds
+<code>"vendor_revocation": "unsupported"</code> (the vendor-side grant lives until
+its own expiry).</p>
 <h3>4.5 <code>GET /v1/grants</code> · <code>GET /v1/admin/vendors/{vendor}</code></h3>
 <p>Self-service listing; authenticated admin read of a registry record
-(requires the <code>ADMIN_GROUP</code> group claim). Registry mutation is deliberately
+(requires <code>ADMIN_GROUP</code> in the hub JWT's <code>groups</code> claim, which must be a
+JSON array; a string claim never matches). Registry mutation is deliberately
 a reviewed git change validated against
 <code>schemas/vendor-registry.schema.json</code> — for this broker that is the
 stronger control, not a gap. Changing <code>scope_ceiling</code> requires
 token-contract-level sign-off.</p>
 <h2>5. Custody schema</h2>
-<pre><code>vendor-tokens/{vendor}/{sub}   {access_token, refresh_token, expires_at,
+<pre><code>vendor-tokens/{vendor}/sub-b64.{base64url(sub)}
+                               {access_token, refresh_token, expires_at,
                                 granted_scopes[], vendor_user_id,
                                 state: ACTIVE|REFRESHING|STALE|REVOKE_PENDING,
                                 refresh_generation, last_refresh_at, created_at}
 vendor-clients/{vendor}        {client_id, client_secret | private_key (+alg, kid)}
 </code></pre>
-<p>Bound to OpenBao/Vault KV v2 (<code>custody.py</code>); any backend satisfying the
-blueprint contract substitutes: versioned compare-and-swap on write,
+<p>Bound to OpenBao/Vault KV v2 (<code>custody.py</code>); any backend satisfying
+this contract substitutes: versioned compare-and-swap on write,
 fail-closed-distinguishably (outage ≠ absent), two mounts with two
 policies, encryption at rest under a dedicated key. <code>refresh_generation</code>
 is the monotonic counter behind §8's race defense; the KV-v2 version is
 the CAS handle.</p>
+<p>Token shapes: a vendor response with neither <code>expires_in</code> nor a
+<code>refresh_token</code> is a non-expiring token; it is stored with a far-future
+<code>expires_at</code> (10 years) and never refreshed. A refreshable token that omits
+<code>expires_in</code> is assumed to last 8 hours. An entry with no refresh token
+that reaches its refresh buffer goes STALE without a vendor call (the user
+re-consents); it is audited <code>broker.stale</code> but does not count toward the
+mass-STALE page.</p>
 <h2>6. Consent dance (first-time)</h2>
 <p>(Full sequence diagram: <a href="#lifecycle"><code>token-lifecycle.md</code></a> §1.)</p>
 <p>resolve → 404 + <code>authorize_uri(txn)</code> → browser →
-<code>/v1/authorize/{vendor}</code> (PKCE verifier + single-use <code>state</code> created,
-TTL 10 min) → vendor AS consent → <code>/v1/callback/{vendor}?code&amp;state&amp;iss</code> →
-state + iss validated, state consumed, code redeemed server-side →
+<code>/v1/authorize/{vendor}</code> (link used up, binding cookie set) → hub login →
+<code>/v1/callback/_hub</code> (same browser, logged-in <code>sub</code> == link <code>sub</code>) →
+vendor AS consent → <code>/v1/callback/{vendor}?code&amp;state&amp;iss</code> → binding,
+state and iss validated, state consumed, code redeemed server-side →
 entry written <code>ACTIVE gen=1</code> → "connected" page → retry resolves 200.</p>
-<p>Properties: the PKCE verifier and <code>state</code> never leave the broker in
-decodable form; <code>state</code> binds the callback to the initiating <code>sub</code> (a
-stolen callback URL cannot attach someone else's vendor account); scopes
-are capped by the registry ceiling regardless of what the tool asked for.</p>
+<p>Properties: the PKCE verifiers and <code>state</code>s never leave the broker in
+decodable form; scopes are capped by the registry ceiling regardless of
+what the tool asked for; and consent is bound to both the <strong>user</strong> and the
+<strong>browser</strong>:</p>
+<ul>
+<li>The hub login proves the browser belongs to the user the link was issued
+  for. A link forwarded to someone else, or stolen from its user, is
+  refused before the vendor is ever involved. (Before 1.1, anyone holding
+  an authorize link could complete it, so an attacker could send their own
+  link to a victim and have the victim's vendor account stored under the
+  attacker's <code>sub</code>.)</li>
+<li>The binding cookie ties every leg to the browser that opened the link,
+  so a forwarded hub-login callback (login CSRF) or a vendor authorization
+  URL completed elsewhere is refused. The user check alone would not stop
+  an attacker who forwards the callback of their own, successful login.</li>
+<li>The broker is an OIDC <em>relying party</em> of the hub here: it consumes a hub
+  ID token and still issues nothing (§1).</li>
+</ul>
 <h2>7. Steady-state resolve</h2>
 <p>(Sequence diagrams: <a href="#lifecycle"><code>token-lifecycle.md</code></a> §2 cache hit, §3 lazy refresh.)</p>
 <p>Per-replica in-memory cache (TTL ≤ 60s, also the §10 outage grace cap) →
@@ -372,7 +432,8 @@ org-level uninstall and pages (<code>broker.stale.mass</code>).</p>
 CI). Token material never logged, never in errors, never in traces
 (token-in-log grep in CI). Per-user entries only — no shared vendor
 service accounts through this path. Registry scope ceilings enforced at
-authorize time. Callback host on the private tier only. The consent dance
+authorize time. Consent is bound to the hub-authenticated user and to the
+initiating browser (§6). Callback host on the private tier only. The consent dance
 (CSRF, mix-up, code injection per RFC 9700 §4) is in annual pen-test
 scope. The broker stores credentials, not business data; DLP at the
 egress gateway (not the broker) is the control preventing sensitive data
@@ -382,7 +443,8 @@ reaching vendors.</p>
 Vocabulary (wire-frozen): <code>broker.resolve</code> (decision + path),
 <code>broker.consent.start|complete|fail</code>, <code>broker.refresh</code> (generation
 transition), <code>broker.stale</code>, <code>broker.stale.mass</code>, <code>broker.revoke</code>,
-<code>broker.admin.deny</code>, <code>broker.sweep.error</code>. Every vendor-side action is
+<code>broker.admin.deny</code>, <code>broker.sweep.error</code>, and (added in 1.1)
+<code>broker.custody.renew_failed</code>. Every vendor-side action is
 joinable: hub <code>jti</code> → resolve → gateway record → vendor audit log via
 <code>vendor_user_id</code>.</p>
 <h2>12. SLOs and capacity</h2>
@@ -561,6 +623,9 @@ externally (<code>/v1/grants</code> reports it as <code>ACTIVE</code>).</p>
     box rgba(99,102,241,0.20) Broker
         participant B as Broker
     end
+    box rgba(148,163,184,0.14) Hub
+        participant H as Hub (IdP)
+    end
     box rgba(234,179,8,0.16) Vendor
         participant V as Vendor AS
     end
@@ -572,15 +637,23 @@ externally (<code>/v1/grants</code> reports it as <code>ACTIVE</code>).</p>
     Note over B: hub JWT re-validated:&lt;br/&gt;PS256/ES256 pinned, issuer,&lt;br/&gt;exactly one tier audience, mcp_contract
     B-&gt;&gt;K: read entry
     K--&gt;&gt;B: not found
-    B--&gt;&gt;C: 404 needs-consent + authorize_uri(txn, TTL 10 min)
+    B--&gt;&gt;C: 404 needs-consent + authorize_uri(txn)
     C-&gt;&gt;UA: open authorize_uri
     UA-&gt;&gt;B: GET /v1/authorize/{vendor}?txn=…
-    Note over B: mint PKCE verifier (S256) +&lt;br/&gt;single-use state {sub, vendor, issuer,&lt;br/&gt;scopes ≤ registry ceiling} — record whether&lt;br/&gt;the AS advertises RFC 9207 iss
+    Note over B: link used up (single use, ≤ 5 min old)&lt;br/&gt;set binding cookie (HttpOnly, SameSite=Lax)
+    B--&gt;&gt;UA: 307 → hub login (PKCE, nonce, login_hint=sub)
+    UA-&gt;&gt;H: user signs in
+    H--&gt;&gt;UA: 302 → /v1/callback/_hub?code&amp;state
+    UA-&gt;&gt;B: GET /v1/callback/_hub (with binding cookie)
+    B-&gt;&gt;H: POST /token (code + PKCE verifier)
+    H--&gt;&gt;B: ID token
+    Note over B: ID token: signature, iss, aud, exp, nonce&lt;br/&gt;logged-in sub MUST equal the link's sub&lt;br/&gt;(else 403 + security event, no vendor leg)
+    Note over B: mint vendor PKCE verifier (S256) +&lt;br/&gt;single-use state {sub, vendor, issuer,&lt;br/&gt;scopes ≤ registry ceiling, binding} — record&lt;br/&gt;whether the AS advertises RFC 9207 iss
     B--&gt;&gt;UA: 307 → vendor authorize&lt;br/&gt;(client_id, code_challenge, state)
     UA-&gt;&gt;V: user consents as themself
     V--&gt;&gt;UA: 302 → /v1/callback?code&amp;state&amp;iss
     UA-&gt;&gt;B: GET /v1/callback/{vendor}?code&amp;state&amp;iss
-    Note over B: 1. state exists, unconsumed, vendor matches&lt;br/&gt;2. iss == recorded issuer (strict string —&lt;br/&gt;   omission = mix-up if advertised)&lt;br/&gt;3. consume state — single use, BEFORE redeem
+    Note over B: 1. state exists, unconsumed, vendor matches&lt;br/&gt;2. iss == recorded issuer (strict string —&lt;br/&gt;   omission = mix-up if advertised)&lt;br/&gt;3. binding cookie = the starting browser&lt;br/&gt;4. consume state — single use, BEFORE redeem
     B-&gt;&gt;V: POST /token (code + PKCE verifier + client auth¹)
     V--&gt;&gt;B: access token + refresh token (rotating)
     B-&gt;&gt;V: GET userinfo → vendor_user_id
@@ -592,7 +665,9 @@ externally (<code>/v1/grants</code> reports it as <code>ACTIVE</code>).</p>
 <p>¹ Client auth per registry <code>token_endpoint_auth_method</code>:
 <code>client_secret_post</code>, <code>client_secret_basic</code>, or <code>private_key_jwt</code>
 (RFC 7523 assertion signed with the key from <code>vendor-clients/{vendor}</code>).</p>
-<p>Defenses in this diagram: the code is redeemed server-side only; the PKCE
+<p>Defenses in this diagram: only the user the link was issued for, in the
+browser that opened it, can complete consent (hub login + binding cookie);
+the code is redeemed server-side only; the PKCE
 verifier and state never leave the broker in decodable form; a replayed
 callback (state already consumed) is a 400 <strong>and</strong> a
 <code>security_event: true</code> audit line; a tampered or missing <code>iss</code> is rejected
@@ -1049,17 +1124,30 @@ per-user</em>: no grant → no token, only a one-time consent transaction
 (<code>txn</code>, TTL 10 min).</p>
 <hr />
 <h2>Test 3 — the consent dance (terminal and real browser)</h2>
-<p>Follow the <code>authorize_uri</code>. In a terminal: <code>curl -sL "&lt;authorize_uri&gt;"</code>.
-In a real browser (what an actual user experiences):</p>
+<p>Follow the <code>authorize_uri</code>. In a terminal, with a cookie jar (the flow is
+bound to the browser that starts it, so cookies must persist across the
+redirects): <code>curl -sL -c /tmp/jar -b /tmp/jar "&lt;authorize_uri&gt;"</code>. In a real
+browser (what an actual user experiences):</p>
 <pre><code class="language-sh">curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
      -H &quot;Authorization: Bearer $(cat /tmp/tok)&quot; -o /tmp/challenge.json
 open &quot;$(sed 's/.*&quot;authorize_uri&quot;:&quot;\([^&quot;]*\)&quot;.*/\1/' /tmp/challenge.json)&quot;
 </code></pre>
-<p>Observed in the browser: the address bar travels
-<code>localhost:8300/v1/authorize/mockhub?txn=…</code> →
-<code>localhost:8310/authorize?...</code> → and settles on</p>
-<pre><code>localhost:8300/v1/callback/mockhub?code=mock-code-…&amp;state=3g2Ok-…&amp;iss=http%3A%2F%2Fmock-vendor%3A8310
+<p>Observed (v1.1, captured with <code>curl -sL -D -</code>; codes, states, nonces and
+the cookie value elided): the browser travels broker → hub login → broker →
+vendor → broker:</p>
+<pre><code>307  location: http://localhost:8320/authorize?client_id=vtb-broker&amp;response_type=code
+       &amp;scope=openid&amp;redirect_uri=http%3A%2F%2Flocalhost%3A8300%2Fv1%2Fcallback%2F_hub
+       &amp;state=…&amp;nonce=…&amp;code_challenge=…&amp;code_challenge_method=S256&amp;login_hint=wf-smoke
+     set-cookie: vtb_consent_mockhub=…; HttpOnly; Max-Age=600; Path=/v1/callback; SameSite=lax
+307  location: http://localhost:8300/v1/callback/_hub?code=…&amp;state=…&amp;iss=http%3A%2F%2Fhub-stub%3A8320
+307  location: http://localhost:8310/authorize?client_id=mcp-lab-broker&amp;response_type=code
+       &amp;redirect_uri=http%3A%2F%2Flocalhost%3A8300%2Fv1%2Fcallback%2Fmockhub
+       &amp;scope=issues%3Aread+issues%3Awrite&amp;state=…&amp;code_challenge=…&amp;code_challenge_method=S256
+307  location: http://localhost:8300/v1/callback/mockhub?code=…&amp;state=…&amp;iss=http%3A%2F%2Fmock-vendor%3A8310
+200  &lt;h1&gt;Connected — return to your client.&lt;/h1&gt;
 </code></pre>
+<p>The hub stub signs the browser in automatically as the <code>login_hint</code>; a real
+hub shows its own sign-in page (or reuses an existing session).</p>
 <p>with the page <strong>"Connected — return to your client."</strong> The broker log
 shows the matching audit pair:</p>
 <pre><code class="language-json">{&quot;audit&quot;: &quot;broker.consent.start&quot;,    &quot;sub&quot;: &quot;wf-smoke&quot;, &quot;vendor&quot;: &quot;mockhub&quot;}
@@ -1073,6 +1161,9 @@ shows the matching audit pair:</p>
     box rgba(99,102,241,0.20) Broker
         participant B as Broker
     end
+    box rgba(148,163,184,0.14) Hub
+        participant H as Hub stub (IdP)
+    end
     box rgba(234,179,8,0.16) Vendor
         participant M as Mock vendor AS
     end
@@ -1080,12 +1171,19 @@ shows the matching audit pair:</p>
         participant V as OpenBao
     end
     UA-&gt;&gt;B: GET /v1/authorize/mockhub?txn=…
-    Note over B: create single-use state record&lt;br/&gt;{sub, vendor, PKCE verifier, issuer,&lt;br/&gt;scopes ≤ registry ceiling}, TTL 10 min
+    Note over B: link used up (single use, ≤ 5 min)&lt;br/&gt;set binding cookie for this browser
+    B--&gt;&gt;UA: 307 → hub login (PKCE, nonce, login_hint)
+    UA-&gt;&gt;H: sign in (auto: as the login_hint)
+    H--&gt;&gt;UA: 307 → /v1/callback/_hub (code, state, iss)
+    UA-&gt;&gt;B: GET /v1/callback/_hub (binding cookie)
+    B-&gt;&gt;H: POST /token (code + PKCE verifier)
+    H--&gt;&gt;B: ID token
+    Note over B: ID token valid and its sub == the link's sub&lt;br/&gt;create single-use vendor state record&lt;br/&gt;{sub, vendor, PKCE verifier, issuer,&lt;br/&gt;scopes ≤ registry ceiling, binding}, TTL 10 min
     B--&gt;&gt;UA: 307 → vendor authorize&lt;br/&gt;(client_id, code_challenge S256, state)
     UA-&gt;&gt;M: GET /authorize (auto-consent as mock-4217)
     M--&gt;&gt;UA: 302 → broker callback (code, state, iss)
     UA-&gt;&gt;B: GET /v1/callback/mockhub?code&amp;state&amp;iss
-    Note over B: validate state (exists, unconsumed,&lt;br/&gt;vendor match) → validate RFC 9207 iss&lt;br/&gt;→ consume state (single-use)&lt;br/&gt;→ THEN redeem code
+    Note over B: validate state (exists, unconsumed,&lt;br/&gt;vendor match) → validate RFC 9207 iss&lt;br/&gt;→ binding cookie = this browser&lt;br/&gt;→ consume state (single-use)&lt;br/&gt;→ THEN redeem code
     B-&gt;&gt;M: POST /token (code + PKCE verifier + client auth)
     M--&gt;&gt;B: access token (60s) + rotating refresh token
     B-&gt;&gt;V: write entry state=ACTIVE gen=1
@@ -1101,8 +1199,14 @@ shows the matching audit pair:</p>
 <p><strong>What this proves:</strong>
 - The PKCE verifier and <code>state</code> never leave the broker in decodable form;
   the vendor <code>code</code> is redeemed server-side only.
-- <code>state</code> binds the callback to the initiating <code>sub</code> — a stolen callback
-  URL cannot attach someone else's vendor account to your identity.
+- Consent is bound to the <strong>user</strong> (the hub login must be the link's <code>sub</code>)
+  and to the <strong>browser</strong> (the binding cookie). A link forwarded to or stolen
+  from someone else is refused before the vendor is involved
+  (<code>reason: login_sub_mismatch</code>), and a leg finished in another browser is
+  refused before any code is redeemed (<code>reason: browser_mismatch</code>). Both
+  are <code>security_event: true</code> audit lines.
+- The authorize link is single use: opening it again returns 400
+  <code>invalid-transaction</code>.
 - The RFC 9207 <code>iss</code> in the callback URL is string-compared against the
   issuer recorded at transaction creation <em>before</em> the code is redeemed
   (mix-up defense). An AS that advertises <code>iss</code> support but omits it is
