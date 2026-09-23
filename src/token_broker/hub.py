@@ -7,6 +7,7 @@ forbidden). Contract shape — the pinned contract version and exactly one
 tier audience — is enforced here so a malformed or cross-tier token never
 reaches the resolve path.
 """
+import asyncio
 import logging
 
 import jwt
@@ -34,6 +35,12 @@ class HubValidator:
         # the hub removed from its JWKS would stay trusted until restart. The
         # JWK-set cache (300s lifespan) already avoids per-request fetches.
         self._jwks = jwks_client or PyJWKClient(cfg.hub_jwks_uri)
+
+    async def verify(self, authorization: str | None) -> dict:
+        """Async entry point for the routes: validate() in a worker thread,
+        because a JWKS fetch is a blocking HTTP call (up to the client
+        timeout) that must never stall the event loop."""
+        return await asyncio.to_thread(self.validate, authorization)
 
     def validate(self, authorization: str | None) -> dict:
         """Return verified claims of the Bearer hub JWT. Raises HubAuthError for a

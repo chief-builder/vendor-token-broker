@@ -17,24 +17,34 @@ from .custody import CustodyUnavailable
 
 
 async def sweep_once(b) -> None:
-    """One maintenance pass over every enabled vendor's entries."""
+    """One maintenance pass over at most SWEEP_MAX_ENTRIES entries, resuming
+    where the previous pass stopped, so the cost of a pass is bounded and
+    every entry is still visited over consecutive passes. Entries the budget
+    skips this pass are still refreshed lazily by resolve."""
     await b.coord.cleanup()
+    keys: list[tuple[str, str]] = []
     for vendor in b.vendors.registry():
         if b.vendors.get_vendor(vendor) is None:
             continue
         try:
-            subs = b.custody.list_subjects(vendor)
+            subs = await b.custody.list_subjects(vendor)
         except CustodyUnavailable:
             continue
-        for sub in subs:
-            try:
-                await sweep_entry(b, vendor, sub)
-            except Exception as exc:  # a bad entry must never kill the loop
-                audit("broker.sweep.error", vendor=vendor, sub=sub, error=str(exc))
+        keys.extend((vendor, sub) for sub in subs)
+    if not keys:
+        return
+    start = b.sweep_cursor % len(keys)
+    batch = (keys[start:] + keys[:start])[:b.cfg.sweep_max_entries]
+    b.sweep_cursor = start + len(batch)
+    for vendor, sub in batch:
+        try:
+            await sweep_entry(b, vendor, sub)
+        except Exception as exc:  # a bad entry must never kill the loop
+            audit("broker.sweep.error", vendor=vendor, sub=sub, error=str(exc))
 
 
 async def sweep_entry(b, vendor: str, sub: str) -> None:
-    found = b.custody.read(vendor, sub)
+    found = await b.custody.read(vendor, sub)
     if found is None:
         return
     entry, ver = found
@@ -46,7 +56,7 @@ async def sweep_entry(b, vendor: str, sub: str) -> None:
             outcome = "unsupported"   # nothing to retry: local delete only
         except vendors_mod.VendorUnavailable:
             return  # still down; retry next pass
-        b.custody.delete(vendor, sub)
+        await b.custody.delete(vendor, sub)
         await b.invalidate(vendor, sub)
         audit("broker.revoke", sub=sub, vendor=vendor, outcome=outcome,
               path="sweep-retry")
@@ -62,7 +72,7 @@ async def sweep_entry(b, vendor: str, sub: str) -> None:
     if lock_token is None:
         return  # a resolve is already refreshing this entry
     try:
-        found = b.custody.read(vendor, sub)
+        found = await b.custody.read(vendor, sub)
         if found is None:
             return
         entry, ver = found

@@ -75,7 +75,7 @@ class FakeVendors:
                 "issuer": "http://as.test",
                 "authorization_response_iss_parameter_supported": True}
 
-    def read_client(self, vendor: str) -> dict | None:
+    async def read_client(self, vendor: str) -> dict | None:
         if self.client_error is not None:
             raise self.client_error
         return self.client
@@ -135,10 +135,10 @@ class Harness:
         return mint_hub_token(hub_key(), "PS256", self.cfg, sub=sub, **claims)
 
     def put(self, sub: str = "wf-user-1", **entry) -> None:
-        self.custody.write(VENDOR, sub, make_entry(**entry))
+        self.custody.write_now(VENDOR, sub, make_entry(**entry))
 
     def stored(self, sub: str = "wf-user-1") -> dict | None:
-        found = self.custody.read(VENDOR, sub)
+        found = self.custody.read_now(VENDOR, sub)
         return found[0] if found else None
 
     def client(self) -> AsyncClient:

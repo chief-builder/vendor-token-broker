@@ -82,7 +82,7 @@ async def test_entry_already_locked_is_skipped():
 
 async def test_bad_entry_is_audited_and_does_not_stop_the_pass(capsys):
     h = Harness()
-    h.custody.write(VENDOR, "bad", {"state": "ACTIVE"})     # malformed entry
+    h.custody.write_now(VENDOR, "bad", {"state": "ACTIVE"})     # malformed entry
     h.put(sub="good", expires_at=time.time() + 600)
     await sweeper.sweep_once(h.broker)
     errors = audit_events(capsys, "broker.sweep.error")

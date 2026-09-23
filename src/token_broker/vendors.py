@@ -83,29 +83,29 @@ class VendorClient:
             self._metadata_cache[vendor] = meta
         return self._metadata_cache[vendor]
 
-    def read_client(self, vendor: str) -> dict | None:
-        return self._custody.read_client(vendor)
+    async def read_client(self, vendor: str) -> dict | None:
+        return await self._custody.read_client(vendor)
 
-    def _creds(self, vendor: str) -> dict:
-        creds = self.read_client(vendor)
+    async def _creds(self, vendor: str) -> dict:
+        creds = await self.read_client(vendor)
         if not creds:
             raise VendorUnavailable(f"no client credential for {vendor} in custody")
         return creds
 
-    def _auth_for(self, vendor: str, endpoint_aud: str) -> tuple[dict, tuple | None]:
+    async def _auth_for(self, vendor: str, endpoint_aud: str) -> tuple[dict, tuple | None]:
         """Form fields + basic-auth tuple per the registry's
         token_endpoint_auth_method (design §3; client_auth module)."""
         method = self._registry[vendor].get(
             "token_endpoint_auth_method", "client_secret_post")
         try:
-            return token_request_auth(method, self._creds(vendor), endpoint_aud)
+            return token_request_auth(method, await self._creds(vendor), endpoint_aud)
         except ClientAuthError as exc:
             raise VendorUnavailable(str(exc)) from exc
 
     async def _token_request(self, vendor: str, form: dict) -> dict:
         """POST to the vendor token endpoint with client auth; classify failures."""
         eps = await self.endpoints(vendor)
-        auth_form, basic = self._auth_for(vendor, eps["token_endpoint"])
+        auth_form, basic = await self._auth_for(vendor, eps["token_endpoint"])
         form = {**form, **auth_form}
         try:
             async with httpx.AsyncClient(timeout=10) as c:
@@ -179,7 +179,7 @@ class VendorClient:
         try:
             async with httpx.AsyncClient(timeout=10) as c:
                 if kind == "github_grant":
-                    creds = self._creds(vendor)
+                    creds = await self._creds(vendor)
                     r = await c.request(
                         "DELETE",
                         f"https://api.github.com/applications/{creds['client_id']}/grant",
@@ -194,7 +194,7 @@ class VendorClient:
                         raise RevocationUnsupported(f"{vendor} has no revocation endpoint")
                     # The assertion audience stays the token endpoint (RFC 7523
                     # accepts any identifier of the AS).
-                    auth_form, basic = self._auth_for(vendor, eps["token_endpoint"])
+                    auth_form, basic = await self._auth_for(vendor, eps["token_endpoint"])
                     r = await c.post(eps["revocation_endpoint"], auth=basic,
                                      data={"token": entry["refresh_token"],
                                            "token_type_hint": "refresh_token",

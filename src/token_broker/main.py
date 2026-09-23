@@ -95,6 +95,7 @@ class Broker:
         self.vendors = vendors or VendorClient(cfg, self.custody)
         self.coord = coord or make_coordination(cfg, self.instance_id)
         self.cache: dict[tuple[str, str], tuple[dict, int, float]] = {}
+        self.sweep_cursor = 0   # where the next budgeted sweep pass resumes
 
     async def new_txn(self, sub: str, vendor: str, scopes: list[str]) -> str:
         txn_id = secrets.token_urlsafe(24)
@@ -111,12 +112,12 @@ class Broker:
             404, "needs-consent", f"no usable grant for {vendor}",
             authorize_uri=f"{self.cfg.broker_public_url}/v1/authorize/{vendor}?txn={txn}")
 
-    def get_entry(self, vendor: str, sub: str):
+    async def get_entry(self, vendor: str, sub: str):
         key = (vendor, sub)
         cached = self.cache.get(key)
         if cached and time.time() - cached[2] < self.cfg.cache_ttl_s:
             return cached[0], cached[1]
-        found = self.custody.read(vendor, sub)
+        found = await self.custody.read(vendor, sub)
         if found is None:
             self.cache.pop(key, None)
             return None
@@ -177,11 +178,11 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
     app.state.broker = b
     problem = b.problem
 
-    def hub_claims(request: Request) -> tuple[dict | None, JSONResponse | None]:
+    async def hub_claims(request: Request) -> tuple[dict | None, JSONResponse | None]:
         """Validate the caller's hub JWT: (claims, None) or (None, problem).
         A bad token is 401; an unreachable hub JWKS is a retriable 503."""
         try:
-            return b.hub.validate(request.headers.get("authorization")), None
+            return await b.hub.verify(request.headers.get("authorization")), None
         except HubUnavailable as exc:
             return None, problem(503, "hub-unavailable", str(exc))
         except HubAuthError as exc:
@@ -193,7 +194,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @app.post("/v1/tokens/resolve")
     async def resolve(request: Request):
-        claims, denied = hub_claims(request)
+        claims, denied = await hub_claims(request)
         if denied is not None:
             return denied
         body, invalid = parse_resolve_body(await request.body())
@@ -249,7 +250,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 authorize_uri=f"{cfg.broker_public_url}/v1/authorize/{vendor}?txn={txn}")
 
         try:
-            found = b.get_entry(vendor, sub)
+            found = await b.get_entry(vendor, sub)
             if found is None:
                 _audit("needs-consent", "absent")
                 return await b.needs_consent(sub, vendor, spec, want)
@@ -278,7 +279,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 serve without the lock if another replica's refresh already
                 advanced the generation (ADR-0001)."""
                 b.drop_cache(vendor, sub)
-                f = b.get_entry(vendor, sub)
+                f = await b.get_entry(vendor, sub)
                 if f and f[0]["state"] == "ACTIVE" and \
                         f[0]["refresh_generation"] != gen_before and \
                         f[0]["expires_at"] - time.time() >= min_ttl:
@@ -294,7 +295,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             if lock_token is None:
                 # Lock-holder death path: re-read and serve if usable (§8 rules).
                 b.drop_cache(vendor, sub)
-                found = b.get_entry(vendor, sub)
+                found = await b.get_entry(vendor, sub)
                 if found and found[0]["state"] == "ACTIVE" and \
                         found[0]["expires_at"] - time.time() >= min_ttl:
                     _audit("allow", "lock-timeout-reread")
@@ -302,7 +303,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 return problem(503, "vendor-unavailable", "refresh lock timeout")
             try:
                 b.drop_cache(vendor, sub)
-                found = b.get_entry(vendor, sub)
+                found = await b.get_entry(vendor, sub)
                 if found is None:
                     _audit("needs-consent", "absent")
                     return await b.needs_consent(sub, vendor, spec, want)
@@ -340,7 +341,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                     _audit("deny", "vendor-unavailable", error=outcome.error)
                     return problem(503, "vendor-unavailable", outcome.error)
                 # CasLost: another writer won (§8) — serve theirs, never ours.
-                found = b.get_entry(vendor, sub)
+                found = await b.get_entry(vendor, sub)
                 _audit("allow", "cas-lost")
                 if found and found[0]["state"] == "ACTIVE":
                     return ok_response(found[0])
@@ -372,7 +373,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
         try:
             eps = await b.vendors.endpoints(vendor)
-            creds = b.vendors.read_client(vendor)
+            creds = await b.vendors.read_client(vendor)
         except vendors_mod.VendorUnavailable as exc:
             audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
                   reason="vendor_unavailable", security_event=False)
@@ -471,7 +472,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
         vendor_uid = await b.vendors.vendor_user_id(vendor, tok["access_token"])
         entry = entry_from_token_response(tok, 1, vendor_uid, record["scopes"])
         try:
-            b.custody.write(vendor, record["sub"], entry, cas=None)  # re-consent: gen=1
+            await b.custody.write(vendor, record["sub"], entry, cas=None)  # re-consent: gen=1
         except CustodyUnavailable:
             # Unstorable: revoke the fresh grant at the vendor (best effort) so
             # it is not orphaned there, then let the user retry the dance.
@@ -491,7 +492,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @app.delete("/v1/grants/{vendor}/{sub}")
     async def delete_grant(vendor: str, sub: str, request: Request):
-        claims, denied = hub_claims(request)
+        claims, denied = await hub_claims(request)
         if denied is not None:
             return denied
         if claims["sub"] != sub:
@@ -499,7 +500,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
         if b.vendors.get_vendor(vendor) is None:
             return problem(404, "unknown-vendor", vendor)
         try:
-            found = b.custody.read(vendor, sub)
+            found = await b.custody.read(vendor, sub)
             if found is None:
                 return problem(404, "no-grant", "nothing to revoke")
             entry, ver = found
@@ -514,11 +515,11 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 # pair (its RT is the one the sweeper must revoke).
                 for _ in range(2):
                     try:
-                        b.custody.write(vendor, sub, {**entry, "state": "REVOKE_PENDING"},
+                        await b.custody.write(vendor, sub, {**entry, "state": "REVOKE_PENDING"},
                                         cas=ver)
                         break
                     except CasConflict:
-                        found = b.custody.read(vendor, sub)
+                        found = await b.custody.read(vendor, sub)
                         if found is None:
                             return problem(404, "no-grant", "nothing to revoke")
                         entry, ver = found
@@ -529,7 +530,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 audit("broker.revoke", sub=sub, vendor=vendor, outcome="pending",
                       error=str(exc))
                 return problem(502, "revoke-pending", "vendor revocation failed; will retry")
-            b.custody.delete(vendor, sub)
+            await b.custody.delete(vendor, sub)
             await b.invalidate(vendor, sub)
         except CustodyUnavailable as exc:
             return problem(503, "vault-unavailable", str(exc))
@@ -541,7 +542,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @app.get("/v1/grants")
     async def list_grants(request: Request):
-        claims, denied = hub_claims(request)
+        claims, denied = await hub_claims(request)
         if denied is not None:
             return denied
         grants = []
@@ -549,7 +550,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             if b.vendors.get_vendor(vendor) is None:
                 continue
             try:
-                found = b.custody.read(vendor, claims["sub"])
+                found = await b.custody.read(vendor, claims["sub"])
             except CustodyUnavailable as exc:
                 return problem(503, "vault-unavailable", str(exc))
             if found:
@@ -565,7 +566,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @app.get("/v1/admin/vendors/{vendor}")
     async def vendor_record(vendor: str, request: Request):
-        claims, denied = hub_claims(request)
+        claims, denied = await hub_claims(request)
         if denied is not None:
             return denied
         groups = claims.get("groups")

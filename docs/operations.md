@@ -49,6 +49,7 @@ Required (startup aborts listing every missing name):
 | `PROACTIVE_REFRESH_S` | `900` | Sweeper refresh band upper edge |
 | `CACHE_TTL_S` | `60` | Per-replica cache and outage grace cap |
 | `SWEEP_INTERVAL_S` | `60` | `0` disables the sweeper. Every other timing knob must be ≥ 1 (`CACHE_TTL_S` may be `0`: no cache) |
+| `SWEEP_MAX_ENTRIES` | `500` | Entries examined per sweep pass; the next pass resumes where this one stopped |
 | `LOCK_TIMEOUT_S` / `LOCK_TTL_MS` | `10` / `15000` | Waiter budget / redis lock TTL |
 | `REFRESHING_TTL_S` | `30` | Abandoned-marker takeover threshold |
 | `MASS_STALE_THRESHOLD` / `MASS_STALE_WINDOW_S` | `3` / `60` | Uninstall-anomaly page |
@@ -115,6 +116,16 @@ Frozen audit event names: `broker.resolve`, `broker.consent.start`,
   never hold a stale token pair (CAS).
 - **Sweeper**: leader-lease holder only (redis profile). `broker.sweep.error`
   events carry the vendor/sub that failed; a bad entry never kills the loop.
+  Each pass lists every vendor's entries, then examines at most
+  `SWEEP_MAX_ENTRIES` of them, resuming from where the previous pass
+  stopped. A full cycle over all entries fits inside the 10-minute proactive
+  band while `total entries ≤ SWEEP_MAX_ENTRIES × 600 / SWEEP_INTERVAL_S`
+  (5,000 with the defaults); beyond that, some entries miss the proactive
+  refresh and are refreshed lazily on their next resolve instead.
+- **Blocking I/O**: custody (hvac) and hub JWKS calls run in worker threads,
+  never on the event loop. A frozen custody backend therefore holds one
+  thread per in-flight uncached request for up to `VAULT_TIMEOUT_S`, while
+  cache hits and `/healthz` keep answering.
 
 ## Multi-replica deployment
 

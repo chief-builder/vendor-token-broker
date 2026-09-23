@@ -29,7 +29,9 @@ def make_config(**overrides) -> Config:
 
 
 class MemoryCustody:
-    """Dict-backed custody with KV-v2 CAS semantics, for unit tests."""
+    """Dict-backed custody with KV-v2 CAS semantics, for unit tests. The
+    async methods are the Custody interface; the *_now twins let test setup
+    and synchronous hooks touch the same store directly."""
 
     def __init__(self):
         self.entries: dict[tuple[str, str], tuple[dict, int]] = {}
@@ -41,12 +43,12 @@ class MemoryCustody:
             from token_broker.custody import CustodyUnavailable
             raise CustodyUnavailable()
 
-    def read(self, vendor, sub):
+    def read_now(self, vendor, sub):
         self._check()
         found = self.entries.get((vendor, sub))
         return (dict(found[0]), found[1]) if found else None
 
-    def write(self, vendor, sub, entry, cas=None):
+    def write_now(self, vendor, sub, entry, cas=None):
         self._check()
         current = self.entries.get((vendor, sub))
         version = current[1] if current else 0
@@ -55,15 +57,21 @@ class MemoryCustody:
         self.entries[(vendor, sub)] = (dict(entry), version + 1)
         return version + 1
 
-    def delete(self, vendor, sub):
+    async def read(self, vendor, sub):
+        return self.read_now(vendor, sub)
+
+    async def write(self, vendor, sub, entry, cas=None):
+        return self.write_now(vendor, sub, entry, cas)
+
+    async def delete(self, vendor, sub):
         self._check()
         self.entries.pop((vendor, sub), None)
 
-    def list_subjects(self, vendor):
+    async def list_subjects(self, vendor):
         self._check()
         return [s for (v, s) in self.entries if v == vendor]
 
-    def read_client(self, vendor):
+    async def read_client(self, vendor):
         self._check()
         return self.clients.get(vendor)
 

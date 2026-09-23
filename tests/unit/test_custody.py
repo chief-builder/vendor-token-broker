@@ -48,16 +48,16 @@ def store_with(kv: FakeKV) -> VaultStore:
     return store
 
 
-def test_read_returns_entry_and_version():
+async def test_read_returns_entry_and_version():
     kv = FakeKV(result={"data": {"data": {"state": "ACTIVE"},
                                  "metadata": {"version": 4}}})
-    assert store_with(kv).read("mockhub", "alice") == ({"state": "ACTIVE"}, 4)
+    assert await store_with(kv).read("mockhub", "alice") == ({"state": "ACTIVE"}, 4)
     name, kw = kv.calls[0]
     assert kw["path"] == "mockhub/alice" and kw["mount_point"] == "vendor-tokens"
 
 
-def test_read_missing_path_is_none():
-    assert store_with(FakeKV(error=hvac_exc.InvalidPath("not found"))).read("v", "s") is None
+async def test_read_missing_path_is_none():
+    assert await store_with(FakeKV(error=hvac_exc.InvalidPath("not found"))).read("v", "s") is None
 
 
 @pytest.mark.parametrize("error", [
@@ -65,46 +65,47 @@ def test_read_missing_path_is_none():
     hvac_exc.VaultDown("sealed"),
     ConnectionError("refused"),
 ])
-def test_read_other_errors_fail_closed(error):
+async def test_read_other_errors_fail_closed(error):
     with pytest.raises(CustodyUnavailable):
-        store_with(FakeKV(error=error)).read("v", "s")
+        await store_with(FakeKV(error=error)).read("v", "s")
 
 
-def test_write_returns_new_version_and_passes_cas():
+async def test_write_returns_new_version_and_passes_cas():
     kv = FakeKV(result={"data": {"version": 5}})
-    assert store_with(kv).write("v", "s", {"state": "ACTIVE"}, cas=4) == 5
+    assert await store_with(kv).write("v", "s", {"state": "ACTIVE"}, cas=4) == 5
     assert kv.calls[0][1]["cas"] == 4
 
 
-def test_write_cas_mismatch_is_cas_conflict():
+async def test_write_cas_mismatch_is_cas_conflict():
     with pytest.raises(CasConflict):
-        store_with(FakeKV(error=hvac_exc.InvalidRequest(CAS_MESSAGE))).write("v", "s", {}, cas=1)
+        store = store_with(FakeKV(error=hvac_exc.InvalidRequest(CAS_MESSAGE)))
+        await store.write("v", "s", {}, cas=1)
 
 
-def test_write_other_invalid_request_is_unavailable():
+async def test_write_other_invalid_request_is_unavailable():
     with pytest.raises(CustodyUnavailable):
-        store_with(FakeKV(error=hvac_exc.InvalidRequest("bad json"))).write("v", "s", {})
+        await store_with(FakeKV(error=hvac_exc.InvalidRequest("bad json"))).write("v", "s", {})
 
 
-def test_write_transport_error_is_unavailable():
+async def test_write_transport_error_is_unavailable():
     with pytest.raises(CustodyUnavailable):
-        store_with(FakeKV(error=ConnectionError("refused"))).write("v", "s", {})
+        await store_with(FakeKV(error=ConnectionError("refused"))).write("v", "s", {})
 
 
-def test_delete_missing_is_silent_and_errors_fail_closed():
-    store_with(FakeKV(error=hvac_exc.InvalidPath("gone"))).delete("v", "s")
+async def test_delete_missing_is_silent_and_errors_fail_closed():
+    await store_with(FakeKV(error=hvac_exc.InvalidPath("gone"))).delete("v", "s")
     with pytest.raises(CustodyUnavailable):
-        store_with(FakeKV(error=hvac_exc.Forbidden("denied"))).delete("v", "s")
+        await store_with(FakeKV(error=hvac_exc.Forbidden("denied"))).delete("v", "s")
 
 
-def test_list_subjects_drops_folders_and_handles_missing():
+async def test_list_subjects_drops_folders_and_handles_missing():
     kv = FakeKV(result={"data": {"keys": ["alice", "bob", "nested/"]}})
-    assert store_with(kv).list_subjects("mockhub") == ["alice", "bob"]
-    assert store_with(FakeKV(error=hvac_exc.InvalidPath("none"))).list_subjects("v") == []
+    assert await store_with(kv).list_subjects("mockhub") == ["alice", "bob"]
+    assert await store_with(FakeKV(error=hvac_exc.InvalidPath("none"))).list_subjects("v") == []
 
 
-def test_read_client_uses_clients_mount():
+async def test_read_client_uses_clients_mount():
     kv = FakeKV(result={"data": {"data": {"client_id": "cid"}}})
-    assert store_with(kv).read_client("mockhub") == {"client_id": "cid"}
+    assert await store_with(kv).read_client("mockhub") == {"client_id": "cid"}
     assert kv.calls[0][1]["mount_point"] == "vendor-clients"
-    assert store_with(FakeKV(error=hvac_exc.InvalidPath("none"))).read_client("v") is None
+    assert await store_with(FakeKV(error=hvac_exc.InvalidPath("none"))).read_client("v") is None

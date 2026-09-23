@@ -97,3 +97,10 @@ def test_direct_construction_is_validated_too():
     from unit_helpers import make_config
     with pytest.raises(ConfigError):
         make_config(hub_algorithms=("RS256",))
+
+
+def test_sweep_max_entries_knob():
+    assert Config.from_env(FULL_ENV).sweep_max_entries == 500
+    assert Config.from_env({**FULL_ENV, "SWEEP_MAX_ENTRIES": "50"}).sweep_max_entries == 50
+    with pytest.raises(ConfigError):
+        Config.from_env({**FULL_ENV, "SWEEP_MAX_ENTRIES": "0"})

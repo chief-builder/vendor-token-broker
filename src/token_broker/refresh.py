@@ -77,7 +77,7 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
                   "refresh_owner": b.instance_id,
                   "refresh_started_at": time.time()}
         try:
-            ver = b.custody.write(vendor, sub, marker, cas=ver)
+            ver = await b.custody.write(vendor, sub, marker, cas=ver)
         except CasConflict:
             b.drop_cache(vendor, sub)
             return CasLost()
@@ -87,7 +87,7 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
         tok = await b.vendors.refresh(vendor, entry["refresh_token"])
     except vendors_mod.InvalidGrant:
         try:
-            b.custody.write(vendor, sub, {**entry, "state": "STALE"}, cas=ver)
+            await b.custody.write(vendor, sub, {**entry, "state": "STALE"}, cas=ver)
         except CasConflict:
             # Another writer moved the entry (a concurrent refresh or a
             # re-consent): our invalid_grant is about a superseded pair, so
@@ -102,7 +102,7 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
             # Known failure: restore ACTIVE rather than waiting out the
             # abandoned-REFRESHING takeover TTL.
             try:
-                b.custody.write(vendor, sub, {**entry, "state": "ACTIVE"}, cas=ver)
+                await b.custody.write(vendor, sub, {**entry, "state": "ACTIVE"}, cas=ver)
             except CasConflict:
                 pass
             b.drop_cache(vendor, sub)
@@ -115,7 +115,7 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
     if not new_entry["refresh_token"]:
         new_entry["refresh_token"] = entry["refresh_token"]  # non-rotating vendor
     try:
-        new_ver = b.custody.write(vendor, sub, new_entry, cas=ver)
+        new_ver = await b.custody.write(vendor, sub, new_entry, cas=ver)
     except CasConflict:
         # Another writer won (§8): discard our pair, never write the older one.
         b.drop_cache(vendor, sub)

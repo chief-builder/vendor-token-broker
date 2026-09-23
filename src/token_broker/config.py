@@ -49,6 +49,7 @@ class Config:
     txn_ttl_s: int = 600
     lock_timeout_s: int = 10
     sweep_interval_s: int = 60
+    sweep_max_entries: int = 500
     proactive_refresh_s: int = 900
     mass_stale_window_s: int = 60
     mass_stale_threshold: int = 3
@@ -125,6 +126,7 @@ class Config:
             txn_ttl_s=_int("TXN_TTL_S", cls.txn_ttl_s),
             lock_timeout_s=_int("LOCK_TIMEOUT_S", cls.lock_timeout_s),
             sweep_interval_s=_int("SWEEP_INTERVAL_S", cls.sweep_interval_s),
+            sweep_max_entries=_int("SWEEP_MAX_ENTRIES", cls.sweep_max_entries),
             proactive_refresh_s=_int("PROACTIVE_REFRESH_S", cls.proactive_refresh_s),
             mass_stale_window_s=_int("MASS_STALE_WINDOW_S", cls.mass_stale_window_s),
             mass_stale_threshold=_int("MASS_STALE_THRESHOLD", cls.mass_stale_threshold),

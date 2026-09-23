@@ -217,7 +217,7 @@ async def test_delete_gives_up_with_503_when_the_grant_keeps_moving(monkeypatch)
     h.put()
     h.vendors.revoke_error = vendors_mod.VendorUnavailable("vendor revocation unavailable")
 
-    def always_conflict(vendor, sub, entry, cas=None):
+    async def always_conflict(vendor, sub, entry, cas=None):
         raise CasConflict("check-and-set parameter did not match")
 
     monkeypatch.setattr(h.custody, "write", always_conflict)
