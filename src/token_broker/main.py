@@ -9,6 +9,7 @@ Run: uvicorn --factory token_broker.main:create_app
 import asyncio
 import base64
 import hashlib
+import json
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -23,8 +24,8 @@ from . import vendors as vendors_mod
 from .audit import audit
 from .config import Config
 from .coordination import CoordinationUnavailable, make_coordination
-from .custody import CustodyUnavailable, VaultStore
-from .hub import HubAuthError, HubValidator
+from .custody import CasConflict, CustodyUnavailable, VaultStore
+from .hub import HubAuthError, HubUnavailable, HubValidator
 from .problems import Problems
 from .refresh import entry_from_token_response
 from .vendors import VendorClient
@@ -42,6 +43,37 @@ def reconsent_scopes(held: list[str], required: list[str], ceiling: list[str]) -
     """§4.1: re-consent for the union of held and required scopes, capped by
     the ceiling (ceiling order preserved)."""
     return [s for s in ceiling if s in set(held) | set(required)]
+
+
+# Browser-facing responses carry the vendor code/state in the URL: never
+# cache them, never leak the URL as a Referer, never sniff the content type.
+BROWSER_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                   "X-Content-Type-Options": "nosniff"}
+
+
+def page(text: str, status: int = 200) -> HTMLResponse:
+    return HTMLResponse(f"<h1>{text}</h1>", status_code=status, headers=BROWSER_HEADERS)
+
+
+def parse_resolve_body(raw: bytes) -> tuple[dict | None, str | None]:
+    """Validate the resolve request body. Returns (body, None) or (None, why)."""
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None, "body must be JSON"
+    if not isinstance(body, dict):
+        return None, "body must be a JSON object"
+    if not isinstance(body.get("vendor"), str) or not body["vendor"]:
+        return None, "vendor must be a non-empty string"
+    if body.get("sub") is not None and not isinstance(body["sub"], str):
+        return None, "sub must be a string"
+    ttl = body.get("min_ttl_s", 120)
+    if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 0:
+        return None, "min_ttl_s must be a non-negative integer"
+    scopes = body.get("required_scopes", [])
+    if not isinstance(scopes, list) or not all(isinstance(x, str) for x in scopes):
+        return None, "required_scopes must be a list of strings"
+    return body, None
 
 
 def ok_response(entry: dict) -> JSONResponse:
@@ -145,30 +177,43 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
     app.state.broker = b
     problem = b.problem
 
+    def hub_claims(request: Request) -> tuple[dict | None, JSONResponse | None]:
+        """Validate the caller's hub JWT: (claims, None) or (None, problem).
+        A bad token is 401; an unreachable hub JWKS is a retriable 503."""
+        try:
+            return b.hub.validate(request.headers.get("authorization")), None
+        except HubUnavailable as exc:
+            return None, problem(503, "hub-unavailable", str(exc))
+        except HubAuthError as exc:
+            return None, problem(401, "invalid-hub-token", str(exc))
+
     @app.get("/healthz")
     async def healthz():
         return {"ok": True}
 
     @app.post("/v1/tokens/resolve")
     async def resolve(request: Request):
-        try:
-            claims = b.hub.validate(request.headers.get("authorization"))
-        except HubAuthError as exc:
-            return problem(401, "invalid-hub-token", str(exc))
-        body = await request.json()
-        vendor = body.get("vendor", "")
+        claims, denied = hub_claims(request)
+        if denied is not None:
+            return denied
+        body, invalid = parse_resolve_body(await request.body())
+        if invalid is not None:
+            audit("broker.resolve", decision="deny", reason="invalid_request",
+                  hub_jti=claims.get("jti"), sub=claims["sub"])
+            return problem(400, "invalid-request", invalid)
+        vendor = body["vendor"]
         sub = claims["sub"]  # the JWT is authoritative; the field is advisory
         if body.get("sub") and body["sub"] != sub:
             audit("broker.resolve", decision="deny", reason="sub_mismatch",
                   hub_jti=claims.get("jti"), sub=sub, claimed_sub=body["sub"], vendor=vendor)
             return problem(400, "sub-mismatch", "request sub does not match hub token")
-        min_ttl = int(body.get("min_ttl_s", 120))
+        min_ttl = body.get("min_ttl_s", 120)
         spec = b.vendors.get_vendor(vendor)
         if spec is None:
             return problem(404, "unknown-vendor", f"vendor {vendor} not registered/enabled")
 
         ceiling = spec.get("scope_ceiling", [])
-        required = [s for s in body.get("required_scopes", []) if isinstance(s, str)]
+        required = list(body.get("required_scopes", []))
         if not ceiling:
             # Empty ceiling: scopes are governed vendor-side (e.g. GitHub App
             # permissions). The broker neither requests nor enforces them.
@@ -325,8 +370,21 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
         if spec is None:
             return problem(404, "unknown-vendor", vendor)
 
-        eps = await b.vendors.endpoints(vendor)
-        creds = b.vendors.read_client(vendor) or {}
+        try:
+            eps = await b.vendors.endpoints(vendor)
+            creds = b.vendors.read_client(vendor)
+        except vendors_mod.VendorUnavailable as exc:
+            audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                  reason="vendor_unavailable", security_event=False)
+            return problem(503, "vendor-unavailable", str(exc))
+        except CustodyUnavailable as exc:
+            audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                  reason="vault_unavailable", security_event=False)
+            return problem(503, "vault-unavailable", str(exc))
+        if not creds or not creds.get("client_id"):
+            audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                  reason="no_client_credential", security_event=False)
+            return problem(503, "vendor-unavailable", f"no client credential for {vendor}")
         verifier = secrets.token_urlsafe(48)
         challenge = base64.urlsafe_b64encode(
             hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -345,7 +403,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             return problem(503, "coordination-unavailable", str(exc))
         audit("broker.consent.start", sub=record["sub"], vendor=vendor)
         params = {
-            "client_id": creds.get("client_id", ""),
+            "client_id": creds["client_id"],
             "response_type": "code",
             "redirect_uri": f"{cfg.broker_public_url}/v1/callback/{vendor}",
             "scope": " ".join(record["scopes"]),
@@ -353,7 +411,8 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
-        return RedirectResponse(f"{eps['authorization_endpoint']}?{urlencode(params)}")
+        return RedirectResponse(f"{eps['authorization_endpoint']}?{urlencode(params)}",
+                                headers=BROWSER_HEADERS)
 
     @app.get("/v1/callback/{vendor}")
     async def callback(vendor: str, request: Request):
@@ -365,8 +424,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 # §4.3/§10: state replay or mismatch is a SECURITY EVENT.
                 audit("broker.consent.fail", vendor=vendor,
                       reason="state_invalid_or_replayed", security_event=True)
-                return HTMLResponse("<h1>Invalid or expired authorization state.</h1>",
-                                    status_code=400)
+                return page("Invalid or expired authorization state.", 400)
             # RFC 9207 mix-up defense: strict string comparison against the
             # issuer recorded at transaction creation; applies before any code
             # redemption — and before consumption, so a tampered callback does
@@ -381,49 +439,61 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                     iss is not None and iss != record["issuer"]):
                 audit("broker.consent.fail", vendor=vendor, reason="iss_mismatch",
                       security_event=True, iss_present=iss is not None)
-                return HTMLResponse("<h1>Issuer mismatch.</h1>", status_code=400)
+                return page("Issuer mismatch.", 400)
             # Single-use consumption BEFORE redemption: exactly one callback
             # per state ever reaches the token endpoint.
             record = await b.coord.consume_state(state)
             if record is None:  # lost a consumption race — treat as replay
                 audit("broker.consent.fail", vendor=vendor,
                       reason="state_invalid_or_replayed", security_event=True)
-                return HTMLResponse("<h1>Invalid or expired authorization state.</h1>",
-                                    status_code=400)
+                return page("Invalid or expired authorization state.", 400)
             await b.coord.pop_txn(record["txn_id"])
         except CoordinationUnavailable:
-            return HTMLResponse("<h1>Coordination store unavailable.</h1>",
-                                status_code=503)
+            audit("broker.consent.fail", vendor=vendor, reason="coordination_unavailable",
+                  security_event=False)
+            return page("Coordination store unavailable.", 503)
         if "error" in q:
             # The raw vendor error goes to the audit line only; the browser
             # gets a constant page (no reflected attacker-controllable value).
             audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
                   reason=q.get("error"), security_event=False)
-            return HTMLResponse("<h1>Authorization failed.</h1>", status_code=400)
+            return page("Authorization failed.", 400)
         try:
             tok = await b.vendors.exchange_code(
                 vendor, q.get("code", ""), record["pkce_verifier"],
                 f"{cfg.broker_public_url}/v1/callback/{vendor}")
-            vendor_uid = await b.vendors.vendor_user_id(vendor, tok["access_token"])
-            entry = entry_from_token_response(tok, 1, vendor_uid, record["scopes"])
-            b.custody.write(vendor, record["sub"], entry, cas=None)  # re-consent: gen=1
-            await b.invalidate(vendor, record["sub"])
         except vendors_mod.VendorError as exc:
             audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
                   reason=str(exc), security_event=False)
-            return HTMLResponse("<h1>Token exchange failed.</h1>", status_code=502)
+            return page("Token exchange failed.", 502)
+        # The code is spent from here on: nothing below may lose the new grant
+        # silently. vendor_user_id is best-effort ("unknown" on any failure).
+        vendor_uid = await b.vendors.vendor_user_id(vendor, tok["access_token"])
+        entry = entry_from_token_response(tok, 1, vendor_uid, record["scopes"])
+        try:
+            b.custody.write(vendor, record["sub"], entry, cas=None)  # re-consent: gen=1
         except CustodyUnavailable:
-            return HTMLResponse("<h1>Credential store unavailable.</h1>", status_code=503)
+            # Unstorable: revoke the fresh grant at the vendor (best effort) so
+            # it is not orphaned there, then let the user retry the dance.
+            try:
+                await b.vendors.revoke(vendor, entry)
+                revoked = True
+            except vendors_mod.VendorError:
+                revoked = False
+            audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                  reason="post_redeem_failure", new_grant_revoked=revoked,
+                  security_event=False)
+            return page("Credential store unavailable.", 503)
+        await b.invalidate(vendor, record["sub"])
         audit("broker.consent.complete", sub=record["sub"], vendor=vendor,
               vendor_user_id=vendor_uid)
-        return HTMLResponse("<h1>Connected — return to your client.</h1>")
+        return page("Connected — return to your client.")
 
     @app.delete("/v1/grants/{vendor}/{sub}")
     async def delete_grant(vendor: str, sub: str, request: Request):
-        try:
-            claims = b.hub.validate(request.headers.get("authorization"))
-        except HubAuthError as exc:
-            return problem(401, "invalid-hub-token", str(exc))
+        claims, denied = hub_claims(request)
+        if denied is not None:
+            return denied
         if claims["sub"] != sub:
             return problem(403, "forbidden", "grants are self-service (sub must match)")
         if b.vendors.get_vendor(vendor) is None:
@@ -433,10 +503,28 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             if found is None:
                 return problem(404, "no-grant", "nothing to revoke")
             entry, ver = found
+            outcome = "revoked"
             try:
                 await b.vendors.revoke(vendor, entry)   # §4.4: revoke at vendor FIRST
+            except vendors_mod.RevocationUnsupported:
+                outcome = "unsupported"   # vendor offers no revocation: local delete only
             except vendors_mod.VendorUnavailable as exc:
-                b.custody.write(vendor, sub, {**entry, "state": "REVOKE_PENDING"}, cas=ver)
+                # Park REVOKE_PENDING for the sweeper. A refresh may have moved
+                # the entry since our read: re-read once and park the newer
+                # pair (its RT is the one the sweeper must revoke).
+                for _ in range(2):
+                    try:
+                        b.custody.write(vendor, sub, {**entry, "state": "REVOKE_PENDING"},
+                                        cas=ver)
+                        break
+                    except CasConflict:
+                        found = b.custody.read(vendor, sub)
+                        if found is None:
+                            return problem(404, "no-grant", "nothing to revoke")
+                        entry, ver = found
+                else:
+                    return problem(503, "vendor-unavailable",
+                                   "revocation failed while the grant changed; retry")
                 await b.invalidate(vendor, sub)
                 audit("broker.revoke", sub=sub, vendor=vendor, outcome="pending",
                       error=str(exc))
@@ -445,16 +533,17 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             await b.invalidate(vendor, sub)
         except CustodyUnavailable as exc:
             return problem(503, "vault-unavailable", str(exc))
-        audit("broker.revoke", sub=sub, vendor=vendor, outcome="revoked",
+        audit("broker.revoke", sub=sub, vendor=vendor, outcome=outcome,
               hub_jti=claims.get("jti"))
+        if outcome == "unsupported":
+            return JSONResponse({"revoked": True, "vendor_revocation": "unsupported"})
         return JSONResponse({"revoked": True})
 
     @app.get("/v1/grants")
     async def list_grants(request: Request):
-        try:
-            claims = b.hub.validate(request.headers.get("authorization"))
-        except HubAuthError as exc:
-            return problem(401, "invalid-hub-token", str(exc))
+        claims, denied = hub_claims(request)
+        if denied is not None:
+            return denied
         grants = []
         for vendor in b.vendors.registry():
             if b.vendors.get_vendor(vendor) is None:
@@ -476,10 +565,9 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @app.get("/v1/admin/vendors/{vendor}")
     async def vendor_record(vendor: str, request: Request):
-        try:
-            claims = b.hub.validate(request.headers.get("authorization"))
-        except HubAuthError as exc:
-            return problem(401, "invalid-hub-token", str(exc))
+        claims, denied = hub_claims(request)
+        if denied is not None:
+            return denied
         groups = claims.get("groups")
         # A list only: `in` on a string claim would be a substring match.
         if not isinstance(groups, list) or cfg.admin_group not in groups:

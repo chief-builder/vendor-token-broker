@@ -17,6 +17,7 @@ remains the correctness backstop regardless of lock behavior.
 """
 import asyncio
 import json
+import logging
 import random
 import secrets
 import time
@@ -25,11 +26,18 @@ from typing import Any, Protocol
 
 from .config import Config
 
+log = logging.getLogger(__name__)
 LOCK_RETRY_S = 0.2  # waiter poll interval (±25% jitter), ADR-0001
 
 
 class CoordinationUnavailable(Exception):
-    pass
+    """Redis unreachable. Fixed message: raw errors carry host:port and go to
+    the debug log only."""
+
+    def __init__(self, cause: Exception | None = None):
+        super().__init__("coordination store unavailable")
+        if cause is not None:
+            log.debug("coordination error: %r", cause)
 
 
 class Coordination(Protocol):
@@ -239,7 +247,7 @@ class RedisCoordination:
                 acquired = await self._r.set(key, token, nx=True,
                                              px=self.cfg.lock_ttl_ms)
             except self._exc as exc:
-                raise CoordinationUnavailable(str(exc)) from exc
+                raise CoordinationUnavailable(exc) from exc
             if acquired:
                 return token, None
             if should_stop is not None:
@@ -256,7 +264,7 @@ class RedisCoordination:
             acquired = await self._r.set(self._lock_key(vendor, sub), token,
                                          nx=True, px=self.cfg.lock_ttl_ms)
         except self._exc as exc:
-            raise CoordinationUnavailable(str(exc)) from exc
+            raise CoordinationUnavailable(exc) from exc
         return token if acquired else None
 
     async def release_refresh_lock(self, vendor, sub, token) -> None:
@@ -269,13 +277,13 @@ class RedisCoordination:
         try:
             await self._r.setex(key, self.cfg.txn_ttl_s, json.dumps(record))
         except self._exc as exc:
-            raise CoordinationUnavailable(str(exc)) from exc
+            raise CoordinationUnavailable(exc) from exc
 
     async def _get_json(self, key: str) -> dict | None:
         try:
             raw = await self._r.get(key)
         except self._exc as exc:
-            raise CoordinationUnavailable(str(exc)) from exc
+            raise CoordinationUnavailable(exc) from exc
         return json.loads(raw) if raw else None
 
     async def put_txn(self, txn_id, record) -> None:
@@ -288,7 +296,7 @@ class RedisCoordination:
         try:
             await self._r.delete(f"vtb:txn:{txn_id}")
         except self._exc as exc:
-            raise CoordinationUnavailable(str(exc)) from exc
+            raise CoordinationUnavailable(exc) from exc
 
     async def put_state(self, state, record) -> None:
         await self._setex_json(f"vtb:state:{state}", record)
@@ -301,7 +309,7 @@ class RedisCoordination:
         try:
             raw = await self._r.getdel(f"vtb:state:{state}")
         except self._exc as exc:
-            raise CoordinationUnavailable(str(exc)) from exc
+            raise CoordinationUnavailable(exc) from exc
         return json.loads(raw) if raw else None
 
     async def record_stale(self, vendor) -> tuple[int, bool]:
@@ -322,7 +330,7 @@ class RedisCoordination:
                                               nx=True, px=window * 1000))
             return count, page
         except self._exc as exc:
-            raise CoordinationUnavailable(str(exc)) from exc
+            raise CoordinationUnavailable(exc) from exc
 
     async def acquire_sweep_lease(self) -> bool:
         """Leader lease: SET NX PX 2×interval; the holder renews, others skip."""
@@ -336,7 +344,7 @@ class RedisCoordination:
                 return True
             return False
         except self._exc as exc:
-            raise CoordinationUnavailable(str(exc)) from exc
+            raise CoordinationUnavailable(exc) from exc
 
     def sweep_jitter(self) -> float:
         return random.uniform(-0.2, 0.2)  # ±20% (ADR-0001)
@@ -348,7 +356,7 @@ class RedisCoordination:
         try:
             await self._r.publish(_CHANNEL, f"{vendor}|{sub}")
         except self._exc as exc:
-            raise CoordinationUnavailable(str(exc)) from exc
+            raise CoordinationUnavailable(exc) from exc
 
 
 def make_coordination(cfg: Config, instance_id: str) -> Coordination:

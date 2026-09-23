@@ -89,6 +89,11 @@ Frozen `title` slugs: `needs-consent`, `needs-reconsent-scope`,
 `vault-unavailable`, `coordination-unavailable`, `forbidden`, `no-grant`,
 `invalid-transaction`.
 
+Added in 1.1, additive only (existing slugs and statuses never change):
+`hub-unavailable` (503: the hub JWKS could not be fetched, which is an outage
+and not a bad token) and `invalid-request` (400: a malformed resolve body).
+A plugin that treats every 5xx as retriable needs no change.
+
 Frozen audit event names: `broker.resolve`, `broker.consent.start`,
 `broker.consent.complete`, `broker.consent.fail`, `broker.refresh`,
 `broker.stale`, `broker.stale.mass`, `broker.revoke`, `broker.admin.deny`,

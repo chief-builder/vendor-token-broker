@@ -54,7 +54,13 @@ class FakeVendors:
         self.expires_in = 60
         self.on_refresh = None          # optional hook(n) run mid-refresh
         self.revoke_calls = 0
+        self.revoked: list[dict] = []
         self.revoke_error: Exception | None = None
+        self.on_revoke = None           # optional hook() run inside revoke
+        self.endpoints_error: Exception | None = None
+        self.client: dict | None = {"client_id": "cid", "client_secret": "secret"}
+        self.client_error: Exception | None = None
+        self.exchange_error: Exception | None = None
 
     def registry(self) -> dict:
         return {VENDOR: self.spec}
@@ -63,12 +69,25 @@ class FakeVendors:
         return self.spec if vendor == VENDOR else None
 
     async def endpoints(self, vendor: str) -> dict:
+        if self.endpoints_error is not None:
+            raise self.endpoints_error
         return {"authorization_endpoint": "http://as.test/authorize",
                 "issuer": "http://as.test",
                 "authorization_response_iss_parameter_supported": True}
 
-    def read_client(self, vendor: str) -> dict:
-        return {"client_id": "cid", "client_secret": "secret"}
+    def read_client(self, vendor: str) -> dict | None:
+        if self.client_error is not None:
+            raise self.client_error
+        return self.client
+
+    async def exchange_code(self, vendor, code, verifier, redirect_uri) -> dict:
+        if self.exchange_error is not None:
+            raise self.exchange_error
+        return {"access_token": "at-consent", "refresh_token": "rt-consent",
+                "expires_in": 3600, "scope": " ".join(self.spec["scope_ceiling"])}
+
+    async def vendor_user_id(self, vendor: str, access_token: str) -> str:
+        return "vu-1"
 
     async def refresh(self, vendor: str, refresh_token: str) -> dict:
         self.refresh_calls += 1
@@ -88,6 +107,9 @@ class FakeVendors:
 
     async def revoke(self, vendor: str, entry: dict) -> None:
         self.revoke_calls += 1
+        self.revoked.append(entry)
+        if self.on_revoke is not None:
+            self.on_revoke()
         if self.revoke_error is not None:
             raise self.revoke_error
 
@@ -122,6 +144,21 @@ class Harness:
     def client(self) -> AsyncClient:
         return AsyncClient(transport=ASGITransport(app=self.app),
                            base_url="http://broker.test")
+
+    async def start_consent(self, sub: str = "wf-user-1") -> str:
+        """Create a txn and drive /v1/authorize; return the callback `state`."""
+        from urllib.parse import parse_qs, urlparse
+        txn = await self.broker.new_txn(sub, VENDOR, list(self.vendors.spec["scope_ceiling"]))
+        async with self.client() as c:
+            r = await c.get(f"/v1/authorize/{VENDOR}", params={"txn": txn})
+        assert r.status_code in (302, 307), r.text
+        return parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+
+    async def callback(self, state: str, **params):
+        params.setdefault("code", "code-1")
+        params.setdefault("iss", "http://as.test")
+        async with self.client() as c:
+            return await c.get(f"/v1/callback/{VENDOR}", params={"state": state, **params})
 
     async def resolve(self, as_sub: str = "wf-user-1", **body):
         """POST /v1/tokens/resolve as `as_sub` (the hub JWT subject); body

@@ -39,7 +39,7 @@ class MemoryCustody:
     def _check(self):
         if self.fail:
             from token_broker.custody import CustodyUnavailable
-            raise CustodyUnavailable("simulated outage")
+            raise CustodyUnavailable()
 
     def read(self, vendor, sub):
         self._check()

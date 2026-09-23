@@ -65,7 +65,7 @@
         "type": "object",
         "required": ["type"],
         "properties": { "type": { "type": "string" } },
-        "description": "Revocation strategy: RFC 7009 endpoint or a documented vendor-specific deviation (e.g. GitHub grant deletion)."
+        "description": "Revocation strategy: RFC 7009 endpoint or a documented vendor-specific deviation (e.g. GitHub grant deletion). An rfc7009 vendor whose metadata has no revocation_endpoint is deleted locally only (audited outcome: unsupported)."
       },
       "_notes": { "type": "string" }
     },

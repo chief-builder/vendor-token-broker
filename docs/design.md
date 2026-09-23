@@ -121,8 +121,12 @@ requests nor enforces `required_scopes` for that vendor.
 - `409 needs-reconsent-scope {missing_scopes, authorize_uri}` — grant
   narrower than required; re-consent unions held+required (≤ ceiling)
 - `409 revoke-pending` — entry mid-revocation
-- `503 vendor-unavailable | vault-unavailable | coordination-unavailable` —
-  retriable; entry state unchanged
+- `400 invalid-request` — malformed body (not a JSON object, missing
+  `vendor`, non-integer or negative `min_ttl_s`, non-string scopes)
+- `401 invalid-hub-token` — the hub JWT failed validation
+- `503 vendor-unavailable | vault-unavailable | coordination-unavailable |
+  hub-unavailable` — retriable; entry state unchanged. Problem `detail`
+  strings are fixed text and never carry backend hostnames or raw errors.
 
 ### 4.2 `GET /v1/authorize/{vendor}?txn=…`
 Builds the vendor authorization URL: `state` = opaque handle to a
@@ -142,7 +146,11 @@ security alert, not just a 400.
 ### 4.4 `DELETE /v1/grants/{vendor}/{sub}`
 Self-service (sub must match the hub JWT). Order: RFC 7009 revoke at
 vendor → delete custody entry → audit. Vendor failure parks the entry
-`REVOKE_PENDING` (502; unusable for resolve; sweeper retries).
+`REVOKE_PENDING` (502; unusable for resolve; sweeper retries). A vendor
+with no revocation endpoint cannot revoke: the entry is deleted locally,
+audited `outcome: "unsupported"`, and the response adds
+`"vendor_revocation": "unsupported"` (the vendor-side grant lives until
+its own expiry).
 
 ### 4.5 `GET /v1/grants` · `GET /v1/admin/vendors/{vendor}`
 Self-service listing; authenticated admin read of a registry record

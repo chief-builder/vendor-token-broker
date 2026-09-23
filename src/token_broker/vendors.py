@@ -7,6 +7,7 @@ it; hardcoded registry endpoints are allowed only for vendors without
 metadata (e.g. GitHub).
 """
 import json
+import logging
 import os
 
 import httpx
@@ -14,6 +15,8 @@ import httpx
 from .client_auth import ClientAuthError, token_request_auth
 from .config import Config
 from .custody import Custody
+
+log = logging.getLogger(__name__)
 
 
 class VendorError(Exception):
@@ -26,6 +29,18 @@ class InvalidGrant(VendorError):
 
 class VendorUnavailable(VendorError):
     pass
+
+
+class RevocationUnsupported(VendorError):
+    """The vendor offers no revocation endpoint: the grant can only be
+    deleted locally (it lives at the vendor until its own expiry)."""
+
+
+def _unreachable(what: str, exc: Exception) -> VendorUnavailable:
+    """Fixed message for a transport/parse failure; raw text (URLs, hosts) to
+    the debug log only."""
+    log.debug("%s failed: %r", what, exc)
+    return VendorUnavailable(f"{what} unavailable")
 
 
 class VendorClient:
@@ -51,14 +66,22 @@ class VendorClient:
         revocation_endpoint / issuer, plus authorization_response_iss_parameter_supported
         (drives the RFC 9207 mix-up defense on the callback)."""
         spec = self._registry[vendor]
-        if "auth_metadata_url" in spec:
-            if vendor not in self._metadata_cache:
+        if "auth_metadata_url" not in spec:
+            return spec["endpoints"]
+        if vendor not in self._metadata_cache:
+            try:
                 async with httpx.AsyncClient(timeout=10) as c:
                     r = await c.get(spec["auth_metadata_url"])
                     r.raise_for_status()
-                    self._metadata_cache[vendor] = r.json()
-            return self._metadata_cache[vendor]
-        return spec["endpoints"]
+                    meta = r.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise _unreachable(f"{vendor} authorization-server metadata", exc) from exc
+            if not isinstance(meta, dict) or not all(
+                    isinstance(meta.get(k), str)
+                    for k in ("authorization_endpoint", "token_endpoint")):
+                raise VendorUnavailable(f"{vendor} authorization-server metadata malformed")
+            self._metadata_cache[vendor] = meta
+        return self._metadata_cache[vendor]
 
     def read_client(self, vendor: str) -> dict | None:
         return self._custody.read_client(vendor)
@@ -89,16 +112,25 @@ class VendorClient:
                 r = await c.post(eps["token_endpoint"], data=form, auth=basic,
                                  headers={"Accept": "application/json"})
         except httpx.HTTPError as exc:
-            raise VendorUnavailable(str(exc)) from exc
+            raise _unreachable("vendor token endpoint", exc) from exc
         if r.status_code >= 500:
             raise VendorUnavailable(f"vendor token endpoint {r.status_code}")
-        body = r.json() if "json" in r.headers.get("content-type", "") else {}
+        body = {}
+        if "json" in r.headers.get("content-type", ""):
+            try:
+                body = r.json()
+            except ValueError as exc:
+                raise _unreachable("vendor token endpoint response", exc) from exc
+            if not isinstance(body, dict):
+                raise VendorUnavailable("vendor token endpoint response malformed")
         # GitHub answers 200 with an error field; RFC-shaped vendors answer 400.
         error = body.get("error")
         if r.status_code >= 400 or error:
             if error in ("invalid_grant", "bad_refresh_token"):
                 raise InvalidGrant(error)
             raise VendorUnavailable(f"token endpoint error: {error or r.status_code}")
+        if not isinstance(body.get("access_token"), str) or not body["access_token"]:
+            raise VendorUnavailable("vendor token endpoint response has no access_token")
         return body
 
     async def exchange_code(self, vendor: str, code: str, verifier: str,
@@ -117,20 +149,27 @@ class VendorClient:
         })
 
     async def vendor_user_id(self, vendor: str, access_token: str) -> str:
-        spec = self._registry[vendor]
-        url = spec.get("vendor_user_endpoint")
-        if not url:
-            eps = await self.endpoints(vendor)
-            url = eps.get("userinfo_endpoint")
-        if not url:
-            return "unknown"
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.get(url, headers={"Authorization": f"Bearer {access_token}",
-                                          "Accept": "application/json"})
+        """Best-effort: the id is for audit joins only, so any failure yields
+        "unknown" rather than failing a consent whose code is already spent."""
+        try:
+            spec = self._registry[vendor]
+            url = spec.get("vendor_user_endpoint")
+            if not url:
+                url = (await self.endpoints(vendor)).get("userinfo_endpoint")
+            if not url:
+                return "unknown"
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(url, headers={"Authorization": f"Bearer {access_token}",
+                                              "Accept": "application/json"})
             if r.status_code != 200:
                 return "unknown"
             body = r.json()
-            return str(body.get("id") or body.get("login") or body.get("sub") or "unknown")
+        except (httpx.HTTPError, ValueError, VendorError) as exc:
+            log.debug("vendor user lookup failed for %s: %r", vendor, exc)
+            return "unknown"
+        if not isinstance(body, dict):
+            return "unknown"
+        return str(body.get("id") or body.get("login") or body.get("sub") or "unknown")
 
     async def revoke(self, vendor: str, entry: dict) -> None:
         """RFC 7009 where offered; GitHub's grant-deletion API as the documented
@@ -151,6 +190,8 @@ class VendorClient:
                         raise VendorUnavailable(f"github grant delete {r.status_code}")
                 else:
                     eps = await self.endpoints(vendor)
+                    if not eps.get("revocation_endpoint"):
+                        raise RevocationUnsupported(f"{vendor} has no revocation endpoint")
                     # The assertion audience stays the token endpoint (RFC 7523
                     # accepts any identifier of the AS).
                     auth_form, basic = self._auth_for(vendor, eps["token_endpoint"])
@@ -161,4 +202,4 @@ class VendorClient:
                     if r.status_code >= 400:
                         raise VendorUnavailable(f"revocation endpoint {r.status_code}")
         except httpx.HTTPError as exc:
-            raise VendorUnavailable(str(exc)) from exc
+            raise _unreachable("vendor revocation", exc) from exc

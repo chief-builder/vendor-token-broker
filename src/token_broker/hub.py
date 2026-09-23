@@ -7,16 +7,24 @@ forbidden). Contract shape — the pinned contract version and exactly one
 tier audience — is enforced here so a malformed or cross-tier token never
 reaches the resolve path.
 """
+import logging
+
 import jwt
 from jwt import PyJWKClient
+from jwt.exceptions import PyJWKClientConnectionError
 
 from .config import Config
 
 TIER_PREFIX = "mcp://tier/"
+log = logging.getLogger(__name__)
 
 
 class HubAuthError(Exception):
-    pass
+    """The presented token is not a valid hub JWT (→ 401)."""
+
+
+class HubUnavailable(Exception):
+    """The hub's JWKS could not be fetched: an outage, not a bad token (→ 503)."""
 
 
 class HubValidator:
@@ -28,7 +36,8 @@ class HubValidator:
         self._jwks = jwks_client or PyJWKClient(cfg.hub_jwks_uri)
 
     def validate(self, authorization: str | None) -> dict:
-        """Return verified claims of the Bearer hub JWT or raise HubAuthError."""
+        """Return verified claims of the Bearer hub JWT. Raises HubAuthError for a
+        bad token, HubUnavailable when the hub JWKS cannot be fetched."""
         if not authorization or not authorization.lower().startswith("bearer "):
             raise HubAuthError("missing bearer token")
         parts = authorization.split(None, 1)
@@ -37,6 +46,12 @@ class HubValidator:
         token = parts[1]
         try:
             key = self._jwks.get_signing_key_from_jwt(token).key
+        except (PyJWKClientConnectionError, TimeoutError) as exc:
+            log.debug("hub JWKS fetch failed: %s", exc)
+            raise HubUnavailable("hub signing keys unavailable") from exc
+        except Exception as exc:  # unknown kid, malformed token, ...
+            raise HubAuthError(str(exc)) from exc
+        try:
             claims = jwt.decode(
                 token, key,
                 algorithms=list(self._cfg.hub_algorithms),

@@ -8,6 +8,7 @@ fails CLOSED (§9): callers translate CustodyUnavailable into 503, and it
 is never conflated with "entry absent" (which would turn an outage into a
 mass re-consent stampede).
 """
+import logging
 from typing import Protocol
 
 import hvac
@@ -17,10 +18,17 @@ from .config import Config
 
 TOKENS_MOUNT = "vendor-tokens"
 CLIENTS_MOUNT = "vendor-clients"
+log = logging.getLogger(__name__)
 
 
 class CustodyUnavailable(Exception):
-    pass
+    """Custody backend unreachable or refusing. The message is fixed: raw
+    client errors carry hostnames and go to the debug log only."""
+
+    def __init__(self, cause: Exception | None = None):
+        super().__init__("custody backend unavailable")
+        if cause is not None:
+            log.debug("custody error: %r", cause)
 
 
 class CasConflict(Exception):
@@ -58,7 +66,7 @@ class VaultStore:
         except hvac_exc.InvalidPath:
             return None
         except Exception as exc:
-            raise CustodyUnavailable(str(exc)) from exc
+            raise CustodyUnavailable(exc) from exc
         return resp["data"]["data"], resp["data"]["metadata"]["version"]
 
     def write(self, vendor: str, sub: str, entry: dict, cas: int | None = None) -> int:
@@ -70,9 +78,9 @@ class VaultStore:
         except hvac_exc.InvalidRequest as exc:
             if "check-and-set" in str(exc):
                 raise CasConflict(str(exc)) from exc
-            raise CustodyUnavailable(str(exc)) from exc
+            raise CustodyUnavailable(exc) from exc
         except Exception as exc:
-            raise CustodyUnavailable(str(exc)) from exc
+            raise CustodyUnavailable(exc) from exc
         return resp["data"]["version"]
 
     def delete(self, vendor: str, sub: str) -> None:
@@ -82,7 +90,7 @@ class VaultStore:
         except hvac_exc.InvalidPath:
             pass
         except Exception as exc:
-            raise CustodyUnavailable(str(exc)) from exc
+            raise CustodyUnavailable(exc) from exc
 
     def list_subjects(self, vendor: str) -> list[str]:
         """Subs with an entry under this vendor (KV v2 list). Empty if none."""
@@ -92,7 +100,7 @@ class VaultStore:
         except hvac_exc.InvalidPath:
             return []
         except Exception as exc:
-            raise CustodyUnavailable(str(exc)) from exc
+            raise CustodyUnavailable(exc) from exc
         return [k for k in resp["data"]["keys"] if not k.endswith("/")]
 
     def read_client(self, vendor: str) -> dict | None:
@@ -103,5 +111,5 @@ class VaultStore:
         except hvac_exc.InvalidPath:
             return None
         except Exception as exc:
-            raise CustodyUnavailable(str(exc)) from exc
+            raise CustodyUnavailable(exc) from exc
         return resp["data"]["data"]

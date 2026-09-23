@@ -39,13 +39,16 @@ async def sweep_entry(b, vendor: str, sub: str) -> None:
         return
     entry, ver = found
     if entry["state"] == "REVOKE_PENDING":
+        outcome = "revoked"
         try:
             await b.vendors.revoke(vendor, entry)
+        except vendors_mod.RevocationUnsupported:
+            outcome = "unsupported"   # nothing to retry: local delete only
         except vendors_mod.VendorUnavailable:
             return  # still down; retry next pass
         b.custody.delete(vendor, sub)
         await b.invalidate(vendor, sub)
-        audit("broker.revoke", sub=sub, vendor=vendor, outcome="revoked",
+        audit("broker.revoke", sub=sub, vendor=vendor, outcome=outcome,
               path="sweep-retry")
         return
     takeover = refresh_mod.abandoned(entry, b.cfg.refreshing_ttl_s)

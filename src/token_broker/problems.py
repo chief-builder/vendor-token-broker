@@ -21,6 +21,9 @@ TITLES = frozenset({
     "forbidden",
     "no-grant",
     "invalid-transaction",
+    # Additive in 1.1 (D2): new 4xx/5xx titles only; existing ones never change.
+    "hub-unavailable",
+    "invalid-request",
 })
 
 
