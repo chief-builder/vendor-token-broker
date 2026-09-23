@@ -141,11 +141,15 @@ class Broker:
         except CoordinationUnavailable:
             pass
 
-    async def mark_stale(self, vendor: str, sub: str, generation: int) -> None:
+    async def mark_stale(self, vendor: str, sub: str, generation: int,
+                         anomaly: bool = True) -> None:
         """Emit the per-entry broker.stale record and, when STALEs for one
         vendor burst past the threshold within the window, a mass-stale page
-        (§8/§9 — the org-App-uninstall anomaly)."""
+        (§8/§9 — the org-App-uninstall anomaly). anomaly=False (a token that
+        simply ran out) is recorded but never counted toward the page."""
         audit("broker.stale", sub=sub, vendor=vendor, generation=generation)
+        if not anomaly:
+            return
         try:
             count, page = await self.coord.record_stale(vendor)
         except CoordinationUnavailable:
@@ -213,7 +217,12 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             audit("broker.resolve", decision="deny", reason="sub_mismatch",
                   hub_jti=claims.get("jti"), sub=sub, claimed_sub=body["sub"], vendor=vendor)
             return problem(400, "sub-mismatch", "request sub does not match hub token")
-        min_ttl = body.get("min_ttl_s", 120)
+        # min_ttl_s is honored up to REFRESH_BUFFER_S: beyond it a caller
+        # could force a vendor refresh on every call for vendors whose tokens
+        # are shorter than the requested TTL (review M4). Clamps are audited.
+        requested_ttl = body.get("min_ttl_s", 120)
+        min_ttl = min(requested_ttl, cfg.refresh_buffer_s)
+        clamp = {"min_ttl_clamped_from": requested_ttl} if requested_ttl > min_ttl else {}
         spec = b.vendors.get_vendor(vendor)
         if spec is None:
             return problem(404, "unknown-vendor", f"vendor {vendor} not registered/enabled")
@@ -236,7 +245,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
         def _audit(decision: str, path: str, **kw):
             audit("broker.resolve", decision=decision, path=path,
-                  hub_jti=claims.get("jti"), sub=sub, vendor=vendor, **kw)
+                  hub_jti=claims.get("jti"), sub=sub, vendor=vendor, **clamp, **kw)
 
         async def _insufficient_scope(entry: dict) -> JSONResponse | None:
             """§4.1: an ACTIVE grant that doesn't cover the tool's required
@@ -279,19 +288,27 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             # Inside the refresh buffer: single-flight per {vendor, sub} (§8).
             gen_before = entry["refresh_generation"]
 
+            def _serve_winner(e: dict) -> JSONResponse | None:
+                """Once another writer advanced the generation, its token is
+                as fresh as the vendor issues: serve it even if shorter than
+                min_ttl. Refreshing again cannot produce a longer-lived token
+                and would only burn vendor calls (review M4)."""
+                if e["state"] != "ACTIVE" or e["refresh_generation"] == gen_before:
+                    return None
+                remaining = e["expires_at"] - time.time()
+                if remaining <= 0:
+                    return None
+                short = {"short_ttl": True} if remaining < min_ttl else {}
+                _audit("allow", "refresh-waited", generation=e["refresh_generation"], **short)
+                return ok_response(e)
+
             async def _serve_if_gen_advanced():
                 """Waiter retry check (redis profile): re-read each retry and
                 serve without the lock if another replica's refresh already
                 advanced the generation (ADR-0001)."""
                 b.drop_cache(vendor, sub)
                 f = await b.get_entry(vendor, sub)
-                if f and f[0]["state"] == "ACTIVE" and \
-                        f[0]["refresh_generation"] != gen_before and \
-                        f[0]["expires_at"] - time.time() >= min_ttl:
-                    _audit("allow", "refresh-waited",
-                           generation=f[0]["refresh_generation"])
-                    return ok_response(f[0])
-                return None
+                return _serve_winner(f[0]) if f else None
 
             lock_token, early = await b.coord.wait_refresh_lock(
                 vendor, sub, _serve_if_gen_advanced)
@@ -316,6 +333,11 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 if entry["state"] == "STALE":
                     _audit("needs-consent", "stale")
                     return await b.needs_consent(sub, vendor, spec, want)
+                if entry["state"] == "REVOKE_PENDING":
+                    # A delete parked it while we waited: never refresh it
+                    # back to ACTIVE (that would undo the pending revocation).
+                    _audit("deny", "revoke-pending")
+                    return problem(409, "revoke-pending", "entry is being revoked")
                 if entry["state"] == "REFRESHING" and \
                         not refresh_mod.abandoned(entry, cfg.refreshing_ttl_s):
                     # In flight on another replica whose lock TTL'd out from
@@ -327,12 +349,9 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                     _audit("deny", "refresh-in-progress")
                     return problem(503, "vendor-unavailable",
                                    "refresh in progress; retry")
-                if entry["refresh_generation"] != gen_before and \
-                        entry["expires_at"] - time.time() >= min_ttl:
-                    # A concurrent refresh already won — same token, no vendor call.
-                    _audit("allow", "refresh-waited",
-                           generation=entry["refresh_generation"])
-                    return ok_response(entry)
+                winner = _serve_winner(entry)   # a concurrent refresh already won
+                if winner is not None:
+                    return winner
 
                 outcome = await refresh_mod.attempt_refresh(b, vendor, sub, entry, ver)
                 if isinstance(outcome, refresh_mod.Refreshed):
@@ -464,6 +483,33 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
                   reason=q.get("error"), security_event=False)
             return page("Authorization failed.", 400)
+        # A grant the user asked to delete (parked REVOKE_PENDING) is revoked
+        # and removed before this consent replaces it; otherwise the overwrite
+        # would silently drop the pending revocation (review L3). Only that
+        # case: revoking an ACTIVE or STALE predecessor could kill the NEW
+        # grant at vendors that revoke per user and client (GitHub grant
+        # deletion, many RFC 7009 servers), so those are simply overwritten.
+        try:
+            prior = await b.custody.read(vendor, record["sub"])
+            if prior is not None and prior[0]["state"] == "REVOKE_PENDING":
+                try:
+                    await b.vendors.revoke(vendor, prior[0])
+                    prior_outcome = "revoked"
+                except vendors_mod.RevocationUnsupported:
+                    prior_outcome = "unsupported"
+                except vendors_mod.VendorError:
+                    audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                          reason="prior_revocation_pending", security_event=False)
+                    return page("Your previous connection is still being revoked. "
+                                "Try again later.", 503)
+                await b.custody.delete(vendor, record["sub"])
+                await b.invalidate(vendor, record["sub"])
+                audit("broker.revoke", sub=record["sub"], vendor=vendor,
+                      outcome=prior_outcome, path="reconsent")
+        except CustodyUnavailable:
+            audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
+                  reason="vault_unavailable", security_event=False)
+            return page("Credential store unavailable.", 503)
         try:
             tok = await b.vendors.exchange_code(
                 vendor, q.get("code", ""), record["pkce_verifier"],
@@ -475,7 +521,10 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
         # The code is spent from here on: nothing below may lose the new grant
         # silently. vendor_user_id is best-effort ("unknown" on any failure).
         vendor_uid = await b.vendors.vendor_user_id(vendor, tok["access_token"])
-        entry = entry_from_token_response(tok, 1, vendor_uid, record["scopes"])
+        ceiling = b.vendors.registry().get(vendor, {}).get("scope_ceiling")
+        entry = entry_from_token_response(tok, 1, vendor_uid, record["scopes"],
+                                          ceiling=ceiling)
+        widened = refresh_mod.scope_widening(tok, ceiling)
         try:
             await b.custody.write(vendor, record["sub"], entry, cas=None)  # re-consent: gen=1
         except CustodyUnavailable:
@@ -492,7 +541,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             return page("Credential store unavailable.", 503)
         await b.invalidate(vendor, record["sub"])
         audit("broker.consent.complete", sub=record["sub"], vendor=vendor,
-              vendor_user_id=vendor_uid)
+              vendor_user_id=vendor_uid, **({"scope_widened": widened} if widened else {}))
         return page("Connected — return to your client.")
 
     @app.delete("/v1/grants/{vendor}/{sub}")
@@ -504,46 +553,73 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             return problem(403, "forbidden", "grants are self-service (sub must match)")
         if b.vendors.get_vendor(vendor) is None:
             return problem(404, "unknown-vendor", vendor)
+        # Hold the per-entry refresh lock so no refresh can rotate the pair
+        # between the vendor revoke and the custody delete (review L4).
         try:
-            found = await b.custody.read(vendor, sub)
-            if found is None:
-                return problem(404, "no-grant", "nothing to revoke")
-            entry, ver = found
-            outcome = "revoked"
+            lock_token, _ = await b.coord.wait_refresh_lock(vendor, sub, None)
+        except CoordinationUnavailable as exc:
+            return problem(503, "coordination-unavailable", str(exc))
+        if lock_token is None:
+            return problem(503, "vendor-unavailable", "grant is being refreshed; retry")
+        try:
+            return await revoke_and_delete(vendor, sub, claims)
+        except CustodyUnavailable as exc:
+            return problem(503, "vault-unavailable", str(exc))
+        finally:
+            await b.coord.release_refresh_lock(vendor, sub, lock_token)
+
+    async def revoke_and_delete(vendor: str, sub: str, claims: dict) -> JSONResponse:
+        found = await b.custody.read(vendor, sub)
+        if found is None:
+            return problem(404, "no-grant", "nothing to revoke")
+        entry, ver = found
+        outcome = "revoked"
+        # Revoke at the vendor FIRST (§4.4). The lock keeps the entry still,
+        # but a lock can be lost (redis TTL): if a newer pair landed after our
+        # revoke, revoke that one too before deleting.
+        for _ in range(3):
             try:
-                await b.vendors.revoke(vendor, entry)   # §4.4: revoke at vendor FIRST
+                await b.vendors.revoke(vendor, entry)
             except vendors_mod.RevocationUnsupported:
                 outcome = "unsupported"   # vendor offers no revocation: local delete only
             except vendors_mod.VendorUnavailable as exc:
-                # Park REVOKE_PENDING for the sweeper. A refresh may have moved
-                # the entry since our read: re-read once and park the newer
-                # pair (its RT is the one the sweeper must revoke).
-                for _ in range(2):
-                    try:
-                        await b.custody.write(vendor, sub, {**entry, "state": "REVOKE_PENDING"},
-                                        cas=ver)
-                        break
-                    except CasConflict:
-                        found = await b.custody.read(vendor, sub)
-                        if found is None:
-                            return problem(404, "no-grant", "nothing to revoke")
-                        entry, ver = found
-                else:
-                    return problem(503, "vendor-unavailable",
-                                   "revocation failed while the grant changed; retry")
-                await b.invalidate(vendor, sub)
-                audit("broker.revoke", sub=sub, vendor=vendor, outcome="pending",
-                      error=str(exc))
-                return problem(502, "revoke-pending", "vendor revocation failed; will retry")
+                return await park_revoke_pending(vendor, sub, entry, ver, exc)
+            current = await b.custody.read(vendor, sub)
+            if current is None or current[1] == ver:
+                break
+            entry, ver = current
+        else:
+            return problem(503, "vendor-unavailable",
+                           "grant kept changing during revocation; retry")
+        if current is not None:
             await b.custody.delete(vendor, sub)
-            await b.invalidate(vendor, sub)
-        except CustodyUnavailable as exc:
-            return problem(503, "vault-unavailable", str(exc))
+        await b.invalidate(vendor, sub)
         audit("broker.revoke", sub=sub, vendor=vendor, outcome=outcome,
               hub_jti=claims.get("jti"))
         if outcome == "unsupported":
             return JSONResponse({"revoked": True, "vendor_revocation": "unsupported"})
         return JSONResponse({"revoked": True})
+
+    async def park_revoke_pending(vendor: str, sub: str, entry: dict, ver: int,
+                                  exc: Exception) -> JSONResponse:
+        """Vendor down: park REVOKE_PENDING for the sweeper. If the entry moved
+        since our read, re-read once and park the newer pair (its refresh
+        token is the one the sweeper must revoke)."""
+        for _ in range(2):
+            try:
+                await b.custody.write(vendor, sub, {**entry, "state": "REVOKE_PENDING"}, cas=ver)
+                break
+            except CasConflict:
+                found = await b.custody.read(vendor, sub)
+                if found is None:
+                    return problem(404, "no-grant", "nothing to revoke")
+                entry, ver = found
+        else:
+            return problem(503, "vendor-unavailable",
+                           "revocation failed while the grant changed; retry")
+        await b.invalidate(vendor, sub)
+        audit("broker.revoke", sub=sub, vendor=vendor, outcome="pending", error=str(exc))
+        return problem(502, "revoke-pending", "vendor revocation failed; will retry")
 
     @app.get("/v1/grants")
     async def list_grants(request: Request):

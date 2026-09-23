@@ -157,12 +157,20 @@ async def test_exchange_failure_is_502():
     assert_browser_headers(r)
 
 
+def refuse_writes(h):
+    """Custody reads work, writes fail: the failure lands after the code is
+    redeemed (the callback reads custody before the exchange)."""
+    async def refuse(*a, **kw):
+        raise CustodyUnavailable()
+    h.custody.write = refuse
+
+
 async def test_custody_failure_after_redeem_revokes_the_new_grant(capsys):
     """Review M1: the code is spent, custody refuses the write. The fresh
     grant is revoked at the vendor instead of being orphaned there."""
     h = Harness()
     state = await h.start_consent()
-    h.custody.fail = True
+    refuse_writes(h)
     r = await h.callback(state)
     assert r.status_code == 503
     assert [e["refresh_token"] for e in h.vendors.revoked] == ["rt-consent"]
@@ -175,7 +183,7 @@ async def test_custody_failure_after_redeem_revokes_the_new_grant(capsys):
 async def test_post_redeem_revoke_failure_is_audited(capsys):
     h = Harness()
     state = await h.start_consent()
-    h.custody.fail = True
+    refuse_writes(h)
     h.vendors.revoke_error = vendors_mod.VendorUnavailable("vendor revocation unavailable")
     r = await h.callback(state)
     assert r.status_code == 503

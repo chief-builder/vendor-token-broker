@@ -61,6 +61,9 @@ class FakeVendors:
         self.client: dict | None = {"client_id": "cid", "client_secret": "secret"}
         self.client_error: Exception | None = None
         self.exchange_error: Exception | None = None
+        self.exchange_calls = 0
+        self.consent_token: dict | None = None     # override the code-exchange response
+        self.refresh_scope: str | None = None      # override the refresh response scope
 
     def registry(self) -> dict:
         return {VENDOR: self.spec}
@@ -81,8 +84,11 @@ class FakeVendors:
         return self.client
 
     async def exchange_code(self, vendor, code, verifier, redirect_uri) -> dict:
+        self.exchange_calls += 1
         if self.exchange_error is not None:
             raise self.exchange_error
+        if self.consent_token is not None:
+            return dict(self.consent_token)
         return {"access_token": "at-consent", "refresh_token": "rt-consent",
                 "expires_in": 3600, "scope": " ".join(self.spec["scope_ceiling"])}
 
@@ -99,8 +105,10 @@ class FakeVendors:
             self.on_refresh(n)
         if self.refresh_error is not None:
             raise self.refresh_error
-        tok = {"access_token": f"at-{n}", "expires_in": self.expires_in,
-               "scope": " ".join(self.spec["scope_ceiling"])}
+        scope = self.refresh_scope
+        if scope is None:
+            scope = " ".join(self.spec["scope_ceiling"])
+        tok = {"access_token": f"at-{n}", "expires_in": self.expires_in, "scope": scope}
         if self.rotate:
             tok["refresh_token"] = f"rt-{n}"
         return tok

@@ -116,7 +116,13 @@ The JWT's `sub` is authoritative; a mismatched body `sub` is a 400.
 governed vendor-side (e.g. GitHub App permissions): the broker then neither
 requests nor enforces `required_scopes` for that vendor.
 - `200 {access_token, expires_at, granted_scopes}` — live for ≥ `min_ttl_s`
-  (refresh performed inline if needed)
+  (refresh performed inline if needed). `min_ttl_s` (default 120) is
+  honored up to `REFRESH_BUFFER_S`; larger values are clamped and audited
+  (`min_ttl_clamped_from`). A token the vendor has just issued is served
+  even if it lives less than `min_ttl_s`, since refreshing again cannot
+  produce a longer-lived one (audited `short_ttl`). `granted_scopes` never
+  exceeds a non-empty ceiling; extra vendor scopes are dropped and audited
+  (`scope_widened`).
 - `404 needs-consent {authorize_uri}` — no entry or STALE entry
 - `409 needs-reconsent-scope {missing_scopes, authorize_uri}` — grant
   narrower than required; re-consent unions held+required (≤ ceiling)
@@ -140,12 +146,19 @@ RFC 9207 `iss` against the recorded issuer **before** consumption — a
 tampered callback never burns the state the legitimate one needs; consumes
 the state atomically **before** code redemption (exactly one callback per
 state ever reaches the token endpoint); exchanges code + PKCE verifier;
-writes the entry (fresh generation 1). A `state` replay or mismatch is a
+writes the entry (fresh generation 1). If the user's previous grant is
+parked `REVOKE_PENDING`, it is revoked and removed *before* the code is
+exchanged; if the vendor cannot revoke it yet, the consent fails and the
+user retries later. An ACTIVE or STALE predecessor is simply overwritten:
+revoking it could also revoke the new grant at vendors that revoke per
+user and client. A `state` replay or mismatch is a
 security alert, not just a 400.
 
 ### 4.4 `DELETE /v1/grants/{vendor}/{sub}`
 Self-service (sub must match the hub JWT). Order: RFC 7009 revoke at
-vendor → delete custody entry → audit. Vendor failure parks the entry
+vendor → delete custody entry → audit, all under the entry's refresh lock
+so no refresh can rotate the pair in between (a pair that lands after a
+lost lock is revoked too). Vendor failure parks the entry
 `REVOKE_PENDING` (502; unusable for resolve; sweeper retries). A vendor
 with no revocation endpoint cannot revoke: the entry is deleted locally,
 audited `outcome: "unsupported"`, and the response adds
@@ -177,6 +190,14 @@ fail-closed-distinguishably (outage ≠ absent), two mounts with two
 policies, encryption at rest under a dedicated key. `refresh_generation`
 is the monotonic counter behind §8's race defense; the KV-v2 version is
 the CAS handle.
+
+Token shapes: a vendor response with neither `expires_in` nor a
+`refresh_token` is a non-expiring token; it is stored with a far-future
+`expires_at` (10 years) and never refreshed. A refreshable token that omits
+`expires_in` is assumed to last 8 hours. An entry with no refresh token
+that reaches its refresh buffer goes STALE without a vendor call (the user
+re-consents); it is audited `broker.stale` but does not count toward the
+mass-STALE page.
 
 ## 6. Consent dance (first-time)
 
