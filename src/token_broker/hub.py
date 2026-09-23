@@ -22,7 +22,10 @@ class HubAuthError(Exception):
 class HubValidator:
     def __init__(self, cfg: Config, jwks_client=None):
         self._cfg = cfg
-        self._jwks = jwks_client or PyJWKClient(cfg.hub_jwks_uri, cache_keys=True)
+        # cache_keys stays off: PyJWT's per-kid cache never expires, so a key
+        # the hub removed from its JWKS would stay trusted until restart. The
+        # JWK-set cache (300s lifespan) already avoids per-request fetches.
+        self._jwks = jwks_client or PyJWKClient(cfg.hub_jwks_uri)
 
     def validate(self, authorization: str | None) -> dict:
         """Return verified claims of the Bearer hub JWT or raise HubAuthError."""

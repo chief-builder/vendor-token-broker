@@ -6,7 +6,7 @@ missing name listed at once. Contract pins keep compatible defaults so an
 existing deployment can point at this broker unchanged.
 """
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 
@@ -15,6 +15,15 @@ class ConfigError(Exception):
 
 
 _REQUIRED = ("HUB_ISSUER", "HUB_JWKS_URI", "BROKER_PUBLIC_URL", "VAULT_ADDR", "REGISTRY_PATH")
+
+# Asymmetric signature algorithms only: RS256 (PKCS#1 v1.5) and every HMAC
+# algorithm are outside the hub contract and can never be configured.
+ALLOWED_HUB_ALGORITHMS = frozenset(
+    {"PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"})
+
+# Knobs where 0 has a meaning (sweeper off / no per-replica cache); every
+# other integer knob must be at least 1.
+_ZERO_OK = frozenset({"sweep_interval_s", "cache_ttl_s"})
 
 
 @dataclass(frozen=True)
@@ -51,7 +60,21 @@ class Config:
     lock_ttl_ms: int = 15000
     refreshing_ttl_s: int = 30
 
-    extra: dict = field(default_factory=dict, compare=False)
+    def __post_init__(self):
+        if not self.hub_algorithms:
+            raise ConfigError("HUB_ALGORITHMS must name at least one algorithm")
+        bad = [a for a in self.hub_algorithms if a not in ALLOWED_HUB_ALGORITHMS]
+        if bad:
+            raise ConfigError(
+                f"HUB_ALGORITHMS may only contain {sorted(ALLOWED_HUB_ALGORITHMS)}, "
+                f"not {bad}")
+        for f in fields(self):
+            if f.type is not int:
+                continue
+            value = getattr(self, f.name)
+            floor = 0 if f.name in _ZERO_OK else 1
+            if value < floor:
+                raise ConfigError(f"{f.name.upper()} must be >= {floor}, not {value}")
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":

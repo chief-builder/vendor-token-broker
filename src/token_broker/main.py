@@ -17,8 +17,8 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from . import __version__, sweeper
 from . import refresh as refresh_mod
-from . import sweeper
 from . import vendors as vendors_mod
 from .audit import audit
 from .config import Config
@@ -138,7 +138,10 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 task.cancel()
             await b.coord.close()
 
-    app = FastAPI(title="vendor-token-broker", version="1.0", lifespan=lifespan)
+    # No /docs, /redoc, /openapi.json: the served surface is exactly the 7
+    # routes (tests/unit/test_routes.py audits app.routes, not the schema).
+    app = FastAPI(title="vendor-token-broker", version=__version__, lifespan=lifespan,
+                  docs_url=None, redoc_url=None, openapi_url=None)
     app.state.broker = b
     problem = b.problem
 
@@ -166,6 +169,10 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
         ceiling = spec.get("scope_ceiling", [])
         required = [s for s in body.get("required_scopes", []) if isinstance(s, str)]
+        if not ceiling:
+            # Empty ceiling: scopes are governed vendor-side (e.g. GitHub App
+            # permissions). The broker neither requests nor enforces them.
+            required = []
         if not set(required) <= set(ceiling):
             # A caller can never widen past the registry ceiling (§4.2).
             audit("broker.resolve", decision="deny", path="scope-ceiling",
@@ -473,7 +480,9 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             claims = b.hub.validate(request.headers.get("authorization"))
         except HubAuthError as exc:
             return problem(401, "invalid-hub-token", str(exc))
-        if cfg.admin_group not in (claims.get("groups") or []):
+        groups = claims.get("groups")
+        # A list only: `in` on a string claim would be a substring match.
+        if not isinstance(groups, list) or cfg.admin_group not in groups:
             audit("broker.admin.deny", sub=claims.get("sub"), vendor=vendor,
                   reason="not_platform_admin")
             return problem(403, "forbidden", f"requires the {cfg.admin_group} group")

@@ -65,3 +65,35 @@ def test_bad_int_rejected():
 def test_public_url_trailing_slash_stripped():
     cfg = Config.from_env({**FULL_ENV, "BROKER_PUBLIC_URL": "http://b.test/"})
     assert cfg.broker_public_url == "http://b.test"
+
+
+@pytest.mark.parametrize("algs", ["RS256", "HS256", "PS256,RS256", "none", " , "])
+def test_hub_algorithms_outside_the_allowlist_rejected(algs):
+    with pytest.raises(ConfigError):
+        Config.from_env({**FULL_ENV, "HUB_ALGORITHMS": algs})
+
+
+def test_hub_algorithms_allowlist_accepts_asymmetric():
+    cfg = Config.from_env({**FULL_ENV, "HUB_ALGORITHMS": "PS256,ES384,EdDSA"})
+    assert cfg.hub_algorithms == ("PS256", "ES384", "EdDSA")
+
+
+@pytest.mark.parametrize("name", ["REFRESH_BUFFER_S", "LOCK_TIMEOUT_S", "LOCK_TTL_MS",
+                                  "MASS_STALE_THRESHOLD", "VAULT_TIMEOUT_S", "TXN_TTL_S"])
+def test_non_positive_timing_knobs_rejected(name):
+    for bad in ("0", "-5"):
+        with pytest.raises(ConfigError):
+            Config.from_env({**FULL_ENV, name: bad})
+
+
+def test_zero_allowed_where_it_means_off():
+    cfg = Config.from_env({**FULL_ENV, "SWEEP_INTERVAL_S": "0", "CACHE_TTL_S": "0"})
+    assert cfg.sweep_interval_s == 0 and cfg.cache_ttl_s == 0
+    with pytest.raises(ConfigError):
+        Config.from_env({**FULL_ENV, "SWEEP_INTERVAL_S": "-1"})
+
+
+def test_direct_construction_is_validated_too():
+    from unit_helpers import make_config
+    with pytest.raises(ConfigError):
+        make_config(hub_algorithms=("RS256",))

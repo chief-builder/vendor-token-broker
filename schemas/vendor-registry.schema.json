@@ -46,7 +46,7 @@
       "scope_ceiling": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "Hard cap on requestable scopes (design §4.2). Empty means scopes are governed vendor-side (e.g. GitHub App permissions). Changing this requires token-contract-level sign-off."
+        "description": "Hard cap on requestable scopes (design §4.2). Empty means scopes are governed vendor-side (e.g. GitHub App permissions): the broker then neither requests nor enforces required_scopes. Changing this requires token-contract-level sign-off."
       },
       "refresh_rotation": {
         "type": "boolean",

@@ -112,7 +112,9 @@ contract (see `docs/operations.md`).
 Request: `{"vendor", "sub"?, "min_ttl_s"?, "required_scopes"?}` + hub JWT.
 The JWT's `sub` is authoritative; a mismatched body `sub` is a 400.
 `required_scopes` is capped by the registry `scope_ceiling` (403
-`scope-exceeds-ceiling` beyond it).
+`scope-exceeds-ceiling` beyond it). An empty ceiling means scopes are
+governed vendor-side (e.g. GitHub App permissions): the broker then neither
+requests nor enforces `required_scopes` for that vendor.
 - `200 {access_token, expires_at, granted_scopes}` — live for ≥ `min_ttl_s`
   (refresh performed inline if needed)
 - `404 needs-consent {authorize_uri}` — no entry or STALE entry
@@ -144,7 +146,8 @@ vendor → delete custody entry → audit. Vendor failure parks the entry
 
 ### 4.5 `GET /v1/grants` · `GET /v1/admin/vendors/{vendor}`
 Self-service listing; authenticated admin read of a registry record
-(requires the `ADMIN_GROUP` group claim). Registry mutation is deliberately
+(requires `ADMIN_GROUP` in the hub JWT's `groups` claim, which must be a
+JSON array; a string claim never matches). Registry mutation is deliberately
 a reviewed git change validated against
 `schemas/vendor-registry.schema.json` — for this broker that is the
 stronger control, not a gap. Changing `scope_ceiling` requires

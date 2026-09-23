@@ -1,5 +1,9 @@
-"""Route-audit-as-unit-test (design §10): the broker exposes exactly
-the 7-route no-issuance surface. Runs offline on every push."""
+"""Route-audit-as-unit-test (design §10): the broker serves exactly the
+7-route no-issuance surface. Audits the router itself (app.routes), not the
+OpenAPI document, which omits framework routes such as /docs. Runs offline
+on every push."""
+from broker_harness import Harness
+
 from token_broker.main import create_app
 
 FROZEN_ROUTES = {
@@ -13,16 +17,24 @@ FROZEN_ROUTES = {
 }
 
 
+def served_paths(app) -> set[str]:
+    return {route.path for route in app.routes}
+
+
 def test_route_table_is_exactly_the_seven_frozen_paths(cfg):
-    paths = set(create_app(cfg).openapi()["paths"])
-    assert paths == FROZEN_ROUTES
+    assert served_paths(create_app(cfg)) == FROZEN_ROUTES
 
 
 def test_no_issuance_surface(cfg):
     """No token minting, no JWKS, no OIDC discovery — custodian, not issuer."""
-    paths = set(create_app(cfg).openapi()["paths"])
-    for p in paths:
+    for p in served_paths(create_app(cfg)):
         assert "jwks" not in p
         assert not p.endswith("/token")
         assert "well-known" not in p
         assert "issue" not in p
+
+
+async def test_framework_doc_routes_are_not_served():
+    async with Harness().client() as c:
+        for path in ("/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"):
+            assert (await c.get(path)).status_code == 404, path

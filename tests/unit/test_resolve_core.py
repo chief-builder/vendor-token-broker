@@ -279,3 +279,50 @@ async def test_custody_outage_still_serves_cache_hit():
     h.custody.fail = True
     r = await h.resolve()
     assert r.status_code == 200 and r.json()["access_token"] == "at-0"
+
+
+# ------------------------------------------------------------ review fixes (change 2)
+
+async def test_refresh_keeps_the_consent_created_at():
+    h = Harness()
+    consented = time.time() - 86400
+    h.put(expires_at=time.time() + 100, created_at=consented)
+    assert (await h.resolve()).status_code == 200
+    stored = h.stored()
+    assert stored["refresh_generation"] == 2
+    assert stored["created_at"] == consented
+    assert stored["last_refresh_at"] > consented
+
+
+async def test_stale_after_lost_cas_is_not_marked_or_counted(capsys):
+    """invalid_grant for a pair another writer already replaced: no STALE
+    write, no broker.stale, no mass-STALE count; serve the winner."""
+    h = Harness()
+    h.put(expires_at=time.time() + 100)
+    h.vendors.refresh_error = vendors_mod.InvalidGrant("invalid_grant")
+
+    def reconsent(_n):
+        h.put(access_token="at-new", refresh_token="rt-new", expires_at=time.time() + 3600)
+
+    h.vendors.on_refresh = reconsent
+    r = await h.resolve()
+    assert r.status_code == 200 and r.json()["access_token"] == "at-new"
+    assert h.stored()["state"] == "ACTIVE"
+    events = audit_events(capsys)
+    assert not [e for e in events if e["audit"] == "broker.stale"]
+    count, _ = await h.coord.record_stale(VENDOR)
+    assert count == 1                          # the window saw nothing before this
+
+
+async def test_empty_ceiling_neither_requests_nor_enforces_scopes():
+    """Empty scope_ceiling = governed vendor-side (GitHub App): required_scopes
+    never 403 and never force a re-consent loop."""
+    h = Harness()
+    h.vendors.spec["scope_ceiling"] = []
+    r = await h.resolve(required_scopes=["repo"])
+    assert r.status_code == 404
+    record = await h.coord.get_txn(r.json()["authorize_uri"].split("txn=")[1])
+    assert record["scopes"] == []
+    h.put(granted_scopes=[])
+    r = await h.resolve(required_scopes=["repo"])
+    assert r.status_code == 200

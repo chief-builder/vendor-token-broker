@@ -113,3 +113,25 @@ def test_custom_pins_honored(rsa_key):
     token = mint_hub_token(rsa_key, "PS256", cfg, iss="https://other.test",
                            aud=["mcp://tier/partner"], mcp_contract="1.1")
     assert v.validate(bearer(token))["iss"] == "https://other.test"
+
+
+def test_key_removed_from_jwks_stops_validating(cfg, rsa_key):
+    """No per-kid cache: once the hub drops a key from its JWKS, tokens
+    signed with it stop validating (no restart needed)."""
+    import jwt as pyjwt
+    from jwt.algorithms import RSAAlgorithm
+
+    v = HubValidator(cfg)                       # the real PyJWKClient
+    jwk = RSAAlgorithm.to_jwk(rsa_key.public_key(), as_dict=True)
+    jwk.update({"kid": "k1", "use": "sig"})
+    published = {"keys": [jwk]}
+    v._jwks.fetch_data = lambda: published      # stands in for the HTTP fetch
+
+    claims = pyjwt.decode(mint_hub_token(rsa_key, "PS256", cfg),
+                          options={"verify_signature": False})
+    token = pyjwt.encode(claims, rsa_key, algorithm="PS256", headers={"kid": "k1"})
+    assert v.validate(bearer(token))["sub"] == "wf-user-1"
+
+    published["keys"] = []                      # the hub rotates the key out
+    with pytest.raises(HubAuthError):
+        v.validate(bearer(token))

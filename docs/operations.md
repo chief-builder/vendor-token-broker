@@ -39,16 +39,16 @@ Required (startup aborts listing every missing name):
 | Variable | Default | Notes |
 |---|---|---|
 | `HUB_TIER_AUDIENCE` | `mcp://tier/internal` | Exactly one `mcp://tier/*` audience is enforced |
-| `HUB_ALGORITHMS` | `PS256,ES256` | RS256 and HMAC are rejected |
+| `HUB_ALGORITHMS` | `PS256,ES256` | Allowlist: PS256/384/512, ES256/384/512, EdDSA. RS256, HMAC, and `none` fail startup |
 | `HUB_CONTRACT_VERSION` | `1.0` | `mcp_contract` claim pin |
-| `ADMIN_GROUP` | `mcp-platform-admin` | Group claim for `/v1/admin/*` |
+| `ADMIN_GROUP` | `mcp-platform-admin` | Required member of the `groups` array claim for `/v1/admin/*` |
 | `PROBLEM_URN_PREFIX` | `urn:vendor-token-broker` | `type` prefix only; `title` slugs never change |
 | `COORD_BACKEND` | `memory` | `redis` required for >1 replica |
 | `REDIS_URL` | `redis://localhost:6379/0` | redis profile |
 | `REFRESH_BUFFER_S` | `300` | Lazy-refresh band |
 | `PROACTIVE_REFRESH_S` | `900` | Sweeper refresh band upper edge |
 | `CACHE_TTL_S` | `60` | Per-replica cache and outage grace cap |
-| `SWEEP_INTERVAL_S` | `60` | `0` disables the sweeper |
+| `SWEEP_INTERVAL_S` | `60` | `0` disables the sweeper. Every other timing knob must be ≥ 1 (`CACHE_TTL_S` may be `0`: no cache) |
 | `LOCK_TIMEOUT_S` / `LOCK_TTL_MS` | `10` / `15000` | Waiter budget / redis lock TTL |
 | `REFRESHING_TTL_S` | `30` | Abandoned-marker takeover threshold |
 | `MASS_STALE_THRESHOLD` / `MASS_STALE_WINDOW_S` | `3` / `60` | Uninstall-anomaly page |

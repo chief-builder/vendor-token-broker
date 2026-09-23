@@ -41,17 +41,20 @@ class CasLost:
 
 
 def entry_from_token_response(tok: dict, gen: int, vendor_uid: str,
-                              scopes: list[str]) -> dict:
+                              scopes: list[str], created_at: float | None = None) -> dict:
+    """Build a custody entry. `created_at` is the consent time: pass the
+    existing entry's value on refresh; None (a new consent) means now."""
+    now = time.time()
     return {
         "access_token": tok["access_token"],
         "refresh_token": tok.get("refresh_token", ""),
-        "expires_at": time.time() + float(tok.get("expires_in", 8 * 3600)),
+        "expires_at": now + float(tok.get("expires_in", 8 * 3600)),
         "granted_scopes": (tok.get("scope") or " ".join(scopes)).split(),
         "vendor_user_id": vendor_uid,
         "state": "ACTIVE",
         "refresh_generation": gen,
-        "last_refresh_at": time.time(),
-        "created_at": time.time(),
+        "last_refresh_at": now,
+        "created_at": now if created_at is None else created_at,
     }
 
 
@@ -86,7 +89,11 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
         try:
             b.custody.write(vendor, sub, {**entry, "state": "STALE"}, cas=ver)
         except CasConflict:
-            pass
+            # Another writer moved the entry (a concurrent refresh or a
+            # re-consent): our invalid_grant is about a superseded pair, so
+            # neither mark STALE nor count toward the mass-STALE window.
+            b.drop_cache(vendor, sub)
+            return CasLost()
         await b.invalidate(vendor, sub)
         await b.mark_stale(vendor, sub, gen_from)
         return WentStale(gen_from)
@@ -103,7 +110,8 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
 
     new_gen = gen_from + 1
     new_entry = entry_from_token_response(
-        tok, new_gen, entry["vendor_user_id"], entry["granted_scopes"])
+        tok, new_gen, entry["vendor_user_id"], entry["granted_scopes"],
+        created_at=entry.get("created_at"))
     if not new_entry["refresh_token"]:
         new_entry["refresh_token"] = entry["refresh_token"]  # non-rotating vendor
     try:
