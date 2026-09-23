@@ -17,10 +17,14 @@ on every push (`tests/unit/test_routes.py`).
 - **Consent** (`/v1/authorize/{vendor}` → vendor AS → `/v1/callback/{vendor}`):
   PKCE S256, single-use sub-bound `state`, RFC 9207 `iss` validation
   including the omission case, scopes capped by the registry ceiling.
-- **Lifecycle**: single-flight refresh with generation compare-and-swap
-  (rotating refresh-token families are never burned), STALE on
-  `invalid_grant` with mass-STALE paging, revoke-at-vendor-first deletion
-  (RFC 7009), fail-closed custody (backend loss → 503, ≤60s cache grace).
+- **Lifecycle**: only one request refreshes a user's credential at a time
+  (single-flight), and generation compare-and-swap prevents an older token
+  pair from overwriting a newer one. Definitively invalid grants become
+  `STALE`, require the user to reconnect, and can trigger an organization-wide
+  mass-STALE alert. Deletion revokes the credential at the vendor first
+  (RFC 7009) before removing it locally. If the custody backend is unavailable,
+  the broker uses only its ≤60-second cache grace and then fails closed with 503
+  rather than treating the grant as missing or supplying an unverified token.
 - **Client auth to vendors**: `client_secret_post`, `client_secret_basic`,
   or `private_key_jwt` (RFC 7523), per registry entry.
 
