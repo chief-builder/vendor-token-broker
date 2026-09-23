@@ -1,4 +1,4 @@
-"""Audit events (design §12): one JSON line per event on stdout.
+"""Audit events (design §11): one JSON line per event on stdout.
 
 Token material MUST never be passed to audit() — callers log ids, states,
 and generations only. Event names are wire contract (SIEM joins on them).

@@ -1,10 +1,10 @@
-"""Token custody behind the blueprint §2 protocol.
+"""Token custody behind the design §5 custody contract.
 
 The default backend is OpenBao / Vault KV v2: mounts vendor-tokens/ and
-vendor-clients/. The entry's refresh_generation is the §9 monotonic
+vendor-clients/. The entry's refresh_generation is the §8 monotonic
 counter; the KV v2 version doubles as the compare-and-swap handle (cas= on
 write fails if another writer moved the entry). Custody unavailability
-fails CLOSED (§10): callers translate CustodyUnavailable into 503, and it
+fails CLOSED (§9): callers translate CustodyUnavailable into 503, and it
 is never conflated with "entry absent" (which would turn an outage into a
 mass re-consent stampede).
 """
@@ -40,7 +40,7 @@ class VaultStore:
 
     def __init__(self, cfg: Config):
         # Explicit timeout so an unreachable/frozen vault surfaces as
-        # CustodyUnavailable (→ 503, §10 fail-closed) in bounded time
+        # CustodyUnavailable (→ 503, §9 fail-closed) in bounded time
         # instead of hanging the resolve.
         self._client = hvac.Client(
             url=cfg.vault_addr, token=cfg.vault_token, timeout=cfg.vault_timeout_s)

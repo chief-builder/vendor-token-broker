@@ -7,7 +7,7 @@ in-process asyncio lock per {vendor, sub}, dict-backed consent stores with
 TTL checks at read, no lease (always the sweep leader), no jitter, no
 broadcast. Correct ONLY while replicas = 1.
 
-`redis` is the multi-replica profile (blueprint §3): SET NX PX lock with
+`redis` is the multi-replica profile (ADR-0001): SET NX PX lock with
 compare-and-DEL release, waiters retrying 200ms±jitter re-reading the entry
 each retry; SETEX consent records with atomic GETDEL single-use consumption;
 per-vendor ZSET mass-STALE window; sweep leader lease; pub/sub cache
@@ -25,7 +25,7 @@ from typing import Any, Protocol
 
 from .config import Config
 
-LOCK_RETRY_S = 0.2  # waiter poll interval (±25% jitter), blueprint §3.1
+LOCK_RETRY_S = 0.2  # waiter poll interval (±25% jitter), ADR-0001
 
 
 class CoordinationUnavailable(Exception):
@@ -182,7 +182,7 @@ _CHANNEL = "vtb:invalidate"
 
 
 class RedisCoordination:
-    """Multi-replica profile on Redis 7 (blueprint §3)."""
+    """Multi-replica profile on Redis 7 (ADR-0001)."""
 
     profile = "redis"
     persist_refreshing = True
@@ -339,7 +339,7 @@ class RedisCoordination:
             raise CoordinationUnavailable(str(exc)) from exc
 
     def sweep_jitter(self) -> float:
-        return random.uniform(-0.2, 0.2)  # ±20% (blueprint §3.3)
+        return random.uniform(-0.2, 0.2)  # ±20% (ADR-0001)
 
     async def cleanup(self) -> None:
         pass  # SETEX/EXPIRE handle expiry server-side

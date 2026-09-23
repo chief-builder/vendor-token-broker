@@ -8,7 +8,7 @@ The source lab ran the broker single-replica: an in-process asyncio lock
 per `{vendor, sub}` gave single-flight refresh, consent transactions and
 `state` records lived in process dicts, and the sweeper ran unconditionally.
 Documented as correct **only** for one replica. Anything beyond one replica
-needs, together (blueprint §3): a distributed single-flight lock, persisted
+needs, together: a distributed single-flight lock, persisted
 `REFRESHING`, a jittered leader-elected sweeper, shared single-use consent
 state (or session affinity), and honesty about the per-replica token cache.
 

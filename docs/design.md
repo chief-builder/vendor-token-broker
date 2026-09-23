@@ -160,8 +160,8 @@ vendor-tokens/{vendor}/{sub}   {access_token, refresh_token, expires_at,
 vendor-clients/{vendor}        {client_id, client_secret | private_key (+alg, kid)}
 ```
 
-Bound to OpenBao/Vault KV v2 (`custody.py`); any backend satisfying the
-blueprint contract substitutes: versioned compare-and-swap on write,
+Bound to OpenBao/Vault KV v2 (`custody.py`); any backend satisfying
+this contract substitutes: versioned compare-and-swap on write,
 fail-closed-distinguishably (outage ≠ absent), two mounts with two
 policies, encryption at rest under a dedicated key. `refresh_generation`
 is the monotonic counter behind §8's race defense; the KV-v2 version is

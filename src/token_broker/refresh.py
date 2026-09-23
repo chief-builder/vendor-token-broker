@@ -5,7 +5,7 @@ The caller holds the per-entry coordination lock and passes the entry it
 just re-read. This module performs the vendor call and the generation-CAS
 outcome write. On the redis profile it first persists `state=REFRESHING`
 (+ owner + started_at) so other replicas can distinguish in-flight from
-stale (blueprint §3.2); REFRESHING never surfaces externally.
+stale (design §8); REFRESHING never surfaces externally.
 
 The KV-v2 CAS is the correctness backstop everywhere: a lost lock can never
 write a stale token pair — the CAS loser discards its result, re-reads, and
@@ -57,7 +57,7 @@ def entry_from_token_response(tok: dict, gen: int, vendor_uid: str,
 
 def abandoned(entry: dict, refreshing_ttl_s: int) -> bool:
     """A persisted REFRESHING whose owner has been silent past the TTL is
-    abandoned — the next lock holder takes over (blueprint §3.2)."""
+    abandoned — the next lock holder takes over (design §8)."""
     return (entry.get("state") == "REFRESHING"
             and time.time() - float(entry.get("refresh_started_at", 0))
             >= refreshing_ttl_s)
@@ -109,7 +109,7 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
     try:
         new_ver = b.custody.write(vendor, sub, new_entry, cas=ver)
     except CasConflict:
-        # Another writer won (§9): discard our pair, never write the older one.
+        # Another writer won (§8): discard our pair, never write the older one.
         b.drop_cache(vendor, sub)
         return CasLost()
     b.put_cache(vendor, sub, new_entry, new_ver)

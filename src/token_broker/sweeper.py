@@ -2,7 +2,7 @@
 pending revocations, and proactively refresh entries approaching expiry
 (the 5–15 min band; the 0–5 min band is served lazily by resolve).
 
-Multi-replica (blueprint §3.3): only the leader-lease holder sweeps, and
+Multi-replica (ADR-0001): only the leader-lease holder sweeps, and
 the interval is jittered ±20% so replicas never thunder together. The
 memory backend keeps the lab's fixed interval and is always the leader.
 """

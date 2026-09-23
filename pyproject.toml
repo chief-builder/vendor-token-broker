@@ -26,6 +26,7 @@ dev = [
     "jsonschema>=4.21",
     "fakeredis[lua]>=2.23",
     "ruff>=0.6",
+    "markdown>=3.6",
 ]
 
 [tool.hatch.build.targets.wheel]

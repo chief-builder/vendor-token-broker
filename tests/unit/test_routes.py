@@ -1,4 +1,4 @@
-"""Route-audit-as-unit-test (design §11, EG-04): the broker exposes exactly
+"""Route-audit-as-unit-test (design §10): the broker exposes exactly
 the 7-route no-issuance surface. Runs offline on every push."""
 from token_broker.main import create_app
 

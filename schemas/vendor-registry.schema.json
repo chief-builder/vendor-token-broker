@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/kit/vendor-registry.schema.json",
+  "$id": "https://example.invalid/vendor-token-broker/vendor-registry.schema.json",
   "title": "Vendor Token Broker registry",
-  "description": "Shape of broker/registry.json per kit/blueprints/broker.md §4 and docs/vendor-token-broker-design.md §4.5. A map of vendor_id to vendor record. Client credentials never appear here — they live in the custody backend's vendor-clients mount.",
+  "description": "Shape of the broker registry (REGISTRY_PATH) per docs/design.md §4.5 and docs/operations.md. A map of vendor_id to vendor record. Client credentials never appear here — they live in the custody backend's vendor-clients mount.",
   "type": "object",
   "propertyNames": { "pattern": "^[a-z0-9-]+$" },
   "additionalProperties": {
@@ -46,15 +46,15 @@
       "scope_ceiling": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "Hard cap on requestable scopes (EG-09). Empty means scopes are governed vendor-side (e.g. GitHub App permissions). Changing this requires token-contract-level sign-off."
+        "description": "Hard cap on requestable scopes (design §4.2). Empty means scopes are governed vendor-side (e.g. GitHub App permissions). Changing this requires token-contract-level sign-off."
       },
       "refresh_rotation": {
         "type": "boolean",
-        "description": "True when the vendor rotates refresh tokens on use — activates the single-flight discipline (EG-06)."
+        "description": "True when the vendor rotates refresh tokens on use — activates the single-flight discipline (design §8)."
       },
       "ema_status": {
         "enum": ["none", "announced", "available"],
-        "description": "Sunset tracker (design §15)."
+        "description": "Sunset tracker (design §13)."
       },
       "enabled_env": {
         "type": "string",

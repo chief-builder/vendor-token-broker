@@ -1,6 +1,6 @@
 """Vendor Token Broker — app factory and the 7-route surface.
 
-Custodian, not issuer (design §1/§11): this service holds no signing keys
+Custodian, not issuer (design §1/§10): this service holds no signing keys
 and exposes no token-minting or JWKS endpoint — tests/unit/test_routes.py
 audits the route table for exactly that on every push.
 
@@ -110,7 +110,7 @@ class Broker:
     async def mark_stale(self, vendor: str, sub: str, generation: int) -> None:
         """Emit the per-entry broker.stale record and, when STALEs for one
         vendor burst past the threshold within the window, a mass-stale page
-        (§8/§10 — the org-App-uninstall anomaly)."""
+        (§8/§9 — the org-App-uninstall anomaly)."""
         audit("broker.stale", sub=sub, vendor=vendor, generation=generation)
         try:
             count, page = await self.coord.record_stale(vendor)
@@ -218,13 +218,13 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 _audit("allow", "cache")
                 return ok_response(entry)
 
-            # Inside the refresh buffer: single-flight per {vendor, sub} (§9).
+            # Inside the refresh buffer: single-flight per {vendor, sub} (§8).
             gen_before = entry["refresh_generation"]
 
             async def _serve_if_gen_advanced():
                 """Waiter retry check (redis profile): re-read each retry and
                 serve without the lock if another replica's refresh already
-                advanced the generation (blueprint §3.1)."""
+                advanced the generation (ADR-0001)."""
                 b.drop_cache(vendor, sub)
                 f = b.get_entry(vendor, sub)
                 if f and f[0]["state"] == "ACTIVE" and \
@@ -240,7 +240,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             if early is not None:
                 return early
             if lock_token is None:
-                # Lock-holder death path: re-read and serve if usable (§9 rules).
+                # Lock-holder death path: re-read and serve if usable (§8 rules).
                 b.drop_cache(vendor, sub)
                 found = b.get_entry(vendor, sub)
                 if found and found[0]["state"] == "ACTIVE" and \
@@ -287,7 +287,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 if isinstance(outcome, refresh_mod.VendorDown):
                     _audit("deny", "vendor-unavailable", error=outcome.error)
                     return problem(503, "vendor-unavailable", outcome.error)
-                # CasLost: another writer won (§9) — serve theirs, never ours.
+                # CasLost: another writer won (§8) — serve theirs, never ours.
                 found = b.get_entry(vendor, sub)
                 _audit("allow", "cas-lost")
                 if found and found[0]["state"] == "ACTIVE":
@@ -296,7 +296,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             finally:
                 await b.coord.release_refresh_lock(vendor, sub, lock_token)
         except CustodyUnavailable as exc:
-            # §10: fail closed — no grace beyond the in-memory cache TTL.
+            # §9: fail closed — no grace beyond the in-memory cache TTL.
             _audit("deny", "vault-unavailable", error=str(exc))
             return problem(503, "vault-unavailable", str(exc))
         except CoordinationUnavailable as exc:
@@ -458,7 +458,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                 return problem(503, "vault-unavailable", str(exc))
             if found:
                 entry, _ = found
-                # REFRESHING is an internal marker (blueprint §3.2); it never
+                # REFRESHING is an internal marker (design §8); it never
                 # surfaces externally.
                 state = "ACTIVE" if entry["state"] == "REFRESHING" else entry["state"]
                 grants.append({"vendor": vendor, "state": state,

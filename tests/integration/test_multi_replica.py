@@ -1,4 +1,4 @@
-"""Multi-replica proof (blueprint §3, marker: multi): two redis-coordinated
+"""Multi-replica proof (ADR-0001, marker: multi): two redis-coordinated
 replicas behind round-robin nginx with no affinity.
 
 Requires the multi compose profile:
