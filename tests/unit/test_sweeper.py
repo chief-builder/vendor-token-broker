@@ -96,13 +96,3 @@ async def test_custody_outage_skips_the_vendor():
     h.custody.fail = True
     await sweeper.sweep_once(h.broker)          # must not raise
     assert h.vendors.refresh_calls == 0
-
-
-async def test_sweep_cleans_expired_memory_consent_records():
-    h = Harness()
-    await h.coord.put_txn("old", {"sub": "a", "vendor": VENDOR, "scopes": [],
-                                  "created_at": time.time() - 601})
-    await h.coord.put_txn("new", {"sub": "a", "vendor": VENDOR, "scopes": [],
-                                  "created_at": time.time()})
-    await sweeper.sweep_once(h.broker)
-    assert set(h.coord._txns) == {"new"}

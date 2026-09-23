@@ -27,6 +27,7 @@ from typing import Any, Protocol
 from .config import Config
 
 log = logging.getLogger(__name__)
+CLEANUP_INTERVAL_S = 60  # memory backend: expired-record reclamation cadence
 LOCK_RETRY_S = 0.2  # waiter poll interval (±25% jitter), ADR-0001
 
 
@@ -78,39 +79,69 @@ class MemoryCoordination:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._lock_users: dict[tuple[str, str], int] = {}
         self._txns: dict[str, dict] = {}
         self._states: dict[str, dict] = {}
         self._stale_events: dict[str, list[float]] = {}
         self._paged_vendors: dict[str, float] = {}
+        self._cleanup_task: asyncio.Task | None = None
 
     async def start(self, on_invalidate) -> None:
-        pass
+        # Reclaim expired consent records on a timer of their own: the
+        # sweeper can be disabled (SWEEP_INTERVAL_S=0), and records must not
+        # grow without bound when it is (review M10).
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     async def close(self) -> None:
-        pass
+        await _stop(self._cleanup_task)
 
-    def _lock(self, vendor: str, sub: str) -> asyncio.Lock:
-        return self._locks.setdefault((vendor, sub), asyncio.Lock())
+    async def _cleanup_loop(self) -> None:
+        while True:
+            await asyncio.sleep(CLEANUP_INTERVAL_S)
+            await self.cleanup()
+
+    # Per-entry locks are reference-counted and dropped when idle, so the
+    # table holds only entries with a refresh in flight or waiters.
+
+    def _use_lock(self, key: tuple[str, str]) -> asyncio.Lock:
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = self._locks[key] = asyncio.Lock()
+        self._lock_users[key] = self._lock_users.get(key, 0) + 1
+        return lock
+
+    def _unuse_lock(self, key: tuple[str, str]) -> None:
+        self._lock_users[key] -= 1
+        if self._lock_users[key] == 0:
+            del self._lock_users[key]
+            del self._locks[key]
 
     async def wait_refresh_lock(self, vendor, sub, should_stop) -> tuple[str | None, Any]:
         # Park on the lock exactly like the lab: no mid-wait re-reads; the
         # caller re-reads once after acquisition (or after timeout).
+        key = (vendor, sub)
+        lock = self._use_lock(key)
         try:
-            await asyncio.wait_for(self._lock(vendor, sub).acquire(),
-                                   timeout=self.cfg.lock_timeout_s)
+            await asyncio.wait_for(lock.acquire(), timeout=self.cfg.lock_timeout_s)
             return "local", None
         except TimeoutError:
+            self._unuse_lock(key)
             return None, None
+        except BaseException:
+            self._unuse_lock(key)
+            raise
 
     async def try_refresh_lock(self, vendor, sub) -> str | None:
-        lock = self._lock(vendor, sub)
-        if lock.locked():
+        lock = self._locks.get((vendor, sub))
+        if lock is not None and lock.locked():
             return None
-        await lock.acquire()
+        await self._use_lock((vendor, sub)).acquire()   # free: returns at once
         return "local"
 
     async def release_refresh_lock(self, vendor, sub, token) -> None:
-        self._lock(vendor, sub).release()
+        key = (vendor, sub)
+        self._locks[key].release()
+        self._unuse_lock(key)
 
     def _fresh(self, record: dict | None) -> dict | None:
         if record is None or time.time() - record["created_at"] > self.cfg.txn_ttl_s:
@@ -173,6 +204,9 @@ class MemoryCoordination:
                 self._stale_events[vendor] = kept
             else:
                 self._stale_events.pop(vendor, None)
+        for vendor in [v for v, t in self._paged_vendors.items()
+                       if now - t > self.cfg.mass_stale_window_s]:
+            del self._paged_vendors[vendor]
 
     async def publish_invalidate(self, vendor, sub) -> None:
         pass  # single replica: the local drop already happened
@@ -186,7 +220,28 @@ else
 end
 """
 
+# Lease renewal: extend only while we still hold it (atomic; GET-then-PEXPIRE
+# could extend a lease another replica took over in between).
+_RENEW_LUA = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("pexpire", KEYS[1], ARGV[2])
+else
+  return 0
+end
+"""
+
 _CHANNEL = "vtb:invalidate"
+
+
+async def _stop(task: asyncio.Task | None) -> None:
+    """Cancel a background task and wait for it to finish."""
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 class RedisCoordination:
@@ -205,6 +260,7 @@ class RedisCoordination:
             cfg.redis_url, decode_responses=True,
             socket_connect_timeout=2, socket_timeout=3)
         self._release = self._r.register_script(_RELEASE_LUA)
+        self._renew = self._r.register_script(_RENEW_LUA)
         self._on_invalidate = None
         self._listen_task: asyncio.Task | None = None
 
@@ -213,16 +269,15 @@ class RedisCoordination:
         self._listen_task = asyncio.create_task(self._listen())
 
     async def close(self) -> None:
-        if self._listen_task is not None:
-            self._listen_task.cancel()
+        await _stop(self._listen_task)
         await self._r.aclose()
 
     async def _listen(self) -> None:
         """Best-effort invalidation listener; a dropped subscription is retried
         forever — worst case stays the documented ≤60s cache TTL."""
         while True:
+            pubsub = self._r.pubsub()
             try:
-                pubsub = self._r.pubsub()
                 await pubsub.subscribe(_CHANNEL)
                 async for msg in pubsub.listen():
                     if msg["type"] == "message":
@@ -233,6 +288,11 @@ class RedisCoordination:
                 raise
             except Exception:
                 await asyncio.sleep(1)
+            finally:
+                try:   # release the dead subscription's connection
+                    await pubsub.aclose()
+                except Exception:
+                    pass
 
     @staticmethod
     def _lock_key(vendor: str, sub: str) -> str:
@@ -339,10 +399,9 @@ class RedisCoordination:
             if await self._r.set("vtb:sweep-lease", self.instance_id,
                                  nx=True, px=lease_ms):
                 return True
-            if await self._r.get("vtb:sweep-lease") == self.instance_id:
-                await self._r.pexpire("vtb:sweep-lease", lease_ms)
-                return True
-            return False
+            renewed = await self._renew(keys=["vtb:sweep-lease"],
+                                        args=[self.instance_id, lease_ms])
+            return bool(renewed)
         except self._exc as exc:
             raise CoordinationUnavailable(exc) from exc
 

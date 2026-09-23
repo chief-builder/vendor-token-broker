@@ -9,6 +9,7 @@ path to token material.
 ```sh
 bao secrets enable -path=vendor-tokens kv-v2
 bao secrets enable -path=vendor-clients kv-v2
+bao write vendor-tokens/config max_versions=2   # keep no superseded token pairs
 bao policy write broker deploy/openbao-policy.hcl
 bao token create -policy=broker -period=24h -orphan -display-name=broker
 ```
@@ -62,10 +63,12 @@ Required (startup aborts listing every missing name):
 | `CACHE_TTL_S` | `60` | Per-replica cache and outage grace cap |
 | `SWEEP_INTERVAL_S` | `60` | `0` disables the sweeper. Every other timing knob must be ≥ 1 (`CACHE_TTL_S` may be `0`: no cache) |
 | `SWEEP_MAX_ENTRIES` | `500` | Entries examined per sweep pass; the next pass resumes where this one stopped |
-| `LOCK_TIMEOUT_S` / `LOCK_TTL_MS` | `10` / `15000` | Waiter budget / redis lock TTL |
+| `LOCK_TIMEOUT_S` / `LOCK_TTL_MS` | `10` / `20000` | Waiter budget / redis lock TTL. With `COORD_BACKEND=redis`, startup rejects `LOCK_TTL_MS` below `(VENDOR_TIMEOUT_S + 2 × VAULT_TIMEOUT_S) × 1000` |
 | `REFRESHING_TTL_S` | `30` | Abandoned-marker takeover threshold |
 | `MASS_STALE_THRESHOLD` / `MASS_STALE_WINDOW_S` | `3` / `60` | Uninstall-anomaly page |
 | `VAULT_TIMEOUT_S` | `3` | Bounded fail-closed detection |
+| `VENDOR_TIMEOUT_S` | `10` | Each vendor HTTP call (metadata, token, userinfo, revocation) |
+| `JWKS_TIMEOUT_S` | `5` | Hub JWKS fetch |
 | `STARTUP_TIMEOUT_S` | `30` | How long startup waits for an unreachable custody backend or hub JWKS |
 
 ## Vendor registry review workflow
@@ -150,6 +153,20 @@ Frozen audit event names: `broker.resolve`, `broker.consent.start`,
   never on the event loop. A frozen custody backend therefore holds one
   thread per in-flight uncached request for up to `VAULT_TIMEOUT_S`, while
   cache hits and `/healthz` keep answering.
+
+## Custody layout and upgrades
+
+Grant entries live at `vendor-tokens/{vendor}/sub-b64.{base64url(sub)}`:
+one key per subject, whatever characters the hub puts in `sub` (URIs with
+`/` included). Entries written before this encoding sit at
+`vendor-tokens/{vendor}/{sub}`; the broker still reads them there and moves
+each one to the encoded key on its next write (a refresh, re-consent, or
+delete). No migration job is needed. Upgrade all replicas together: an
+older replica cannot see entries a newer one has already moved, and would
+answer needs-consent for them until it is replaced.
+
+STALE entries keep no token material (both tokens are blanked);
+`REVOKE_PENDING` entries keep theirs until the vendor revocation succeeds.
 
 ## Multi-replica deployment
 

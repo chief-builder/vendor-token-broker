@@ -126,6 +126,9 @@ services:
       SWEEP_INTERVAL_S: "5"
       LOCK_TTL_MS: "4000"
       REFRESHING_TTL_S: "8"
+      # LOCK_TTL_MS must cover VENDOR_TIMEOUT_S + 2 x VAULT_TIMEOUT_S.
+      VENDOR_TIMEOUT_S: "2"
+      VAULT_TIMEOUT_S: "1"
     volumes:
       - ../../registry.example.json:/app/registry.json:ro
     ports:

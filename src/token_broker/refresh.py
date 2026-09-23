@@ -161,9 +161,12 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
 
 async def _go_stale(b, vendor: str, sub: str, entry: dict, ver: int, gen_from: int,
                     *, anomaly: bool):
-    """CAS-write STALE; on a lost CAS, report the race instead."""
+    """CAS-write STALE with the dead token material blanked (a STALE entry
+    is only ever re-consented over or deleted, never used); on a lost CAS,
+    report the race instead."""
+    scrubbed = {**entry, "state": "STALE", "access_token": "", "refresh_token": ""}
     try:
-        await b.custody.write(vendor, sub, {**entry, "state": "STALE"}, cas=ver)
+        await b.custody.write(vendor, sub, scrubbed, cas=ver)
     except CasConflict:
         # Another writer moved the entry (a concurrent refresh or a
         # re-consent): this failure is about a superseded pair, so neither

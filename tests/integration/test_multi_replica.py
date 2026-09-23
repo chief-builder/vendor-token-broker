@@ -17,6 +17,8 @@ import pytest
 import requests
 from stack import MOCK_CONTAINER, container_audit_events, mint, mock_state
 
+from token_broker.custody import encode_sub
+
 LB = "http://localhost:8400"
 A = "http://localhost:8401"
 B = "http://localhost:8402"
@@ -82,14 +84,14 @@ def replica_audit(event: str, since: str = "5m") -> list[dict]:
 
 
 def bao_read_entry(sub: str) -> dict:
-    r = requests.get(f"{BAO}/v1/vendor-tokens/data/mockhub/{sub}",
+    r = requests.get(f"{BAO}/v1/vendor-tokens/data/mockhub/{encode_sub(sub)}",
                      headers={"X-Vault-Token": "root"}, timeout=10)
     r.raise_for_status()
     return r.json()["data"]["data"]
 
 
 def bao_write_entry(sub: str, entry: dict) -> None:
-    r = requests.post(f"{BAO}/v1/vendor-tokens/data/mockhub/{sub}",
+    r = requests.post(f"{BAO}/v1/vendor-tokens/data/mockhub/{encode_sub(sub)}",
                       headers={"X-Vault-Token": "root"}, json={"data": entry},
                       timeout=10)
     r.raise_for_status()
@@ -304,11 +306,21 @@ def test_replica_death_mid_refresh_recovers():
         assert resolve_at(B, tok).status_code == 200
     finally:
         _unpause("vtb-broker-a")
-    # Whole stack healthy again, A's zombie write lost the CAS by design.
+    # Whole stack healthy again. Either A's zombie write lost the CAS, or
+    # A's refresh timed out client-side after the vendor had already
+    # processed it: A then restored the used refresh token, B's next refresh
+    # replayed it, and the vendor burned the family. That is the documented
+    # worst case (design §9: STALE, then re-consent); custody stays intact.
     deadline = time.time() + 15
     while time.time() < deadline:
-        if _lb_up() and resolve_at(LB, tok).status_code == 200:
-            break
+        if _lb_up():
+            r = resolve_at(LB, tok)
+            if r.status_code == 200:
+                break
+            if r.status_code == 404:
+                uri = r.json()["authorize_uri"].replace(":8400", ":8402")
+                page = requests.get(uri, timeout=15)
+                assert page.status_code == 200 and "Connected" in page.text
         time.sleep(1)
     assert resolve_at(LB, tok).status_code == 200
     stored = bao_read_entry("wf-death")

@@ -30,6 +30,11 @@ from .problems import Problems
 from .refresh import entry_from_token_response
 from .vendors import VendorClient
 
+# Per-replica token cache bound. Entries also expire after CACHE_TTL_S;
+# expired ones are purged at most once per TTL, so token material for users
+# who never come back does not linger in memory (review L6).
+CACHE_MAX_ENTRIES = 10_000
+
 
 def consent_scopes(required: list[str], ceiling: list[str]) -> list[str]:
     """§4.2/§6: request the minimum — the tool's required scopes capped by the
@@ -95,6 +100,7 @@ class Broker:
         self.vendors = vendors or VendorClient(cfg, self.custody)
         self.coord = coord or make_coordination(cfg, self.instance_id)
         self.cache: dict[tuple[str, str], tuple[dict, int, float]] = {}
+        self._cache_pruned_at = time.time()
         self.sweep_cursor = 0   # where the next budgeted sweep pass resumes
         self.health_cache: tuple[float, tuple[bool, str]] | None = None
 
@@ -122,11 +128,19 @@ class Broker:
         if found is None:
             self.cache.pop(key, None)
             return None
-        self.cache[key] = (found[0], found[1], time.time())
+        self.put_cache(vendor, sub, found[0], found[1])
         return found
 
     def put_cache(self, vendor: str, sub: str, entry: dict, ver: int) -> None:
-        self.cache[(vendor, sub)] = (entry, ver, time.time())
+        now = time.time()
+        if now - self._cache_pruned_at >= self.cfg.cache_ttl_s:
+            self._cache_pruned_at = now
+            for key in [k for k, v in self.cache.items() if now - v[2] >= self.cfg.cache_ttl_s]:
+                del self.cache[key]
+        self.cache.pop((vendor, sub), None)          # re-insert: newest last
+        self.cache[(vendor, sub)] = (entry, ver, now)
+        while len(self.cache) > CACHE_MAX_ENTRIES:   # evict the oldest insert
+            del self.cache[next(iter(self.cache))]
 
     def drop_cache(self, vendor: str, sub: str) -> None:
         self.cache.pop((vendor, sub), None)
@@ -544,7 +558,8 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
               vendor_user_id=vendor_uid, **({"scope_widened": widened} if widened else {}))
         return page("Connected — return to your client.")
 
-    @app.delete("/v1/grants/{vendor}/{sub}")
+    # {sub:path}: a hub subject may contain "/" (URI-shaped subs).
+    @app.delete("/v1/grants/{vendor}/{sub:path}")
     async def delete_grant(vendor: str, sub: str, request: Request):
         claims, denied = await hub_claims(request)
         if denied is not None:

@@ -24,6 +24,11 @@ ensure_mount() {
 ensure_mount vendor-tokens
 ensure_mount vendor-clients
 
+# Keep only 2 versions per grant entry (enough for check-and-set): KV v2's
+# default of 10 would retain superseded token pairs readable by version.
+curl -sf -H "X-Vault-Token: ${ROOT}" -d '{"max_versions":2}' \
+  "${BAO}/v1/vendor-tokens/config" > /dev/null
+
 # Broker policy: read/write custody, read-only vendor client creds. No human
 # read path to token material. Verbatim from the source lab's provisioning.
 curl -sf -H "X-Vault-Token: ${ROOT}" -X PUT \

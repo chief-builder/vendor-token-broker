@@ -1,5 +1,5 @@
-"""Maintenance sweeper (design §8): drop abandoned consent records, retry
-pending revocations, and proactively refresh entries approaching expiry
+"""Maintenance sweeper (design §8): retry pending revocations and
+proactively refresh entries approaching expiry
 (the 5–15 min band; the 0–5 min band is served lazily by resolve).
 
 Multi-replica (ADR-0001): only the leader-lease holder sweeps, and
@@ -21,7 +21,6 @@ async def sweep_once(b) -> None:
     where the previous pass stopped, so the cost of a pass is bounded and
     every entry is still visited over consecutive passes. Entries the budget
     skips this pass are still refreshed lazily by resolve."""
-    await b.coord.cleanup()
     keys: list[tuple[str, str]] = []
     for vendor in b.vendors.registry():
         if b.vendors.get_vendor(vendor) is None:

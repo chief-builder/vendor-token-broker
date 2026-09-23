@@ -34,7 +34,7 @@ class HubValidator:
         # cache_keys stays off: PyJWT's per-kid cache never expires, so a key
         # the hub removed from its JWKS would stay trusted until restart. The
         # JWK-set cache (300s lifespan) already avoids per-request fetches.
-        self._jwks = jwks_client or PyJWKClient(cfg.hub_jwks_uri)
+        self._jwks = jwks_client or PyJWKClient(cfg.hub_jwks_uri, timeout=cfg.jwks_timeout_s)
 
     async def verify(self, authorization: str | None) -> dict:
         """Async entry point for the routes: validate() in a worker thread,

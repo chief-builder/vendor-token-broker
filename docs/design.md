@@ -177,7 +177,8 @@ token-contract-level sign-off.
 ## 5. Custody schema
 
 ```
-vendor-tokens/{vendor}/{sub}   {access_token, refresh_token, expires_at,
+vendor-tokens/{vendor}/sub-b64.{base64url(sub)}
+                               {access_token, refresh_token, expires_at,
                                 granted_scopes[], vendor_user_id,
                                 state: ACTIVE|REFRESHING|STALE|REVOKE_PENDING,
                                 refresh_generation, last_refresh_at, created_at}

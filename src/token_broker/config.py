@@ -54,12 +54,14 @@ class Config:
     mass_stale_window_s: int = 60
     mass_stale_threshold: int = 3
     vault_timeout_s: int = 3
+    vendor_timeout_s: int = 10
+    jwks_timeout_s: int = 5
     startup_timeout_s: int = 30
 
     # Coordination backend: memory (single replica) or redis (multi-replica).
     coord_backend: str = "memory"
     redis_url: str = "redis://localhost:6379/0"
-    lock_ttl_ms: int = 15000
+    lock_ttl_ms: int = 20000
     refreshing_ttl_s: int = 30
 
     def __post_init__(self):
@@ -77,6 +79,15 @@ class Config:
             floor = 0 if f.name in _ZERO_OK else 1
             if value < floor:
                 raise ConfigError(f"{f.name.upper()} must be >= {floor}, not {value}")
+        # The redis lock must outlive the slowest refresh it protects: one
+        # vendor round-trip plus the REFRESHING-marker and outcome custody
+        # writes. Otherwise a second replica can take the lock mid-refresh
+        # (the CAS still keeps custody correct, but the RT family may burn).
+        worst_ms = (self.vendor_timeout_s + 2 * self.vault_timeout_s) * 1000
+        if self.coord_backend == "redis" and self.lock_ttl_ms < worst_ms:
+            raise ConfigError(
+                f"LOCK_TTL_MS ({self.lock_ttl_ms}) must be >= (VENDOR_TIMEOUT_S + "
+                f"2 x VAULT_TIMEOUT_S) x 1000 = {worst_ms}")
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -132,6 +143,8 @@ class Config:
             mass_stale_window_s=_int("MASS_STALE_WINDOW_S", cls.mass_stale_window_s),
             mass_stale_threshold=_int("MASS_STALE_THRESHOLD", cls.mass_stale_threshold),
             vault_timeout_s=_int("VAULT_TIMEOUT_S", cls.vault_timeout_s),
+            vendor_timeout_s=_int("VENDOR_TIMEOUT_S", cls.vendor_timeout_s),
+            jwks_timeout_s=_int("JWKS_TIMEOUT_S", cls.jwks_timeout_s),
             startup_timeout_s=_int("STARTUP_TIMEOUT_S", cls.startup_timeout_s),
             coord_backend=backend,
             redis_url=env.get("REDIS_URL", cls.redis_url),

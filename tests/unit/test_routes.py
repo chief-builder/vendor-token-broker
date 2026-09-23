@@ -11,7 +11,7 @@ FROZEN_ROUTES = {
     "/v1/tokens/resolve",
     "/v1/authorize/{vendor}",
     "/v1/callback/{vendor}",
-    "/v1/grants/{vendor}/{sub}",
+    "/v1/grants/{vendor}/{sub:path}",   # same URL; the sub may contain "/"
     "/v1/grants",
     "/v1/admin/vendors/{vendor}",
 }
