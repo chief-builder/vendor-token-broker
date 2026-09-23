@@ -42,6 +42,20 @@ class HubValidator:
         timeout) that must never stall the event loop."""
         return await asyncio.to_thread(self.validate, authorization)
 
+    async def check(self) -> None:
+        """Fetch the hub JWKS once (startup check). Raises HubUnavailable if
+        it cannot be fetched, HubAuthError if it holds no usable keys."""
+        await asyncio.to_thread(self._check)
+
+    def _check(self) -> None:
+        try:
+            self._jwks.get_signing_keys()
+        except (PyJWKClientConnectionError, TimeoutError) as exc:
+            log.debug("hub JWKS fetch failed: %s", exc)
+            raise HubUnavailable("hub signing keys unavailable") from exc
+        except Exception as exc:  # e.g. "did not contain any signing keys"
+            raise HubAuthError(str(exc)) from exc
+
     def validate(self, authorization: str | None) -> dict:
         """Return verified claims of the Bearer hub JWT. Raises HubAuthError for a
         bad token, HubUnavailable when the hub JWKS cannot be fetched."""

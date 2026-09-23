@@ -135,3 +135,22 @@ def test_key_removed_from_jwks_stops_validating(cfg, rsa_key):
     published["keys"] = []                      # the hub rotates the key out
     with pytest.raises(HubAuthError):
         v.validate(bearer(token))
+
+
+async def test_startup_check_classifies_jwks_failures(cfg):
+    from jwt.exceptions import PyJWKClientConnectionError, PyJWKClientError
+
+    from token_broker.hub import HubUnavailable
+
+    class Down:
+        def get_signing_keys(self):
+            raise PyJWKClientConnectionError("Fail to fetch data from the url")
+
+    class Empty:
+        def get_signing_keys(self):
+            raise PyJWKClientError("The JWKS endpoint did not contain any signing keys")
+
+    with pytest.raises(HubUnavailable):
+        await HubValidator(cfg, jwks_client=Down()).check()
+    with pytest.raises(HubAuthError):
+        await HubValidator(cfg, jwks_client=Empty()).check()

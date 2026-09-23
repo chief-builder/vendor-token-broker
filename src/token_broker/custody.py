@@ -30,10 +30,19 @@ class CustodyUnavailable(Exception):
     """Custody backend unreachable or refusing. The message is fixed: raw
     client errors carry hostnames and go to the debug log only."""
 
+    MESSAGE = "custody backend unavailable"
+
     def __init__(self, cause: Exception | None = None):
-        super().__init__("custody backend unavailable")
+        super().__init__(self.MESSAGE)
         if cause is not None:
             log.debug("custody error: %r", cause)
+
+
+class CustodyTokenRejected(CustodyUnavailable):
+    """The backend is reachable but refuses the broker's own token (expired,
+    revoked, or wrong): a credential problem, not an outage."""
+
+    MESSAGE = "custody token rejected"
 
 
 class CasConflict(Exception):
@@ -47,6 +56,8 @@ class Custody(Protocol):
     async def delete(self, vendor: str, sub: str) -> None: ...
     async def list_subjects(self, vendor: str) -> list[str]: ...
     async def read_client(self, vendor: str) -> dict | None: ...
+    async def token_status(self) -> tuple[int, bool]: ...
+    async def renew_token(self) -> int: ...
 
 
 class VaultStore:
@@ -85,7 +96,33 @@ class VaultStore:
         """Per-vendor confidential client credential (design §3/§5)."""
         return await asyncio.to_thread(self._read_client, vendor)
 
+    async def token_status(self) -> tuple[int, bool]:
+        """(seconds of TTL left, renewable) for the broker's own token.
+        A TTL of 0 means the token never expires."""
+        return await asyncio.to_thread(self._token_status)
+
+    async def renew_token(self) -> int:
+        """Renew the broker's own token; returns the new TTL in seconds."""
+        return await asyncio.to_thread(self._renew_token)
+
     # Blocking implementations (worker thread only).
+
+    def _token_status(self) -> tuple[int, bool]:
+        try:
+            data = self._client.auth.token.lookup_self()["data"]
+        except (hvac_exc.Forbidden, hvac_exc.Unauthorized) as exc:
+            raise CustodyTokenRejected(exc) from exc
+        except Exception as exc:
+            raise CustodyUnavailable(exc) from exc
+        return int(data.get("ttl") or 0), bool(data.get("renewable"))
+
+    def _renew_token(self) -> int:
+        try:
+            return int(self._client.auth.token.renew_self()["auth"]["lease_duration"])
+        except (hvac_exc.Forbidden, hvac_exc.Unauthorized) as exc:
+            raise CustodyTokenRejected(exc) from exc
+        except Exception as exc:
+            raise CustodyUnavailable(exc) from exc
 
     def _read(self, vendor: str, sub: str) -> tuple[dict, int] | None:
         try:

@@ -18,7 +18,7 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import __version__, sweeper
+from . import __version__, lifecycle, sweeper
 from . import refresh as refresh_mod
 from . import vendors as vendors_mod
 from .audit import audit
@@ -96,6 +96,7 @@ class Broker:
         self.coord = coord or make_coordination(cfg, self.instance_id)
         self.cache: dict[tuple[str, str], tuple[dict, int, float]] = {}
         self.sweep_cursor = 0   # where the next budgeted sweep pass resumes
+        self.health_cache: tuple[float, tuple[bool, str]] | None = None
 
     async def new_txn(self, sub: str, vendor: str, scopes: list[str]) -> str:
         txn_id = secrets.token_urlsafe(24)
@@ -161,13 +162,16 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Refuse to serve with a dead custody token or no hub keys (review H4).
+        ttl, renewable = await lifecycle.startup_checks(b)
         await b.coord.start(on_invalidate=b.drop_cache)
-        task = (asyncio.create_task(sweeper.sweep_loop(b))
-                if cfg.sweep_interval_s > 0 else None)
+        tasks = [asyncio.create_task(lifecycle.renew_loop(b, ttl, renewable))]
+        if cfg.sweep_interval_s > 0:
+            tasks.append(asyncio.create_task(sweeper.sweep_loop(b)))
         try:
             yield
         finally:
-            if task is not None:
+            for task in tasks:
                 task.cancel()
             await b.coord.close()
 
@@ -190,7 +194,8 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @app.get("/healthz")
     async def healthz():
-        return {"ok": True}
+        ok, custody = await lifecycle.custody_health(b)
+        return JSONResponse({"ok": ok, "custody": custody}, status_code=200 if ok else 503)
 
     @app.post("/v1/tokens/resolve")
     async def resolve(request: Request):

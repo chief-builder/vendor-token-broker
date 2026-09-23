@@ -279,7 +279,8 @@ One JSON line per event on stdout; ids, states, and generations only.
 Vocabulary (wire-frozen): `broker.resolve` (decision + path),
 `broker.consent.start|complete|fail`, `broker.refresh` (generation
 transition), `broker.stale`, `broker.stale.mass`, `broker.revoke`,
-`broker.admin.deny`, `broker.sweep.error`. Every vendor-side action is
+`broker.admin.deny`, `broker.sweep.error`, and (added in 1.1)
+`broker.custody.renew_failed`. Every vendor-side action is
 joinable: hub `jti` → resolve → gateway record → vendor audit log via
 `vendor_user_id`.
 

@@ -54,6 +54,7 @@ class Config:
     mass_stale_window_s: int = 60
     mass_stale_threshold: int = 3
     vault_timeout_s: int = 3
+    startup_timeout_s: int = 30
 
     # Coordination backend: memory (single replica) or redis (multi-replica).
     coord_backend: str = "memory"
@@ -131,6 +132,7 @@ class Config:
             mass_stale_window_s=_int("MASS_STALE_WINDOW_S", cls.mass_stale_window_s),
             mass_stale_threshold=_int("MASS_STALE_THRESHOLD", cls.mass_stale_threshold),
             vault_timeout_s=_int("VAULT_TIMEOUT_S", cls.vault_timeout_s),
+            startup_timeout_s=_int("STARTUP_TIMEOUT_S", cls.startup_timeout_s),
             coord_backend=backend,
             redis_url=env.get("REDIS_URL", cls.redis_url),
             lock_ttl_ms=_int("LOCK_TTL_MS", cls.lock_ttl_ms),

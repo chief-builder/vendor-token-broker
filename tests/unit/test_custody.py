@@ -6,7 +6,7 @@ import pytest
 from hvac import exceptions as hvac_exc
 from unit_helpers import make_config
 
-from token_broker.custody import CasConflict, CustodyUnavailable, VaultStore
+from token_broker.custody import CasConflict, CustodyTokenRejected, CustodyUnavailable, VaultStore
 
 CAS_MESSAGE = "check-and-set parameter did not match the current version"
 
@@ -109,3 +109,56 @@ async def test_read_client_uses_clients_mount():
     assert await store_with(kv).read_client("mockhub") == {"client_id": "cid"}
     assert kv.calls[0][1]["mount_point"] == "vendor-clients"
     assert await store_with(FakeKV(error=hvac_exc.InvalidPath("none"))).read_client("v") is None
+
+
+class FakeTokenAPI:
+    def __init__(self, error=None, lookup=None, renew=None):
+        self.error, self.lookup, self.renew = error, lookup, renew
+
+    def lookup_self(self):
+        if self.error is not None:
+            raise self.error
+        return self.lookup
+
+    def renew_self(self):
+        if self.error is not None:
+            raise self.error
+        return self.renew
+
+
+def store_with_token(api: FakeTokenAPI) -> VaultStore:
+    store = VaultStore(make_config())
+
+    class _Auth:
+        token = api
+
+    class _Client:
+        auth = _Auth
+    store._client = _Client()
+    return store
+
+
+async def test_token_status_and_renewal():
+    store = store_with_token(FakeTokenAPI(
+        lookup={"data": {"ttl": 2763169, "renewable": True}},
+        renew={"auth": {"lease_duration": 2763177, "renewable": True}}))
+    assert await store.token_status() == (2763169, True)
+    assert await store.renew_token() == 2763177
+
+
+async def test_root_style_token_reports_no_expiry():
+    store = store_with_token(FakeTokenAPI(lookup={"data": {"ttl": 0, "renewable": False}}))
+    assert await store.token_status() == (0, False)
+
+
+@pytest.mark.parametrize("error,expected", [
+    (hvac_exc.Forbidden("permission denied"), CustodyTokenRejected),
+    (hvac_exc.Unauthorized("bad token"), CustodyTokenRejected),
+    (ConnectionError("refused"), CustodyUnavailable),
+])
+async def test_token_errors_distinguish_rejection_from_outage(error, expected):
+    store = store_with_token(FakeTokenAPI(error=error))
+    for call in (store.token_status, store.renew_token):
+        with pytest.raises(expected) as exc:
+            await call()
+        assert type(exc.value) is expected

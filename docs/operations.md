@@ -10,11 +10,23 @@ path to token material.
 bao secrets enable -path=vendor-tokens kv-v2
 bao secrets enable -path=vendor-clients kv-v2
 bao policy write broker deploy/openbao-policy.hcl
-bao token create -policy=broker -ttl=768h -display-name=broker
+bao token create -policy=broker -period=24h -orphan -display-name=broker
 ```
 
 Give the broker the scoped token (`VAULT_TOKEN` or `VAULT_TOKEN_FILE`),
-**never root**. Write each vendor's confidential client credential on the
+**never root**. Use a **periodic** token as above: the broker renews its
+own token at half the remaining TTL, and a periodic token can be renewed
+indefinitely. A token with a hard maximum TTL (for example `-ttl=768h`)
+can only be renewed up to that maximum; `/healthz` starts failing 10
+minutes before it expires, and it must then be replaced and the broker
+restarted. The token also needs the built-in `default` policy (attached
+unless `-no-default-policy` is given), which grants `lookup-self` and
+`renew-self`.
+
+At startup the broker checks its custody token and fetches the hub JWKS
+before serving. An unreachable backend or hub is retried for
+`STARTUP_TIMEOUT_S`; a rejected token or a JWKS with no keys aborts at
+once with a message naming the setting to fix. Write each vendor's confidential client credential on the
 admin path:
 
 ```sh
@@ -54,6 +66,7 @@ Required (startup aborts listing every missing name):
 | `REFRESHING_TTL_S` | `30` | Abandoned-marker takeover threshold |
 | `MASS_STALE_THRESHOLD` / `MASS_STALE_WINDOW_S` | `3` / `60` | Uninstall-anomaly page |
 | `VAULT_TIMEOUT_S` | `3` | Bounded fail-closed detection |
+| `STARTUP_TIMEOUT_S` | `30` | How long startup waits for an unreachable custody backend or hub JWKS |
 
 ## Vendor registry review workflow
 
@@ -98,10 +111,21 @@ A plugin that treats every 5xx as retriable needs no change.
 Frozen audit event names: `broker.resolve`, `broker.consent.start`,
 `broker.consent.complete`, `broker.consent.fail`, `broker.refresh`,
 `broker.stale`, `broker.stale.mass`, `broker.revoke`, `broker.admin.deny`,
-`broker.sweep.error`.
+`broker.sweep.error`. Added in 1.1 (additive): `broker.custody.renew_failed`.
 
 ## Runbook
 
+- **`/healthz`** returns `{"ok", "custody"}`. It fails (503) only for a
+  problem with this replica's own custody token: `token-rejected` (revoked,
+  expired, or wrong) or `token-expiring` (under 10 minutes left). Replace
+  the token and restart the replica. A custody **outage** is reported as
+  `"custody": "unreachable"` but stays 200 on purpose: every replica shares
+  the outage, and draining or restarting them would discard the cache hits
+  that keep serving meanwhile. Alert on the body, not only the status. The
+  result is cached for 10 seconds.
+- **`broker.custody.renew_failed`**: the broker could not renew its custody
+  token and is retrying with backoff (`ttl_remaining_s` says how long is
+  left). If the backend is up, check the token's policies and max TTL.
 - **`broker.stale.mass` page**: an org-level app uninstall or credential
   rotation at one vendor. Per-entry recovery is self-service re-consent;
   investigate the vendor-side cause before mass-notifying users.

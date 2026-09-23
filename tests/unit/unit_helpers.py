@@ -37,6 +37,11 @@ class MemoryCustody:
         self.entries: dict[tuple[str, str], tuple[dict, int]] = {}
         self.clients: dict[str, dict] = {}
         self.fail = False  # set True to simulate backend outage
+        self.token = (0, False)          # (ttl, renewable) the broker token reports
+        self.token_error: Exception | None = None
+        self.renewals = 0
+        self.renew_ttl = 3600
+        self.renew_error: Exception | None = None
 
     def _check(self):
         if self.fail:
@@ -75,6 +80,17 @@ class MemoryCustody:
         self._check()
         return self.clients.get(vendor)
 
+    async def token_status(self):
+        if self.token_error is not None:
+            raise self.token_error
+        return self.token
+
+    async def renew_token(self):
+        self.renewals += 1
+        if self.renew_error is not None:
+            raise self.renew_error
+        return self.renew_ttl
+
 
 # ---------------------------------------------------------- hub JWT minting
 
@@ -90,6 +106,9 @@ class StaticJWKS:
 
     def get_signing_key_from_jwt(self, token):
         return self._Key(self._public)
+
+    def get_signing_keys(self):
+        return [self._Key(self._public)]
 
 
 def mint_hub_token(key, alg: str, cfg: Config, **claim_overrides) -> str:
