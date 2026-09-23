@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "vendor-token-broker"
-version = "1.0.0"
+version = "1.1.0"
 description = "OAuth credential custodian for third-party SaaS vendors: acquires, custodies, refreshes, and revokes vendor tokens per user. Custodian, not issuer."
 readme = "README.md"
 requires-python = ">=3.12"

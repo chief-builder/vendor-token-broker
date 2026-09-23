@@ -34,7 +34,9 @@ Requires Docker and Python 3.12.
 
 ```sh
 git clone <this-repo> vendor-token-broker && cd vendor-token-broker
-python3.12 -m venv .venv && .venv/bin/pip install -e '.[dev,redis]'
+python3.12 -m venv .venv
+.venv/bin/pip install --require-hashes -r requirements-dev.lock
+.venv/bin/pip install --no-deps -e .
 
 # Bring up the acceptance stack: OpenBao (+ scoped-token init), Redis,
 # a hostile mock vendor AS, a hub-issuer stub, and the broker.
@@ -49,6 +51,20 @@ Multi-replica proof (two redis-coordinated replicas behind round-robin nginx):
 docker compose -f tests/stack/docker-compose.yml --profile multi up -d --build --wait
 BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
   .venv/bin/pytest tests/integration/test_multi_replica.py
+```
+
+## Dependencies
+
+Installs are hash-pinned: `requirements.lock` (runtime + redis, used by the
+Docker image) and `requirements-dev.lock` (adds the dev tools, used by CI).
+Both are generated from `pyproject.toml` and work on every platform. After
+changing a dependency in `pyproject.toml`, regenerate them:
+
+```sh
+uv pip compile pyproject.toml --extra redis --universal --python-version 3.12 \
+  --generate-hashes -o requirements.lock
+uv pip compile pyproject.toml --extra redis --extra dev --universal --python-version 3.12 \
+  --generate-hashes -o requirements-dev.lock
 ```
 
 ## Running against your own stack

@@ -83,6 +83,8 @@ services:
       COORD_BACKEND: ${COORD_BACKEND:-memory}
       REDIS_URL: redis://redis:6379/0
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      # Short per-replica cache so test_cache.py can observe expiry quickly.
+      CACHE_TTL_S: "10"
     volumes:
       - ../../registry.example.json:/app/registry.json:ro
     ports:

@@ -81,15 +81,32 @@ def test_custody_loss_fails_closed():
 # ── Token-in-log grep (design §11) ───────────────────────────────────────────
 
 def test_no_token_material_in_any_log(alice):
-    """A live hub token and a live vendor access token must appear nowhere in
-    any stack container log (records carry ids, never secrets)."""
+    """No secret the stack handles appears in any container log: the hub
+    JWT, the vendor access and refresh tokens, the vendor client secret, and
+    the private_key_jwt signing key (records carry ids, never secrets)."""
+    from pathlib import Path
+
+    from stack import sub_of
+
+    from token_broker.custody import encode_sub
+
     do_consent(alice)
     r = resolve(alice)
     assert r.status_code == 200, r.text
     vendor_at = r.json()["access_token"]
     hub_sig = alice.rsplit(".", 1)[-1]  # the JWT signature segment
+    entry = requests.get(
+        f"http://localhost:8210/v1/vendor-tokens/data/mockhub/{encode_sub(sub_of(alice))}",
+        headers={"X-Vault-Token": "root"}, timeout=10).json()["data"]["data"]
+    key_pem = (Path(__file__).resolve().parents[1] / "stack" / "keys" /
+               "mockhub-jwt-private.pem").read_text().splitlines()
+    key_line = next(line for line in key_pem[1:] if len(line) > 40)
 
     for label, needle in (("vendor access_token", vendor_at),
-                          ("hub jwt signature", hub_sig)):
+                          ("vendor refresh_token", entry["refresh_token"]),
+                          ("hub jwt signature", hub_sig),
+                          ("vendor client secret", "mock-secret"),
+                          ("pkj private key", key_line)):
+        assert needle, label
         hits = grep_container_logs(needle)
         assert not hits, f"{label} found in container logs: {hits}"

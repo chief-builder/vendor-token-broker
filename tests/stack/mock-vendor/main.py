@@ -113,6 +113,19 @@ def _mint(family_id: str, scopes: str) -> dict:
 
 @app.get("/.well-known/oauth-authorization-server")
 async def metadata():
+    return _metadata()
+
+
+@app.get("/.well-known/oauth-authorization-server/norevoke")
+async def metadata_without_revocation():
+    """RFC 8414 path-suffix variant for a vendor that offers no revocation
+    endpoint (registry entry mockhub-norevoke)."""
+    meta = _metadata()
+    del meta["revocation_endpoint"]
+    return meta
+
+
+def _metadata() -> dict:
     return {
         "issuer": ISSUER,
         "authorization_endpoint": f"{PUBLIC_URL}/authorize",
@@ -246,6 +259,15 @@ async def test_revoke_family():
     for fam in families.values():
         fam["revoked"] = True
     return {"revoked_families": len(families)}
+
+
+@app.post("/_test/at_ttl")
+async def test_at_ttl(request: Request):
+    """Set the access-token lifetime for tokens minted from now on, so a
+    suite can use long-lived tokens (the broker's cache path)."""
+    global AT_TTL
+    AT_TTL = int((await request.json())["seconds"])
+    return {"at_ttl": AT_TTL}
 
 
 @app.post("/_test/reset")

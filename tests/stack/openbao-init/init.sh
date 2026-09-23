@@ -49,6 +49,10 @@ echo "==> Writing vendor client credentials to vendor-clients/..."
 curl -sf -H "X-Vault-Token: ${ROOT}" \
   -d "{\"data\":{\"client_id\":\"${MOCK_CLIENT_ID:-mcp-lab-broker}\",\"client_secret\":\"${MOCK_CLIENT_SECRET:-mock-secret}\"}}" \
   "${BAO}/v1/vendor-clients/data/mockhub" > /dev/null
+# Same client, registered as a vendor without a revocation endpoint.
+curl -sf -H "X-Vault-Token: ${ROOT}" \
+  -d "{\"data\":{\"client_id\":\"${MOCK_CLIENT_ID:-mcp-lab-broker}\",\"client_secret\":\"${MOCK_CLIENT_SECRET:-mock-secret}\"}}" \
+  "${BAO}/v1/vendor-clients/data/mockhub-norevoke" > /dev/null
 
 # private_key_jwt client: the broker-side private key (test-only keypair,
 # committed under tests/stack/keys/).

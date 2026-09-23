@@ -31,5 +31,14 @@
     "refresh_rotation": true,
     "ema_status": "none",
     "_notes": "Same test AS via private_key_jwt (RFC 7523): the broker signs a client assertion with the private key held in vendor-clients/mockhub-jwt ({client_id, private_key, alg}); the mock verifies it for real. Exists so the pkj leg of the client-auth matrix runs headless."
+  },
+  "mockhub-norevoke": {
+    "vendor_id": "mockhub-norevoke",
+    "auth_metadata_url": "http://mock-vendor:8310/.well-known/oauth-authorization-server/norevoke",
+    "token_endpoint_auth_method": "client_secret_post",
+    "scope_ceiling": ["issues:read", "issues:write"],
+    "refresh_rotation": true,
+    "ema_status": "none",
+    "_notes": "Same test AS, but its metadata advertises no revocation_endpoint. Exists so the delete-without-vendor-revocation path runs headless (local delete, audited outcome: unsupported)."
   }
 }

@@ -23,6 +23,24 @@ def test_delete_grant_revokes_at_vendor(alice):
     assert audit and audit[-1]["outcome"] == "revoked"
 
 
+def test_delete_for_a_vendor_without_revocation_deletes_locally():
+    """mockhub-norevoke advertises no revocation endpoint: the grant is
+    removed locally, reported as such, and the vendor is not called."""
+    tok = mint("wf-norevoke")
+    requests.delete(f"{BROKER}/v1/grants/mockhub-norevoke/wf-norevoke",
+                    headers={"Authorization": f"Bearer {tok}"}, timeout=10)
+    do_consent(tok, "mockhub-norevoke")
+    revokes_before = mock_state()["counters"]["revoke"]
+    r = requests.delete(f"{BROKER}/v1/grants/mockhub-norevoke/wf-norevoke",
+                        headers={"Authorization": f"Bearer {tok}"}, timeout=10)
+    assert r.status_code == 200
+    assert r.json() == {"revoked": True, "vendor_revocation": "unsupported"}
+    assert mock_state()["counters"]["revoke"] == revokes_before
+    assert resolve(tok, "mockhub-norevoke").status_code == 404
+    audit = [e for e in broker_audit("broker.revoke") if e.get("sub") == "wf-norevoke"]
+    assert audit[-1]["outcome"] == "unsupported"
+
+
 def test_grants_are_self_service_only(alice, bob):
     r = requests.delete(f"{BROKER}/v1/grants/mockhub/{sub_of(alice)}",
                         headers={"Authorization": f"Bearer {bob}"}, timeout=10)

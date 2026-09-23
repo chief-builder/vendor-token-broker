@@ -30,7 +30,8 @@ runbook), `docs/adr/0001-redis-coordination.md`.
 ## Commands
 
 ```sh
-.venv/bin/pip install -e '.[dev,redis]'         # once
+.venv/bin/pip install --require-hashes -r requirements-dev.lock  # once
+.venv/bin/pip install --no-deps -e .
 ruff check src tests
 pytest tests/unit -q                             # offline, no containers
 
