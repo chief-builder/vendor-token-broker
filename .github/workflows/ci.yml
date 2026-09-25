@@ -23,6 +23,8 @@ jobs:
           jsonschema.validate(registry, schema)
           print("registry.example.json: schema-valid")
           EOF
+      - name: Check generated documentation
+        run: python tools/build-pages.py --check
 
   unit:
     runs-on: ubuntu-latest

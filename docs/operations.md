@@ -1,15 +1,19 @@
-# Operations
+# Deploy and operate
+
+Provision the broker for a private deployment. For a local demonstration,
+use the [quickstart](quickstart.md). See the [API reference](api.md) for
+caller behavior and [security limits](security.md#known-limitations) before rollout.
 
 ## Custody provisioning (OpenBao / Vault, KV v2)
 
 Two mounts, two policies — grant entries are broker read/write; vendor
-client credentials are broker read-only, admin write-only. No human read
-path to token material.
+client credentials are broker read-only, admin write-only. Restrict human read access through deployment policies; the supplied
+broker ACL does not remove custody administrators' privileges.
 
 ```sh
 bao secrets enable -path=vendor-tokens kv-v2
 bao secrets enable -path=vendor-clients kv-v2
-bao write vendor-tokens/config max_versions=2   # keep no superseded token pairs
+bao write vendor-tokens/config max_versions=2   # retain up to two credential versions
 bao policy write broker deploy/openbao-policy.hcl
 bao token create -policy=broker -period=24h -orphan -display-name=broker
 ```
@@ -24,8 +28,11 @@ restarted. The token also needs the built-in `default` policy (attached
 unless `-no-default-policy` is given), which grants `lookup-self` and
 `renew-self`.
 
-At startup the broker checks its custody token and fetches the hub JWKS
-before serving. An unreachable backend or hub is retried for
+Enable a custody-backend audit device and verify read events reach your
+audit sink. Broker application events do not substitute for storage auditing.
+
+At startup the broker checks its custody token, hub JWKS, and hub OIDC
+discovery before serving. An unreachable backend or hub is retried for
 `STARTUP_TIMEOUT_S`; a rejected token or a JWKS with no keys aborts at
 once with a message naming the setting to fix. Write each vendor's confidential client credential on the
 admin path:
@@ -41,7 +48,7 @@ need `client_secret`; `private_key_jwt` needs `private_key` (PEM, PKCS8)
 plus optional `alg` (default RS256) and `kid`.
 
 Custody loss fails closed: resolve returns 503 `vault-unavailable`, with
-grace limited to each replica's ≤60s in-memory cache.
+grace limited to each replica's in-memory cache (`CACHE_TTL_S`, default 60s).
 
 ## Configuration reference
 
@@ -62,7 +69,7 @@ always used).
 | `REDIS_URL` | `redis://localhost:6379/0` | redis profile |
 | `REFRESH_BUFFER_S` | `300` | Lazy-refresh band |
 | `PROACTIVE_REFRESH_S` | `900` | Sweeper refresh band upper edge |
-| `CACHE_TTL_S` | `60` | Per-replica cache and outage grace cap |
+| `CACHE_TTL_S` | `60` | Per-replica cache and outage grace cap (not capped; keep ≤ 60 to preserve the documented bound) |
 | `SWEEP_INTERVAL_S` | `60` | `0` disables the sweeper. Every other timing knob must be ≥ 1 (`CACHE_TTL_S` may be `0`: no cache) |
 | `SWEEP_MAX_ENTRIES` | `500` | Entries examined per sweep pass; the next pass resumes where this one stopped |
 | `LOCK_TIMEOUT_S` / `LOCK_TTL_MS` | `10` / `20000` | Waiter budget / redis lock TTL. With `COORD_BACKEND=redis`, startup rejects `LOCK_TTL_MS` below `(VENDOR_TIMEOUT_S + 2 × VAULT_TIMEOUT_S) × 1000` |
@@ -71,7 +78,7 @@ always used).
 | `VAULT_TIMEOUT_S` | `3` | Bounded fail-closed detection |
 | `VENDOR_TIMEOUT_S` | `10` | Each vendor HTTP call (metadata, token, userinfo, revocation) |
 | `JWKS_TIMEOUT_S` | `5` | Hub JWKS fetch |
-| `STARTUP_TIMEOUT_S` | `30` | How long startup waits for an unreachable custody backend or hub JWKS |
+| `STARTUP_TIMEOUT_S` | `30` | How long startup waits for an unreachable custody backend, hub JWKS, or hub OIDC discovery |
 
 ## Hub login client (consent)
 
@@ -107,29 +114,12 @@ policy. Treat every change as a reviewed change:
    `auth_metadata_url`.
 5. Credentials never live in the registry — only in `vendor-clients/*`.
 
-## Gateway (Kong) wire contract
+## Gateway contract
 
-What the egress plugin reads from the broker — frozen; verified by
-`tests/integration/test_wire_compat.py`:
-
-| Broker response | Field(s) read | Plugin behavior |
-|---|---|---|
-| `200` | `access_token` | Swap upstream `Authorization`; hub JWT never transits to the vendor |
-| `404` + `authorize_uri` | `authorize_uri` | 401 `authorization_required` challenge to the client |
-| `409` + `authorize_uri` | `authorize_uri` (+`missing_scopes` in body) | 401 step-up re-consent challenge |
-| `409` (plain) | `title` | 403 with the title slug (e.g. `revoke-pending`) |
-| other 5xx | — | 503 `vendor_unavailable`, retriable |
-
-Frozen `title` slugs: `needs-consent`, `needs-reconsent-scope`,
-`invalid-hub-token`, `sub-mismatch`, `unknown-vendor`,
-`scope-exceeds-ceiling`, `revoke-pending`, `vendor-unavailable`,
-`vault-unavailable`, `coordination-unavailable`, `forbidden`, `no-grant`,
-`invalid-transaction`.
-
-Added in 1.1, additive only (existing slugs and statuses never change):
-`hub-unavailable` (503: the hub JWKS could not be fetched, which is an outage
-and not a bad token) and `invalid-request` (400: a malformed resolve body).
-A plugin that treats every 5xx as retriable needs no change.
+Use the [API reference](api.md) for frozen response fields, problem titles,
+and the [legacy gateway mapping](api.md#legacy-gateway-mapping). The plugin
+is external to this repository. Follow [Integrate with MCP](mcp-integration.md)
+for current protocol boundaries and the proposed consent adapter.
 
 Frozen audit event names: `broker.resolve`, `broker.consent.start`,
 `broker.consent.complete`, `broker.consent.fail`, `broker.refresh`,
@@ -157,18 +147,20 @@ Frozen audit event names: `broker.resolve`, `broker.consent.start`,
 - **`broker.consent.fail` with `reason: browser_mismatch`**: a consent leg
   was finished in a browser that did not start it (a forwarded callback or
   vendor URL). No code was redeemed.
-- **`broker.stale.mass` page**: an org-level app uninstall or credential
-  rotation at one vendor. Per-entry recovery is self-service re-consent;
+- **`broker.stale.mass` signal**: possible org-level app uninstall or credential
+  rotation at one vendor. Configure monitoring to route the event to on-call;
+  the broker itself does not send pages. Per-entry recovery is self-service re-consent;
   investigate the vendor-side cause before mass-notifying users.
 - **503 `vault-unavailable`**: custody outage; the broker is fail-closed by
   design. Restore the backend; entries and generations are intact (CAS).
-- **503 `coordination-unavailable`** (redis profile): refresh path only —
-  cache hits keep serving. Restore redis; no state is lost (consent records
-  expire and are re-created; the CAS protected custody throughout).
+- **503 `coordination-unavailable`** (redis profile): operations requiring
+  coordination fail, including refresh and consent-state access; usable
+  cache hits keep serving. Restore Redis. Lost consent records require a
+  fresh browser flow; durable credentials remain in custody.
 - **Replica died mid-refresh**: nothing to do. The lock TTL expires, the
   abandoned `REFRESHING` marker is taken over, and in the worst case a
-  rotating-RT family burns → STALE → the user re-consents. Custody can
-  never hold a stale token pair (CAS).
+  rotating-RT family burns → STALE → the user re-consents. CAS prevents a losing writer from overwriting a newer version; it cannot
+  recover credentials already consumed upstream.
 - **Sweeper**: leader-lease holder only (redis profile). `broker.sweep.error`
   events carry the vendor/sub that failed; a bad entry never kills the loop.
   Each pass lists every vendor's entries, then examines at most
@@ -193,7 +185,8 @@ delete). No migration job is needed. Upgrade all replicas together: an
 older replica cannot see entries a newer one has already moved, and would
 answer needs-consent for them until it is replaced.
 
-STALE entries keep no token material (both tokens are blanked);
+The current STALE entry keeps no token material (both tokens are blanked);
+older retained KV versions may still contain credentials.
 `REVOKE_PENDING` entries keep theirs until the vendor revocation succeeds.
 
 ## Multi-replica deployment
@@ -201,5 +194,12 @@ STALE entries keep no token material (both tokens are blanked);
 Run ≥2 replicas only with `COORD_BACKEND=redis` (see
 `deploy/docker-compose.multi.yml` for the shape: shared OpenBao + Redis,
 any L4/L7 balancer, no session affinity required). Keep `LOCK_TTL_MS`
-above the slowest vendor token round-trip and `REFRESHING_TTL_S` above
-`LOCK_TTL_MS`.
+above the slowest vendor token round-trip plus custody overhead. Compare
+units when configuring takeover: `REFRESHING_TTL_S` should exceed
+`LOCK_TTL_MS / 1000`.
+
+A stopped sweep leader can retain its Redis lease for up to twice its
+configured sweep interval (120 seconds with defaults), then a successor
+must reach its next sweep attempt. Account for that handoff when changing
+profiles or timing settings. The [test guide](quickstart.md#run-the-automated-checks)
+describes isolation between standalone and multi-replica runs.

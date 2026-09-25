@@ -45,21 +45,23 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 ```
 
 CI (`.github/workflows/ci.yml`): lint+schema / unit / docker-build /
-integration(memory, redis) / multi. Integration tests run COORD_BACKEND
-matrix by restarting the broker container with the env var.
+integration(memory, redis) / multi. The integration job is a matrix over
+`COORD_BACKEND`; each leg brings the stack up with that env var.
 
 ## Layout
 
 - `src/token_broker/` — `main.py` (app factory + 7 routes), `config.py`
-  (fail-fast dataclass), `hub.py` (hub-JWT re-validation), `vendors.py`
+  (fail-fast dataclass), `hub.py` (hub-JWT re-validation), `hub_login.py`
+  (consent-leg hub OIDC login), `lifecycle.py` (startup checks, custody-token
+  renewal, `/healthz`), `vendors.py`
   (registry + vendor OAuth legs), `client_auth.py` (post/basic/
   private_key_jwt), `custody.py` (KV-v2 CAS store), `coordination.py`
   (memory/redis backends), `refresh.py` (shared single-flight refresh
   core), `sweeper.py`, `problems.py` (frozen titles), `audit.py`
 - `tests/stack/` — self-contained compose: OpenBao (+ init writing a
   scoped token, never root), redis, mock-vendor (hostile: 60s tokens,
-  rotating RTs, replay burns the family), hub-stub (mints good and bad
-  hub JWTs via `POST /_test/token`)
+  rotating RTs, replay burns the family), hub-stub (JWKS, good and bad
+  hub JWTs via `POST /_test/token`, OIDC login for the consent leg)
 - `registry.example.json` + `schemas/vendor-registry.schema.json` —
   registry changes are reviewed changes; `scope_ceiling` is a security
   boundary

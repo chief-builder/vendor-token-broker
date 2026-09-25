@@ -23,24 +23,29 @@ Redis 7 behind a `Coordination` protocol (`coordination.py`), selected by
 `COORD_BACKEND`; `memory` stays the default and preserves the lab's exact
 single-replica semantics with zero extra infrastructure.
 
-Redis mapping:
-- Lock: `SET vtb:lock:{vendor}:{sub} <token> NX PX 15000`; waiters retry
+Redis mapping (defaults updated for 1.1.0):
+
+- Lock: `SET vtb:lock:{vendor}:{sub} <token> NX PX 20000`; waiters retry
   200ms±jitter up to 10s, re-reading the entry each retry and serving
   without the lock once the generation advances; release via
   compare-and-DEL Lua (a lock is only ever released by its holder).
 - Consent txns/states: `SETEX` (TTL 600) with atomic `GETDEL` single-use
-  consumption; peek-validate-consume ordering keeps an iss-mismatch
+  consumption; for states, peek-validate-consume ordering keeps an iss-mismatch
   rejection from burning the state the legitimate callback needs.
 - Persisted `REFRESHING` lives in the custody entry (not redis), CAS-written
-  before the vendor call; abandoned markers (> `REFRESHING_TTL_S`) are taken
+  before the vendor call; abandoned markers (≥ `REFRESHING_TTL_S`) are taken
   over by the next lock holder.
 - Mass-STALE window: per-vendor ZSET + `SET NX PX` page dedup.
 - Sweeper: leader lease `SET NX PX 2×interval`, ±20% interval jitter.
+  A stopped leader may retain its lease until expiry (120 seconds by
+  default); successors wait for that lease before taking over.
 - Cache invalidation: best-effort pub/sub on revoke/STALE/delete; worst
-  case without it stays the documented ≤60s per-replica cache TTL.
+  case without it stays the per-replica `CACHE_TTL_S` (default 60s).
 
-Redis loss fails the refresh path closed (503 `coordination-unavailable`)
-while cache hits keep serving — mirroring the custody fail-closed posture
+Redis loss fails closed (503 `coordination-unavailable`) on every path that
+needs redis — refresh, minting consent links (so absent/STALE/insufficient-
+scope resolves get 503, not 404/409), authorize, callbacks and DELETE —
+while resolves that need no refresh keep serving — mirroring the custody fail-closed posture
 with a distinguishable problem title.
 
 ## Alternatives considered

@@ -1,7 +1,7 @@
 # Token lifecycle — sequence diagrams
 
 Every path a vendor grant can take through the broker, from first consent
-to deletion, drawn to match the implementation exactly (timings are the
+to deletion, illustrating the implementation and its failure paths (timings are the
 defaults from `config.py`). Companion documents: `design.md` (normative
 behavior), `smoke-tests.md` (hands-on verification of these same paths).
 
@@ -9,7 +9,7 @@ behavior), `smoke-tests.md` (hands-on verification of these same paths).
 
 | Actor | Role |
 |---|---|
-| Client | The caller behind the egress gateway (carries the user's hub JWT) |
+| Client | The trusted gateway calling the broker with the user's internal hub JWT; not the MCP client |
 | Broker | This service (one replica unless the diagram says otherwise) |
 | Vendor AS | The third-party authorization server (GitHub-class: rotating refresh tokens) |
 | Custody | OpenBao/Vault KV-v2 — the entry's KV version is the CAS handle |
@@ -96,7 +96,7 @@ sequenceDiagram
     Note over B: mint vendor PKCE verifier (S256) +<br/>single-use state {sub, vendor, issuer,<br/>scopes ≤ registry ceiling, binding} — record<br/>whether the AS advertises RFC 9207 iss
     B-->>UA: 307 → vendor authorize<br/>(client_id, code_challenge, state)
     UA->>V: user consents as themself
-    V-->>UA: 302 → /v1/callback?code&state&iss
+    V-->>UA: 302 → /v1/callback/{vendor}?code&state&iss
     UA->>B: GET /v1/callback/{vendor}?code&state&iss
     Note over B: 1. state exists, unconsumed, vendor matches<br/>2. iss == recorded issuer (strict string —<br/>   omission = mix-up if advertised)<br/>3. binding cookie = the starting browser<br/>4. consume state — single use, BEFORE redeem
     B->>V: POST /token (code + PKCE verifier + client auth¹)
@@ -114,8 +114,7 @@ sequenceDiagram
 
 Defenses in this diagram: only the user the link was issued for, in the
 browser that opened it, can complete consent (hub login + binding cookie);
-the code is redeemed server-side only; the PKCE
-verifier and state never leave the broker in decodable form; a replayed
+the code is redeemed server-side only; the browser sees only opaque state handles; the verifier is sent only in server-side token requests; a replayed
 callback (state already consumed) is a 400 **and** a
 `security_event: true` audit line; a tampered or missing `iss` is rejected
 *before* consumption, so the legitimate callback still completes.
@@ -140,12 +139,12 @@ sequenceDiagram
     end
 
     C->>B: resolve (hub JWT)
-    alt per-replica cache fresh (≤ 60s)
+    alt per-replica cache fresh (≤ CACHE_TTL_S, default 60s)
         Note over B: serve from memory — no custody read
     else cache miss/expired
-        B->>K: read entry (audited)
+        B->>K: read entry
         K-->>B: ACTIVE, expires_at, version
-        Note over B: cache {entry, version} for ≤ 60s
+        Note over B: cache {entry, version} for ≤ CACHE_TTL_S
     end
     B-->>C: 200 {access_token, expires_at, granted_scopes}
 ```
@@ -194,6 +193,7 @@ sequenceDiagram
     B-->>C1: 200 AT(gen N+1)
     Note over B: lock released — C2 re-reads,<br/>sees gen N+1 with enough TTL
     B-->>C2: 200 AT(gen N+1) — same token,<br/>zero extra vendor calls
+    Note over K: memory profile shown — the redis profile first<br/>CAS-writes a REFRESHING marker (§5), so the result is v+2
 ```
 
 Waiter outcomes, in order of preference: generation advanced → serve the
@@ -229,12 +229,13 @@ sequenceDiagram
     S->>R: SET vtb:sweep-lease NX PX 2×interval
     R-->>S: leader (others skip this pass)
     S->>K: list subjects per enabled vendor
-    loop each entry
+    loop each entry, up to SWEEP_MAX_ENTRIES per pass (round-robin cursor)
         S->>K: read entry
         alt state REVOKE_PENDING
             Note over S: §8 — retry vendor revocation
-        else ACTIVE and 300 < remaining ≤ 900
+        else REFRESHING abandoned (≥ REFRESHING_TTL_S) or ACTIVE and 300 < remaining ≤ 900
             S->>B: try_lock (non-blocking — a resolve may own it)
+            B->>K: re-read under lock
             B->>V: refresh_token grant
             V-->>B: new AT + RT
             B->>K: CAS write gen+1
@@ -272,13 +273,15 @@ sequenceDiagram
         participant K as Custody
     end
 
-    A->>R: SET vtb:lock:{vendor}:{sub} NX PX 15000
+    A->>R: SET vtb:lock:{vendor}:{sub} NX PX 20000
     R-->>A: acquired
     A->>K: CAS write state=REFRESHING + owner=A + started_at (v → v1)
     A->>V: refresh_token grant …
     Note over A: 💀 replica A dies here
     Bb->>R: SET NX … (retry 200ms±jitter, re-reading each try)
-    Note over R: lock expires after 15s TTL
+    Note over Bb: gives up after LOCK_TIMEOUT_S = 10s —<br/>that resolve gets 503 vendor-unavailable (entry REFRESHING)
+    Note over R: lock expires after 20s TTL
+    Bb->>R: a later resolve: SET NX …
     R-->>Bb: acquired
     Bb->>K: re-read: REFRESHING, owner=A
     alt marker fresh (< REFRESHING_TTL_S = 30s)
@@ -372,19 +375,19 @@ sequenceDiagram
     rect rgba(239,68,68,0.12)
         Note over B,O: mass event: ≥ 3 STALEs for ONE vendor<br/>inside a 60s window = org-uninstall signature
         B->>O: audit broker.stale.mass {page: true, security_event: true}
-        Note over O: page fires once per window per vendor<br/>(deduped) — per-entry behavior unchanged
+        Note over O: alert signal emitted once per window per vendor<br/>(deduped) — per-entry behavior unchanged
     end
 ```
 
-A single STALE is expected hygiene, not an incident. The burst is the
-anomaly worth waking someone for.
+A single STALE is expected hygiene, not an incident. Route the burst signal through monitoring if it should notify on-call.
 
 ---
 
 ## 8. Death by choice — revocation, vendor-first
 
-Order matters: revoke at the vendor **before** deleting custody, so a
-vendor-side token can never outlive the broker's record of it.
+Order matters: attempt vendor revocation before deleting custody. A vendor
+without a revocation endpoint is deleted locally only, with
+`vendor_revocation: "unsupported"`. Upstream access can survive that deletion.
 
 ```mermaid
 sequenceDiagram
@@ -458,25 +461,27 @@ sequenceDiagram
     end
 
     rect rgba(59,130,246,0.10)
-        Note over C,R: redis outage — refresh path only (redis profile)
-        C->>B: resolve, entry NOT near expiry
+        Note over C,R: redis outage — every path that needs redis (redis profile)
+        C->>B: resolve, entry ACTIVE, sufficient scopes, NOT near expiry
         B-->>C: 200 — cache/custody path touches no redis
         C->>B: resolve, entry inside refresh buffer
         B--xR: lock acquisition fails
         B-->>C: 503 coordination-unavailable (retriable)
+        Note over B: consent links need redis too: absent/STALE/<br/>insufficient-scope resolves also get 503, not 404/409
         Note over B: no lock ⇒ no refresh: refreshing without<br/>single-flight could burn a rotating RT family.<br/>Custody CAS still guards correctness regardless.
     end
 ```
 
-Recovery is automatic in both cases: no state is lost (custody is the
-source of truth; redis holds only reconstructible coordination state).
+Recovery resumes after dependencies return. Custody remains the durable
+source of credentials; lost Redis consent records require users to start
+a new browser flow.
 
 ---
 
 ## Reading the audit trail
 
-Every transition above emits exactly one id-only JSON line (never token
-material). The joins:
+Every transition above emits id-only JSON lines (never token material);
+a lazy refresh, for example, logs both `broker.refresh` and `broker.resolve`. The joins:
 
 | Event | Emitted in | Joins on |
 |---|---|---|
@@ -484,7 +489,7 @@ material). The joins:
 | `broker.consent.start` / `.complete` / `.fail` | §1, §6 | `sub`, `vendor`, `vendor_user_id` |
 | `broker.refresh` {generation_from → to} | §§3,4,5 | `sub`, `vendor` |
 | `broker.stale` / `broker.stale.mass` | §7 | `sub`/`vendor`; mass carries `page: true` |
-| `broker.revoke` {outcome, path} | §8 | `sub`, `vendor`, `hub_jti` |
+| `broker.revoke` {outcome: revoked\|unsupported\|pending, path?: sweep-retry\|reconsent} | §8 | `sub`, `vendor`; `hub_jti` only on self-service DELETE |
 
 A vendor-side action is traceable end-to-end: hub `jti` → `broker.resolve`
 → gateway record → vendor audit log via `vendor_user_id`.

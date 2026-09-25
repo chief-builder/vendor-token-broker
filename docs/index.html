@@ -30,8 +30,12 @@
   nav .brand { font-weight: 700; margin-right: .75rem; }
   nav a { color: var(--accent); text-decoration: none; font-weight: 500; }
   nav a:hover { text-decoration: underline; }
+  nav a:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
   main { max-width: 980px; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+  .skip { position: absolute; left: -9999px; top: .5rem; background: var(--bg); color: var(--fg); padding: .4rem .7rem; z-index: 20; }
+  .skip:focus { left: .75rem; }
   h1, h2, h3 { line-height: 1.25; }
+  h1, h2, h3 { scroll-margin-top: 5rem; }
   section > h2 { border-bottom: 1px solid var(--line); padding-bottom: .3rem; margin-top: 2.2rem; }
   .section-head h1 { font-size: 2rem; margin-bottom: .2rem; color: var(--accent); }
   .blurb { color: var(--muted); margin: .2rem 0; }
@@ -59,40 +63,985 @@
 </style>
 </head>
 <body>
+<a class="skip" href="#content">Skip to content</a>
 <nav>
   <span class="brand">vendor-token-broker</span>
-  <a href="#design">Design</a>
+  <a href="#overview">Overview</a>
+<a href="#quickstart">Quickstart</a>
+<a href="#mcp">Integrate with MCP</a>
+<a href="#api">API Reference</a>
+<a href="#operations">Deploy and Operate</a>
+<a href="#security">Security and MCP Alignment</a>
+<a href="#design">Design</a>
 <a href="#lifecycle">Token Lifecycle</a>
 <a href="#smoke-tests">Smoke Tests</a>
+<a href="#adr">Redis ADR</a>
   <a href="https://github.com/chief-builder/vendor-token-broker">repo</a>
 </nav>
-<main>
+<main id="content">
+<section id="overview">
+<div class="section-head"><h1>Overview</h1><p class="blurb">What the broker does and where it fits in an MCP deployment.</p><p class="src">source: <code>docs/overview.md</code></p></div>
+<p>Store each user's vendor credentials once. Resolve a usable token when a trusted gateway needs to call that vendor, refresh it when needed, and revoke the connection when the user disconnects.</p>
+<p>The broker is an internal OAuth client and credential custodian. It exposes a REST API for the gateway; the surrounding application provides the MCP server.</p>
+<h2 id="start-here">Start here</h2>
+<table>
+<thead>
+<tr>
+<th>Your task</th>
+<th>Start with</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Run a complete local connection</td>
+<td><a href="#quickstart">Quickstart</a></td>
+</tr>
+<tr>
+<td>Connect an MCP application</td>
+<td><a href="#mcp">Integrate with MCP</a></td>
+</tr>
+<tr>
+<td>Implement a broker caller</td>
+<td><a href="#api">API reference</a></td>
+</tr>
+<tr>
+<td>Provision, deploy, or troubleshoot</td>
+<td><a href="#operations">Deploy and operate</a></td>
+</tr>
+<tr>
+<td>Assess controls and limitations</td>
+<td><a href="#security">Security and MCP alignment</a></td>
+</tr>
+<tr>
+<td>Understand refresh and concurrency</td>
+<td><a href="#design">Design</a> and <a href="#lifecycle">token lifecycle</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="where-it-fits">Where it fits</h2>
+<pre class="mermaid">flowchart LR
+    C[&quot;MCP client&quot;] --&gt;|&quot;MCP access token&quot;| S[&quot;MCP server&quot;]
+    S --&gt;|&quot;authorized vendor operation&quot;| G[&quot;Trusted egress gateway&quot;]
+    G --&gt;|&quot;internal hub JWT + resolve&quot;| B[&quot;Vendor Token Broker&quot;]
+    B --&gt;|&quot;vendor access token&quot;| G
+    G --&gt;|&quot;vendor access token + API call&quot;| V[&quot;Vendor API&quot;]
+    B &lt;--&gt;|&quot;read / write credentials&quot;| K[&quot;OpenBao or Vault&quot;]
+</pre>
+<p>The MCP server validates access to its own resource. The gateway supplies a separately valid internal hub JWT to the broker. The broker validates that JWT and returns the user's vendor token to the trusted gateway. The gateway must strip internal credentials before calling the vendor and keep vendor tokens out of MCP results.</p>
+<p>This repository implements the broker. The MCP server, gateway, and their identity handoff are deployment responsibilities. See the <a href="#three-authorization-boundaries">three authorization boundaries</a>.</p>
+<h2 id="a-users-connection">A user's connection</h2>
+<ol>
+<li>A tool needs a vendor operation. The gateway asks the broker for a token.</li>
+<li>If no usable connection exists, the broker returns a short-lived connection URL.</li>
+<li>The user opens that URL, signs in through the enterprise identity provider, and authorizes the vendor in the same browser.</li>
+<li>The gateway retries. The broker returns a vendor token, refreshing it when necessary.</li>
+<li>The user can disconnect. The broker attempts vendor revocation before deleting the stored connection; unsupported revocation is reported explicitly.</li>
+</ol>
+<h2 id="what-is-available">What is available</h2>
+<p>Software <strong>1.1.0</strong> is marked <strong>unreleased</strong> in the repository changelog. The implementation includes browser-bound consent, three vendor client-authentication methods, in-memory or Redis coordination, and versioned credential storage.</p>
+<p>The documentation was reviewed against MCP <strong>2026-07-28</strong> on <strong>2026-09-25</strong>. <a href="#security">Security and MCP alignment</a> records which controls are implemented, partial, externally owned, or planned. There is no blanket MCP conformance claim.</p>
+<h2 id="terms-used-in-these-guides">Terms used in these guides</h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hub</td>
+<td>Enterprise identity provider; validates workforce identity and issues the internal hub JWT</td>
+</tr>
+<tr>
+<td>Grant / connection</td>
+<td>A user's stored authorization to one vendor</td>
+</tr>
+<tr>
+<td>Custody</td>
+<td>Protected storage for vendor tokens and client credentials</td>
+</tr>
+<tr>
+<td>Scope ceiling</td>
+<td>Registry policy limiting requested and recorded scopes; it cannot shrink permissions on a vendor-issued token</td>
+</tr>
+<tr>
+<td>Single-flight</td>
+<td>Concurrent callers share one refresh operation</td>
+</tr>
+<tr>
+<td>CAS</td>
+<td>Compare-and-swap: a write succeeds only if the stored version still matches</td>
+</tr>
+<tr>
+<td>STALE</td>
+<td>A stored connection requiring the user to reconnect</td>
+</tr>
+<tr>
+<td>EMA</td>
+<td>Enterprise-Managed Authorization, an optional MCP extension and a possible future migration path</td>
+</tr>
+</tbody>
+</table>
+<h2 id="project-background">Project background</h2>
+<p>Extracted from the internal <code>mcp-healthcare-reference</code> lab at commit <code>ab699f3a46bb18ab96cb9d17f3cb9e883e6011c6</code>. The <a href="#design">design</a> describes the implementation; <a href="#adr">ADR-0001</a> explains the Redis choice.</p>
+</section>
+<hr class='sep'/>
+<section id="quickstart">
+<div class="section-head"><h1>Quickstart</h1><p class="blurb">Run one complete local consent, resolve, and disconnect flow.</p><p class="src">source: <code>docs/quickstart.md</code></p></div>
+<p>Complete one mock-vendor connection, resolve its token, then disconnect it. Requires Docker Compose, Python 3.12, and a checkout of this repository. Run commands from the repository root.</p>
+<p>This development stack uses local HTTP, a mock identity provider, test credentials, and in-memory OpenBao storage. Follow <a href="#operations">Deploy and operate</a> for production provisioning.</p>
+<h2 id="start-the-stack">Start the stack</h2>
+<pre><code class="language-sh">python3.12 -m venv .venv
+.venv/bin/pip install --require-hashes -r requirements-dev.lock
+.venv/bin/pip install --no-deps -e .
+docker compose -f tests/stack/docker-compose.yml up -d --build --wait
+curl -fsS http://localhost:8300/healthz
+</code></pre>
+<p>Expected response: <code>{"ok":true,"custody":"ok"}</code>. The stack supplies the broker, OpenBao, Redis, a mock vendor, and a hub stub. No real vendor account is needed.</p>
+<h2 id="connect-a-mock-vendor">Connect a mock vendor</h2>
+<p>The script below plays the <strong>trusted gateway</strong>, so it receives the vendor token internally. It prints only statuses and scope names. A production MCP client must not receive that token.</p>
+<pre><code class="language-sh">.venv/bin/python - &lt;&lt;'PY'
+import requests
+
+broker = &quot;http://localhost:8300&quot;
+hub = &quot;http://localhost:8320&quot;
+subject = &quot;wf-quickstart&quot;
+mint = requests.post(f&quot;{hub}/_test/token&quot;, json={&quot;sub&quot;: subject}, timeout=10)
+mint.raise_for_status()
+headers = {&quot;Authorization&quot;: &quot;Bearer &quot; + mint.json()[&quot;access_token&quot;]}
+body = {&quot;vendor&quot;: &quot;mockhub&quot;, &quot;required_scopes&quot;: [&quot;issues:read&quot;]}
+
+# Make the walkthrough repeatable for this dedicated test subject.
+reset = requests.delete(f&quot;{broker}/v1/grants/mockhub/{subject}&quot;,
+                        headers=headers, timeout=15)
+assert reset.status_code in (200, 404), reset.status_code
+challenge = requests.post(f&quot;{broker}/v1/tokens/resolve&quot;, json=body,
+                          headers=headers, timeout=15)
+assert challenge.status_code == 404, challenge.status_code
+print(&quot;Resolve:&quot;, challenge.status_code, challenge.json()[&quot;title&quot;])
+
+# Session preserves the consent cookie across hub and vendor redirects.
+# The mock hub signs in automatically; a real hub requires browser login.
+with requests.Session() as browser:
+    connected = browser.get(challenge.json()[&quot;authorize_uri&quot;], timeout=15)
+    assert connected.status_code == 200 and &quot;Connected&quot; in connected.text
+print(&quot;Consent: connected&quot;)
+
+resolved = requests.post(f&quot;{broker}/v1/tokens/resolve&quot;, json=body,
+                         headers=headers, timeout=15)
+resolved.raise_for_status()
+print(&quot;Resolve:&quot;, resolved.status_code, &quot;scopes:&quot;, resolved.json()[&quot;granted_scopes&quot;])
+
+deleted = requests.delete(f&quot;{broker}/v1/grants/mockhub/{subject}&quot;,
+                          headers=headers, timeout=15)
+deleted.raise_for_status()
+print(&quot;Disconnect:&quot;, deleted.json())
+again = requests.post(f&quot;{broker}/v1/tokens/resolve&quot;, json=body,
+                      headers=headers, timeout=15)
+assert again.status_code == 404
+print(&quot;Resolve after disconnect:&quot;, again.status_code, again.json()[&quot;title&quot;])
+PY
+</code></pre>
+<p>Expected: <code>404 needs-consent</code>, successful consent, <code>200</code> resolve, <code>{"revoked": true}</code>, then <code>404 needs-consent</code> again. The mock widens scopes on refresh, so the resolved scope list may include both <code>issues:read</code> and <code>issues:write</code>; see <a href="#scope-policy">scope policy</a>.</p>
+<p>For the browser walkthrough and attack probes, continue to <a href="#smoke-tests">manual verification</a>.</p>
+<h2 id="run-the-automated-checks">Run the automated checks</h2>
+<pre><code class="language-sh">.venv/bin/pytest tests/unit -q
+.venv/bin/pytest tests/integration -m &quot;not external and not multi&quot; -q
+</code></pre>
+<p>Switch the standalone broker to Redis to exercise the same contract:</p>
+<pre><code class="language-sh">COORD_BACKEND=redis docker compose -f tests/stack/docker-compose.yml \
+  up -d --no-deps --wait broker
+.venv/bin/pytest tests/integration -m &quot;not external and not multi&quot; -q
+</code></pre>
+<p>For multi-replica testing, stop the standalone broker and allow its sweep lease to expire (up to 120 seconds at the default interval) before starting the test. Do not flush a shared Redis instance.</p>
+<pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml stop broker
+docker compose -f tests/stack/docker-compose.yml --profile multi \
+  up -d --build --wait broker-a broker-b broker-lb
+# Inspect the remaining lease; wait until the previous lease has expired.
+docker compose -f tests/stack/docker-compose.yml exec -T redis \
+  redis-cli PTTL vtb:sweep-lease
+BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
+  .venv/bin/pytest tests/integration/test_multi_replica.py -q
+</code></pre>
+<p>The replicas use a 10-second sweep lease. A remaining TTL greater than 10000 ms indicates the previous default-interval lease is still present. The test fixture restarts the standalone broker on completion. Stop the replicas before rerunning the standalone tests so sweepers do not interfere.</p>
+<h2 id="stop-the-development-stack">Stop the development stack</h2>
+<pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml --profile multi down
+</code></pre>
+<p>OpenBao development storage is lost when its container stops. Run the setup again to reprovision it.</p>
+</section>
+<hr class='sep'/>
+<section id="mcp">
+<div class="section-head"><h1>Integrate with MCP</h1><p class="blurb">Separate MCP authorization, the internal broker contract, and vendor consent.</p><p class="src">source: <code>docs/mcp-integration.md</code></p></div>
+<p><strong>Baseline: MCP 2026-07-28 · reviewed 2026-09-25.</strong> The broker implements an internal REST contract. You supply the MCP server and trusted gateway integration described here.</p>
+<h2 id="three-authorization-boundaries">Three authorization boundaries</h2>
+<table>
+<thead>
+<tr>
+<th>Boundary</th>
+<th>Credential and validator</th>
+<th>Owner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MCP client → MCP server</td>
+<td>Access token issued for that MCP resource; validated by the MCP server</td>
+<td>Your MCP client, server, and authorization server</td>
+</tr>
+<tr>
+<td>Gateway → broker</td>
+<td>Internal hub JWT, revalidated by <code>HubValidator</code></td>
+<td>Your identity handoff and this broker</td>
+</tr>
+<tr>
+<td>Gateway → vendor API</td>
+<td>Vendor access token obtained through broker consent</td>
+<td>Gateway, broker, vendor</td>
+</tr>
+</tbody>
+</table>
+<p>The hub JWT's <code>mcp_contract</code> claim, <code>mcp://tier/*</code> audiences, and algorithm policy are project conventions. They are not MCP protocol versions or standard MCP claim names. Do not blindly forward an MCP-server token to the broker: arrange an internal credential valid for the broker's configured issuer, audience, and contract. That identity handoff is outside this repository.</p>
+<p>At the MCP boundary, implement protected-resource metadata, authorization-server discovery, resource indicators, intended-audience validation, and appropriate HTTP authorization challenges. The broker does not expose those MCP endpoints. <a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization">MCP authorization requirements</a></p>
+<h2 id="calling-the-broker">Calling the broker</h2>
+<ol>
+<li>Validate and authorize the MCP tool operation in your server.</li>
+<li>Map that operation to an approved vendor and required vendor scopes.</li>
+<li>Have the trusted gateway call <a href="#resolve-a-token">resolve</a> with the internal hub JWT.</li>
+<li>On success, use the token only for the approved vendor API call. Keep it out of tool results, model context, browser storage, and logs.</li>
+<li>Return business data to the MCP client. Strip the hub JWT from the vendor request.</li>
+</ol>
+<p>The broker returns tokens to any caller satisfying its internal authentication contract. Network isolation and gateway workload authentication are therefore deployment requirements, not properties the REST response can enforce.</p>
+<h2 id="connecting-a-vendor-during-a-tool-call">Connecting a vendor during a tool call</h2>
+<p><strong>Proposed adapter behavior; not shipped in this repository.</strong> A missing vendor connection is distinct from a client's authorization to call the MCP server.</p>
+<p>For MCP 2026-07-28, an adapter can put URL-mode <code>elicitation/create</code> in an <code>InputRequiredResult</code> when the client advertises <code>elicitation.url</code>. Point its URL at the broker's <code>authorize_uri</code>; the MCP bearer token stays unchanged. The client asks permission before navigation. Use the negotiated protocol revision's SDK to build the full envelope. <a href="https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation">URL-mode elicitation</a></p>
+<p>The nested request has this shape (illustrative; the URL comes from resolve):</p>
+<pre><code class="language-json">{
+  &quot;method&quot;: &quot;elicitation/create&quot;,
+  &quot;params&quot;: {
+    &quot;mode&quot;: &quot;url&quot;,
+    &quot;message&quot;: &quot;Connect your vendor account to continue this operation.&quot;,
+    &quot;url&quot;: &quot;https://broker.example.com/v1/authorize/acme?txn=opaque-handle&quot;
+  }
+}
+</code></pre>
+<p>Adapter decisions:</p>
+<table>
+<thead>
+<tr>
+<th>Broker outcome</th>
+<th>Adapter action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>200</td>
+<td>Call the approved vendor using the returned token</td>
+</tr>
+<tr>
+<td>404 <code>needs-consent</code></td>
+<td>Request a vendor connection through the supported browser flow</td>
+</tr>
+<tr>
+<td>409 <code>needs-reconsent-scope</code></td>
+<td>Explain additional vendor permissions and use the supplied connection URL</td>
+</tr>
+<tr>
+<td>409 <code>revoke-pending</code></td>
+<td>Report that disconnect is pending; do not restart consent automatically</td>
+</tr>
+<tr>
+<td>503</td>
+<td>Apply bounded retry/backoff; do not interpret an outage as missing consent</td>
+</tr>
+<tr>
+<td>401 <code>invalid-hub-token</code></td>
+<td>Repair internal authentication; do not assume the MCP client's own token expired</td>
+</tr>
+</tbody>
+</table>
+<p>After a browser flow, resolve again with the same authenticated user and required scopes. User acceptance alone does not prove the connection succeeded. A suggested adapter policy is at most one consent retry per operation before returning an actionable error. Stop on decline or cancellation. If URL elicitation is unsupported, return a clear tool error and a supported manual connection route in your application; do not ask for vendor tokens in chat or form fields.</p>
+<p>Test the adapter separately for cancellation, unsupported capabilities, expired connection URLs, scope expansion, identity handoff, token redaction, and retry limits. Broker integration tests do not exercise an MCP client.</p>
+<h2 id="existing-gateway-compatibility">Existing gateway compatibility</h2>
+<p>The internal broker API remains unchanged. The source lab's Kong plugin used custom client-facing <code>401 authorization_required</code> and 401 step-up responses for broker 404/409 consent results. That is a legacy adapter convention, not a demonstrated current MCP wire flow. The plugin is not included here. See <a href="#legacy-gateway-mapping">the legacy mapping</a> when preserving an existing deployment.</p>
+<h2 id="protocol-revision-and-enterprise-authorization">Protocol revision and enterprise authorization</h2>
+<p>Use the MCP implementation's negotiated revision for capabilities and message envelopes. The 2026-07-28 release introduces per-request protocol capabilities, Multi Round-Trip Requests, and routing headers, and deprecates Dynamic Client Registration in favor of Client ID Metadata Documents. These are integration-layer responsibilities. <a href="https://blog.modelcontextprotocol.io/posts/2026-07-28/">Release notes</a></p>
+<p>Enterprise-Managed Authorization is an optional extension involving the client, enterprise IdP, and resource authorization server. This broker does not implement ID-JAG exchange. Its <code>ema_status</code> registry field tracks migration readiness only; changing it does not disable consent or drain tokens. Evaluate whether a replacement also supplies the downstream vendor access your tools need. <a href="https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization">Enterprise-Managed Authorization</a></p>
+</section>
+<hr class='sep'/>
+<section id="api">
+<div class="section-head"><h1>API Reference</h1><p class="blurb">The internal REST contract, stable errors, and caller actions.</p><p class="src">source: <code>docs/api.md</code></p></div>
+<p>This is the authoritative caller reference for the internal REST API. It is not the MCP wire protocol. <a href="#mcp">Integrate with MCP</a> explains the adapter boundary.</p>
+<h2 id="authentication-and-routes">Authentication and routes</h2>
+<p>Send <code>Authorization: Bearer &lt;hub-jwt&gt;</code> on resolve, list, delete, and admin requests. The JWT subject is authoritative. Consent routes use short-lived transaction state and a browser-binding cookie. Health is unauthenticated.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Route</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/v1/tokens/resolve</code></td>
+<td>Retrieve a vendor token for the caller</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/authorize/{vendor}?txn=…</code></td>
+<td>Start browser consent</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/callback/{vendor}</code></td>
+<td>Complete a consent leg; <code>_hub</code> is the hub-login callback</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/grants</code></td>
+<td>List the caller's connections without token material</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/grants/{vendor}/{sub}</code></td>
+<td>Disconnect the caller's vendor grant</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/admin/vendors/{vendor}</code></td>
+<td>Read a registry entry; requires <code>ADMIN_GROUP</code> in the JWT's <code>groups</code> array</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/healthz</code></td>
+<td>Report this replica's custody-token health</td>
+</tr>
+</tbody>
+</table>
+<p>The service has no token-issuance, JWKS, OpenAPI, Swagger, or ReDoc endpoint. See <code>tests/unit/test_routes.py</code>.</p>
+<h2 id="resolve-a-token">Resolve a token</h2>
+<pre><code class="language-http">POST /v1/tokens/resolve
+Authorization: Bearer &lt;internal-hub-jwt&gt;
+Content-Type: application/json
+
+{&quot;vendor&quot;:&quot;mockhub&quot;,&quot;min_ttl_s&quot;:30,&quot;required_scopes&quot;:[&quot;issues:read&quot;]}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vendor</code></td>
+<td>Required</td>
+<td>Enabled registry vendor ID</td>
+</tr>
+<tr>
+<td><code>sub</code></td>
+<td>JWT subject</td>
+<td>Optional advisory subject; a non-empty mismatch is rejected</td>
+</tr>
+<tr>
+<td><code>min_ttl_s</code></td>
+<td>120</td>
+<td>Non-negative integer; target remaining lifetime, clamped to <code>REFRESH_BUFFER_S</code></td>
+</tr>
+<tr>
+<td><code>required_scopes</code></td>
+<td><code>[]</code></td>
+<td>Array of scope strings; governed by the vendor's scope policy</td>
+</tr>
+</tbody>
+</table>
+<p>Success returns HTTP 200 with <code>access_token</code>, Unix-seconds <code>expires_at</code> (may be fractional), and <code>granted_scopes</code>. Handle the token only inside the trusted gateway. Refresh can occur inline.</p>
+<p><strong>Lifetime is a target, not an unconditional guarantee.</strong> A newly issued vendor token may live less than the requested minimum and can still be returned. Inspect <code>expires_at</code> before use. Requests above the refresh buffer are clamped; audit fields include <code>min_ttl_clamped_from</code> and, on relevant waiter paths, <code>short_ttl</code>.</p>
+<h3 id="scope-policy">Scope policy</h3>
+<p>A non-empty registry ceiling caps requested and recorded scopes. Requests beyond it fail with 403. With no required scopes, initial consent requests the full ceiling for legacy callers. Scope expansion unions held and required scopes within the ceiling.</p>
+<p>An empty ceiling means permissions are vendor-managed: the broker does not request or enforce <code>required_scopes</code> for that vendor. Filtering the stored <code>granted_scopes</code> list does <strong>not</strong> reduce actual permissions on the token. Unexpected vendor scope widening is audited as <code>scope_widened</code>; enforce operation-level authorization in the gateway/server too.</p>
+<h2 id="errors-and-caller-actions">Errors and caller actions</h2>
+<p>Broker problem responses use <code>application/problem+json</code> with <code>type</code>, <code>title</code>, and <code>detail</code>, plus fields listed below. Branch on HTTP status and the stable <code>title</code>; do not parse human-readable <code>detail</code> or the configurable <code>type</code> prefix. Framework request-validation errors may instead use FastAPI's 422 response shape.</p>
+<table>
+<thead>
+<tr>
+<th>Status / title</th>
+<th>Additional fields</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>400 <code>invalid-request</code></td>
+<td>—</td>
+<td>Correct malformed resolve input</td>
+</tr>
+<tr>
+<td>400 <code>sub-mismatch</code></td>
+<td>—</td>
+<td>Use the authenticated subject</td>
+</tr>
+<tr>
+<td>400 <code>invalid-transaction</code></td>
+<td>—</td>
+<td>Obtain a fresh connection URL</td>
+</tr>
+<tr>
+<td>401 <code>invalid-hub-token</code></td>
+<td>—</td>
+<td>Correct internal token issuer, signature, expiry, audience, or contract</td>
+</tr>
+<tr>
+<td>403 <code>scope-exceeds-ceiling</code></td>
+<td><code>required</code>, <code>ceiling</code></td>
+<td>Review vendor policy; do not loop consent</td>
+</tr>
+<tr>
+<td>403 <code>forbidden</code></td>
+<td>—</td>
+<td>Check self-service subject or admin group</td>
+</tr>
+<tr>
+<td>404 <code>unknown-vendor</code></td>
+<td>—</td>
+<td>Check registry and activation setting</td>
+</tr>
+<tr>
+<td>404 <code>needs-consent</code></td>
+<td><code>authorize_uri</code></td>
+<td>No usable grant: connect or reconnect</td>
+</tr>
+<tr>
+<td>404 <code>no-grant</code></td>
+<td>—</td>
+<td>Delete target is already absent</td>
+</tr>
+<tr>
+<td>409 <code>needs-reconsent-scope</code></td>
+<td><code>authorize_uri</code>, <code>missing_scopes</code></td>
+<td>Obtain additional vendor consent</td>
+</tr>
+<tr>
+<td>409 <code>revoke-pending</code></td>
+<td>—</td>
+<td>Resolve cannot use a connection being revoked</td>
+</tr>
+<tr>
+<td>502 <code>revoke-pending</code></td>
+<td>—</td>
+<td>Delete could not revoke upstream; sweeper will retry</td>
+</tr>
+<tr>
+<td>503 <code>vendor-unavailable</code></td>
+<td>—</td>
+<td>Retry with backoff; inspect vendor availability / refresh contention</td>
+</tr>
+<tr>
+<td>503 <code>vault-unavailable</code></td>
+<td>—</td>
+<td>Restore custody; do not ask users to reconnect</td>
+</tr>
+<tr>
+<td>503 <code>coordination-unavailable</code></td>
+<td>—</td>
+<td>Restore Redis for operations requiring coordination</td>
+</tr>
+<tr>
+<td>503 <code>hub-unavailable</code></td>
+<td>—</td>
+<td>Restore hub JWKS access / hub availability</td>
+</tr>
+</tbody>
+</table>
+<p>Consent callbacks are browser endpoints. They mostly return short HTML pages (400 bad state, issuer, or browser; 403 wrong user; 502 token exchange failed; 503 dependency down). When the hub sign-in callback cannot start the vendor leg, it returns problem JSON 503 instead (<code>vendor-unavailable</code>, <code>vault-unavailable</code>, or <code>coordination-unavailable</code>). <a href="#43-get-v1callbackvendorcodestate">Consent internals</a> describe state handling.</p>
+<h2 id="browser-consent">Browser consent</h2>
+<p>Open the supplied <code>authorize_uri</code> within five minutes. Keep cookies across redirects. The broker first verifies the browser user's identity through the hub, then begins vendor consent for the same subject. Consent state defaults to ten minutes. The same browser must complete both legs.</p>
+<p>The binding cookie is HttpOnly and SameSite=Lax; its Secure flag requires an HTTPS <code>BROKER_PUBLIC_URL</code>. Use the exact registered callback URLs. An expired, cancelled, or consumed transaction requires a new resolve/connection attempt.</p>
+<h2 id="list-and-disconnect">List and disconnect</h2>
+<p><code>GET /v1/grants</code> returns <code>{"grants":[…]}</code>. Each entry contains <code>vendor</code>, <code>state</code>, <code>granted_scopes</code>, <code>vendor_user_id</code>, and <code>created_at</code>. Internal <code>REFRESHING</code> is reported as <code>ACTIVE</code>; tokens are omitted.</p>
+<p><code>DELETE /v1/grants/{vendor}/{sub}</code> requires the path subject to match the JWT subject. URL-encode the subject when constructing the path. Success is <code>{"revoked":true}</code>. If upstream revocation is unsupported, success additionally includes <code>"vendor_revocation":"unsupported"</code>: the local connection is deleted, but vendor permissions can survive. Disconnect at the vendor if required.</p>
+<h2 id="health">Health</h2>
+<p>Normal response: <code>{"ok":true,"custody":"ok"}</code>. Custody outage can return HTTP 200 with <code>"custody":"unreachable"</code> to preserve replicas serving valid cached entries. Rejected or nearly expired custody credentials return 503. Health responses are cached for ten seconds. See <a href="#runbook">the runbook</a>.</p>
+<h2 id="legacy-gateway-mapping">Legacy gateway mapping</h2>
+<p>The source lab's gateway expected the following mapping. The broker side is covered by <code>tests/integration/test_wire_compat.py</code>; the gateway plugin itself is not in this repository.</p>
+<table>
+<thead>
+<tr>
+<th>Broker result</th>
+<th>Legacy gateway behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>200</td>
+<td>Replace upstream Authorization with the vendor access token</td>
+</tr>
+<tr>
+<td>404 with <code>authorize_uri</code></td>
+<td>Custom 401 <code>authorization_required</code> challenge</td>
+</tr>
+<tr>
+<td>409 with <code>authorize_uri</code></td>
+<td>Custom 401 step-up challenge</td>
+</tr>
+<tr>
+<td>Plain 409</td>
+<td>403 carrying the problem title</td>
+</tr>
+<tr>
+<td>5xx</td>
+<td>Retriable 503 <code>vendor_unavailable</code></td>
+</tr>
+</tbody>
+</table>
+<p>For a current MCP adapter, use <a href="#connecting-a-vendor-during-a-tool-call">the integration guide</a>. Preserve this internal API while adapting the client-facing protocol.</p>
+</section>
+<hr class='sep'/>
+<section id="operations">
+<div class="section-head"><h1>Deploy and Operate</h1><p class="blurb">Provision custody, configure replicas, and respond to failures.</p><p class="src">source: <code>docs/operations.md</code></p></div>
+<p>Provision the broker for a private deployment. For a local demonstration,
+use the <a href="#quickstart">quickstart</a>. See the <a href="#api">API reference</a> for
+caller behavior and <a href="#known-limitations">security limits</a> before rollout.</p>
+<h2 id="custody-provisioning-openbao-vault-kv-v2">Custody provisioning (OpenBao / Vault, KV v2)</h2>
+<p>Two mounts, two policies — grant entries are broker read/write; vendor
+client credentials are broker read-only, admin write-only. Restrict human read access through deployment policies; the supplied
+broker ACL does not remove custody administrators' privileges.</p>
+<pre><code class="language-sh">bao secrets enable -path=vendor-tokens kv-v2
+bao secrets enable -path=vendor-clients kv-v2
+bao write vendor-tokens/config max_versions=2   # retain up to two credential versions
+bao policy write broker deploy/openbao-policy.hcl
+bao token create -policy=broker -period=24h -orphan -display-name=broker
+</code></pre>
+<p>Give the broker the scoped token (<code>VAULT_TOKEN</code> or <code>VAULT_TOKEN_FILE</code>),
+<strong>never root</strong>. Use a <strong>periodic</strong> token as above: the broker renews its
+own token at half the remaining TTL, and a periodic token can be renewed
+indefinitely. A token with a hard maximum TTL (for example <code>-ttl=768h</code>)
+can only be renewed up to that maximum; <code>/healthz</code> starts failing 10
+minutes before it expires, and it must then be replaced and the broker
+restarted. The token also needs the built-in <code>default</code> policy (attached
+unless <code>-no-default-policy</code> is given), which grants <code>lookup-self</code> and
+<code>renew-self</code>.</p>
+<p>Enable a custody-backend audit device and verify read events reach your
+audit sink. Broker application events do not substitute for storage auditing.</p>
+<p>At startup the broker checks its custody token, hub JWKS, and hub OIDC
+discovery before serving. An unreachable backend or hub is retried for
+<code>STARTUP_TIMEOUT_S</code>; a rejected token or a JWKS with no keys aborts at
+once with a message naming the setting to fix. Write each vendor's confidential client credential on the
+admin path:</p>
+<pre><code class="language-sh">bao kv put vendor-clients/github  client_id=… client_secret=…
+bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
+</code></pre>
+<p>The credential shape must match the registry's
+<code>token_endpoint_auth_method</code>: <code>client_secret_post</code>/<code>client_secret_basic</code>
+need <code>client_secret</code>; <code>private_key_jwt</code> needs <code>private_key</code> (PEM, PKCS8)
+plus optional <code>alg</code> (default RS256) and <code>kid</code>.</p>
+<p>Custody loss fails closed: resolve returns 503 <code>vault-unavailable</code>, with
+grace limited to each replica's in-memory cache (<code>CACHE_TTL_S</code>, default 60s).</p>
+<h2 id="configuration-reference">Configuration reference</h2>
+<p>Required (startup aborts listing every missing name):
+<code>HUB_ISSUER</code>, <code>HUB_JWKS_URI</code>, <code>BROKER_PUBLIC_URL</code>, <code>VAULT_ADDR</code>,
+<code>VAULT_TOKEN</code> or <code>VAULT_TOKEN_FILE</code>, <code>REGISTRY_PATH</code>, <code>HUB_LOGIN_CLIENT_ID</code>.
+Optional: <code>HUB_LOGIN_CLIENT_SECRET</code> (omit for a public client; PKCE is
+always used).</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HUB_TIER_AUDIENCE</code></td>
+<td><code>mcp://tier/internal</code></td>
+<td>Exactly one <code>mcp://tier/*</code> audience is enforced</td>
+</tr>
+<tr>
+<td><code>HUB_ALGORITHMS</code></td>
+<td><code>PS256,ES256</code></td>
+<td>Allowlist: PS256/384/512, ES256/384/512, EdDSA. RS256, HMAC, and <code>none</code> fail startup</td>
+</tr>
+<tr>
+<td><code>HUB_CONTRACT_VERSION</code></td>
+<td><code>1.0</code></td>
+<td><code>mcp_contract</code> claim pin</td>
+</tr>
+<tr>
+<td><code>ADMIN_GROUP</code></td>
+<td><code>mcp-platform-admin</code></td>
+<td>Required member of the <code>groups</code> array claim for <code>/v1/admin/*</code></td>
+</tr>
+<tr>
+<td><code>PROBLEM_URN_PREFIX</code></td>
+<td><code>urn:vendor-token-broker</code></td>
+<td><code>type</code> prefix only; <code>title</code> slugs never change</td>
+</tr>
+<tr>
+<td><code>COORD_BACKEND</code></td>
+<td><code>memory</code></td>
+<td><code>redis</code> required for &gt;1 replica</td>
+</tr>
+<tr>
+<td><code>REDIS_URL</code></td>
+<td><code>redis://localhost:6379/0</code></td>
+<td>redis profile</td>
+</tr>
+<tr>
+<td><code>REFRESH_BUFFER_S</code></td>
+<td><code>300</code></td>
+<td>Lazy-refresh band</td>
+</tr>
+<tr>
+<td><code>PROACTIVE_REFRESH_S</code></td>
+<td><code>900</code></td>
+<td>Sweeper refresh band upper edge</td>
+</tr>
+<tr>
+<td><code>CACHE_TTL_S</code></td>
+<td><code>60</code></td>
+<td>Per-replica cache and outage grace cap (not capped; keep ≤ 60 to preserve the documented bound)</td>
+</tr>
+<tr>
+<td><code>SWEEP_INTERVAL_S</code></td>
+<td><code>60</code></td>
+<td><code>0</code> disables the sweeper. Every other timing knob must be ≥ 1 (<code>CACHE_TTL_S</code> may be <code>0</code>: no cache)</td>
+</tr>
+<tr>
+<td><code>SWEEP_MAX_ENTRIES</code></td>
+<td><code>500</code></td>
+<td>Entries examined per sweep pass; the next pass resumes where this one stopped</td>
+</tr>
+<tr>
+<td><code>LOCK_TIMEOUT_S</code> / <code>LOCK_TTL_MS</code></td>
+<td><code>10</code> / <code>20000</code></td>
+<td>Waiter budget / redis lock TTL. With <code>COORD_BACKEND=redis</code>, startup rejects <code>LOCK_TTL_MS</code> below <code>(VENDOR_TIMEOUT_S + 2 × VAULT_TIMEOUT_S) × 1000</code></td>
+</tr>
+<tr>
+<td><code>REFRESHING_TTL_S</code></td>
+<td><code>30</code></td>
+<td>Abandoned-marker takeover threshold</td>
+</tr>
+<tr>
+<td><code>MASS_STALE_THRESHOLD</code> / <code>MASS_STALE_WINDOW_S</code></td>
+<td><code>3</code> / <code>60</code></td>
+<td>Uninstall-anomaly page</td>
+</tr>
+<tr>
+<td><code>VAULT_TIMEOUT_S</code></td>
+<td><code>3</code></td>
+<td>Bounded fail-closed detection</td>
+</tr>
+<tr>
+<td><code>VENDOR_TIMEOUT_S</code></td>
+<td><code>10</code></td>
+<td>Each vendor HTTP call (metadata, token, userinfo, revocation)</td>
+</tr>
+<tr>
+<td><code>JWKS_TIMEOUT_S</code></td>
+<td><code>5</code></td>
+<td>Hub JWKS fetch</td>
+</tr>
+<tr>
+<td><code>STARTUP_TIMEOUT_S</code></td>
+<td><code>30</code></td>
+<td>How long startup waits for an unreachable custody backend, hub JWKS, or hub OIDC discovery</td>
+</tr>
+</tbody>
+</table>
+<h2 id="hub-login-client-consent">Hub login client (consent)</h2>
+<p>Consent requires the user to sign in at the hub in the browser that opened
+the authorize link (design §6). Register the broker at the hub as an OIDC
+client:</p>
+<ul>
+<li><strong>Redirect URI:</strong> <code>{BROKER_PUBLIC_URL}/v1/callback/_hub</code> (exact match).</li>
+<li><strong>Grant:</strong> authorization code, with PKCE (S256) required; scope <code>openid</code>.</li>
+<li><strong>ID tokens</strong> signed with an algorithm in <code>HUB_ALGORITHMS</code>, by keys the
+  hub publishes at <code>HUB_JWKS_URI</code>.</li>
+<li><strong>Client auth:</strong> confidential (<code>HUB_LOGIN_CLIENT_SECRET</code>, sent as
+  <code>client_secret_post</code>) or public (no secret).</li>
+</ul>
+<p>The broker finds the hub's endpoints at
+<code>{HUB_ISSUER}/.well-known/openid-configuration</code> and checks at startup that
+the document names <code>HUB_ISSUER</code>. Serve the broker over https so the
+consent binding cookie is marked <code>Secure</code>.</p>
+<h2 id="vendor-registry-review-workflow">Vendor registry review workflow</h2>
+<p>The registry (<code>REGISTRY_PATH</code>) is the vendor allowlist and per-vendor
+policy. Treat every change as a reviewed change:</p>
+<ol>
+<li>Edit a copy of <code>registry.example.json</code>.</li>
+<li>Validate: CI runs <code>jsonschema</code> against
+   <code>schemas/vendor-registry.schema.json</code> on every push; do the same locally.</li>
+<li><code>scope_ceiling</code> changes require the same sign-off as a token-contract
+   change — the ceiling is a security boundary (a caller can never widen
+   past it at runtime).</li>
+<li>Endpoints may be hardcoded <strong>only</strong> where the vendor publishes no
+   RFC 8414 metadata (e.g. GitHub); where metadata exists, use
+   <code>auth_metadata_url</code>.</li>
+<li>Credentials never live in the registry — only in <code>vendor-clients/*</code>.</li>
+</ol>
+<h2 id="gateway-contract">Gateway contract</h2>
+<p>Use the <a href="#api">API reference</a> for frozen response fields, problem titles,
+and the <a href="#legacy-gateway-mapping">legacy gateway mapping</a>. The plugin
+is external to this repository. Follow <a href="#mcp">Integrate with MCP</a>
+for current protocol boundaries and the proposed consent adapter.</p>
+<p>Frozen audit event names: <code>broker.resolve</code>, <code>broker.consent.start</code>,
+<code>broker.consent.complete</code>, <code>broker.consent.fail</code>, <code>broker.refresh</code>,
+<code>broker.stale</code>, <code>broker.stale.mass</code>, <code>broker.revoke</code>, <code>broker.admin.deny</code>,
+<code>broker.sweep.error</code>. Added in 1.1 (additive): <code>broker.custody.renew_failed</code>.</p>
+<h2 id="runbook">Runbook</h2>
+<ul>
+<li><strong><code>/healthz</code></strong> returns <code>{"ok", "custody"}</code>. It fails (503) only for a
+  problem with this replica's own custody token: <code>token-rejected</code> (revoked,
+  expired, or wrong) or <code>token-expiring</code> (under 10 minutes left). Replace
+  the token and restart the replica. A custody <strong>outage</strong> is reported as
+  <code>"custody": "unreachable"</code> but stays 200 on purpose: every replica shares
+  the outage, and draining or restarting them would discard the cache hits
+  that keep serving meanwhile. Alert on the body, not only the status. The
+  result is cached for 10 seconds.</li>
+<li><strong><code>broker.custody.renew_failed</code></strong>: the broker could not renew its custody
+  token and is retrying with backoff (<code>ttl_remaining_s</code> says how long is
+  left). If the backend is up, check the token's policies and max TTL.</li>
+<li><strong><code>broker.consent.fail</code> with <code>reason: login_sub_mismatch</code></strong>
+  (<code>security_event: true</code>): someone opened an authorize link issued to
+  another user (<code>sub</code> is the link's user, <code>login_sub</code> who signed in). One
+  event can be a user opening a colleague's link by mistake; repeats from
+  one <code>login_sub</code>, or links sent to many users, suggest a linking attack.</li>
+<li><strong><code>broker.consent.fail</code> with <code>reason: browser_mismatch</code></strong>: a consent leg
+  was finished in a browser that did not start it (a forwarded callback or
+  vendor URL). No code was redeemed.</li>
+<li><strong><code>broker.stale.mass</code> signal</strong>: possible org-level app uninstall or credential
+  rotation at one vendor. Configure monitoring to route the event to on-call;
+  the broker itself does not send pages. Per-entry recovery is self-service re-consent;
+  investigate the vendor-side cause before mass-notifying users.</li>
+<li><strong>503 <code>vault-unavailable</code></strong>: custody outage; the broker is fail-closed by
+  design. Restore the backend; entries and generations are intact (CAS).</li>
+<li><strong>503 <code>coordination-unavailable</code></strong> (redis profile): operations requiring
+  coordination fail, including refresh and consent-state access; usable
+  cache hits keep serving. Restore Redis. Lost consent records require a
+  fresh browser flow; durable credentials remain in custody.</li>
+<li><strong>Replica died mid-refresh</strong>: nothing to do. The lock TTL expires, the
+  abandoned <code>REFRESHING</code> marker is taken over, and in the worst case a
+  rotating-RT family burns → STALE → the user re-consents. CAS prevents a losing writer from overwriting a newer version; it cannot
+  recover credentials already consumed upstream.</li>
+<li><strong>Sweeper</strong>: leader-lease holder only (redis profile). <code>broker.sweep.error</code>
+  events carry the vendor/sub that failed; a bad entry never kills the loop.
+  Each pass lists every vendor's entries, then examines at most
+  <code>SWEEP_MAX_ENTRIES</code> of them, resuming from where the previous pass
+  stopped. A full cycle over all entries fits inside the 10-minute proactive
+  band while <code>total entries ≤ SWEEP_MAX_ENTRIES × 600 / SWEEP_INTERVAL_S</code>
+  (5,000 with the defaults); beyond that, some entries miss the proactive
+  refresh and are refreshed lazily on their next resolve instead.</li>
+<li><strong>Blocking I/O</strong>: custody (hvac) and hub JWKS calls run in worker threads,
+  never on the event loop. A frozen custody backend therefore holds one
+  thread per in-flight uncached request for up to <code>VAULT_TIMEOUT_S</code>, while
+  cache hits and <code>/healthz</code> keep answering.</li>
+</ul>
+<h2 id="custody-layout-and-upgrades">Custody layout and upgrades</h2>
+<p>Grant entries live at <code>vendor-tokens/{vendor}/sub-b64.{base64url(sub)}</code>:
+one key per subject, whatever characters the hub puts in <code>sub</code> (URIs with
+<code>/</code> included). Entries written before this encoding sit at
+<code>vendor-tokens/{vendor}/{sub}</code>; the broker still reads them there and moves
+each one to the encoded key on its next write (a refresh, re-consent, or
+delete). No migration job is needed. Upgrade all replicas together: an
+older replica cannot see entries a newer one has already moved, and would
+answer needs-consent for them until it is replaced.</p>
+<p>The current STALE entry keeps no token material (both tokens are blanked);
+older retained KV versions may still contain credentials.
+<code>REVOKE_PENDING</code> entries keep theirs until the vendor revocation succeeds.</p>
+<h2 id="multi-replica-deployment">Multi-replica deployment</h2>
+<p>Run ≥2 replicas only with <code>COORD_BACKEND=redis</code> (see
+<code>deploy/docker-compose.multi.yml</code> for the shape: shared OpenBao + Redis,
+any L4/L7 balancer, no session affinity required). Keep <code>LOCK_TTL_MS</code>
+above the slowest vendor token round-trip plus custody overhead. Compare
+units when configuring takeover: <code>REFRESHING_TTL_S</code> should exceed
+<code>LOCK_TTL_MS / 1000</code>.</p>
+<p>A stopped sweep leader can retain its Redis lease for up to twice its
+configured sweep interval (120 seconds with defaults), then a successor
+must reach its next sweep attempt. Account for that handoff when changing
+profiles or timing settings. The <a href="#run-the-automated-checks">test guide</a>
+describes isolation between standalone and multi-replica runs.</p>
+</section>
+<hr class='sep'/>
+<section id="security">
+<div class="section-head"><h1>Security and MCP Alignment</h1><p class="blurb">Evidence, ownership, limitations, and the current MCP baseline.</p><p class="src">source: <code>docs/security.md</code></p></div>
+<p><strong>Reviewed 2026-09-25 · software 1.1.0 (unreleased) · MCP 2026-07-28.</strong></p>
+<p>The broker supplies credential custody and vendor OAuth flows inside a larger MCP deployment. Passing broker tests is not a claim that the complete deployment conforms to MCP. <a href="https://modelcontextprotocol.io/specification/2026-07-28">The current specification</a> defines the protocol baseline.</p>
+<h2 id="control-ownership-and-evidence">Control ownership and evidence</h2>
+<p>“Implemented” means present in this broker; “partial” identifies limits; “external” requires another component; “planned” is not available here. Source/test paths below refer to the private repository available to maintainers.</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Status / owner</th>
+<th>Implementation and evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PKCE S256, nonce, subject/browser binding</td>
+<td>Implemented / broker</td>
+<td><code>main.py</code>, <code>hub_login.py</code>; <code>tests/unit/test_consent_binding.py</code>, <code>test_hub_login.py</code>, <code>tests/integration/test_consent.py</code></td>
+</tr>
+<tr>
+<td>Vendor callback issuer validation</td>
+<td>Partial / broker</td>
+<td><code>main.py</code> callback checks; <code>tests/integration/test_consent.py</code>; metadata limitations below</td>
+</tr>
+<tr>
+<td>Hub JWT revalidation</td>
+<td>Implemented / broker</td>
+<td><code>hub.py</code>; <code>tests/unit/test_hub.py</code>, <code>tests/integration/test_security.py</code></td>
+</tr>
+<tr>
+<td>Scope ceiling and scope union</td>
+<td>Implemented / broker policy</td>
+<td><code>main.py</code>, <code>refresh.py</code>; <code>tests/unit/test_scope_math.py</code>, <code>tests/integration/test_refresh.py</code></td>
+</tr>
+<tr>
+<td>Per-user custody, generation CAS, single-flight</td>
+<td>Implemented / broker + custody + coordination</td>
+<td><code>custody.py</code>, <code>refresh.py</code>, <code>coordination.py</code>; storage, refresh, and multi-replica tests</td>
+</tr>
+<tr>
+<td>Revocation</td>
+<td>Implemented with exceptions / broker + vendor</td>
+<td><code>main.py</code>, <code>vendors.py</code>, <code>sweeper.py</code>; <code>tests/integration/test_grants.py</code></td>
+</tr>
+<tr>
+<td>No access-token issuance endpoint</td>
+<td>Implemented / broker</td>
+<td><code>tests/unit/test_routes.py</code> audits seven routes; client assertions may still be signed</td>
+</tr>
+<tr>
+<td>Sensitive values absent from tested logs</td>
+<td>Implemented test coverage / broker</td>
+<td><code>tests/integration/test_security.py</code> checks sampled hub/vendor tokens, client secret, and assertion key; not an exhaustive proof for arbitrary provider errors</td>
+</tr>
+<tr>
+<td>Protected-resource metadata and MCP discovery</td>
+<td>External / MCP server and client</td>
+<td>No MCP endpoint implementation here</td>
+</tr>
+<tr>
+<td>Resource indicators and resource-specific token audience</td>
+<td>External / MCP client, server, AS</td>
+<td>Internal tier-audience checks do not establish MCP resource binding</td>
+</tr>
+<tr>
+<td>MCP authorization challenges and registration</td>
+<td>External / MCP stack</td>
+<td>Broker status codes are an internal contract</td>
+</tr>
+<tr>
+<td>Vendor consent via URL elicitation</td>
+<td>Planned adapter / MCP server</td>
+<td><a href="#mcp">Integration design</a>; not exercised by broker tests</td>
+</tr>
+<tr>
+<td>Token stripping and token-free MCP results</td>
+<td>External / gateway and MCP server</td>
+<td>Must be tested in the deployment; resolve deliberately returns a token to its trusted caller</td>
+</tr>
+<tr>
+<td>Issuer-bound vendor client credentials</td>
+<td>Partial / configuration control</td>
+<td>Custody keys use vendor ID; issuer changes do not automatically invalidate credentials</td>
+</tr>
+<tr>
+<td>Enterprise-Managed Authorization / ID-JAG</td>
+<td>Planned / cooperating identity systems</td>
+<td><code>ema_status</code> tracks readiness; no exchange or automated drain implementation</td>
+</tr>
+</tbody>
+</table>
+<p>Protected-resource metadata, resource indicators, and intended-audience validation belong at the MCP boundary. <a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization">MCP authorization</a></p>
+<h2 id="known-limitations">Known limitations</h2>
+<h3 id="issuer-discovery-and-callback-checks">Issuer discovery and callback checks</h3>
+<p>Vendor discovery currently checks endpoint shapes, but does not require an issuer or pin it against a separately trusted expected issuer. If the stored issuer is absent, the vendor callback skips issuer comparison. Explicit registry endpoints cannot currently express issuer/support fields in the schema.</p>
+<p>The hub callback rejects a supplied issuer mismatch but does not reject an omitted issuer based on metadata advertisement. Vendor credentials are stored per vendor ID, without an issuer stamp that blocks reuse after a metadata change. Restrict registry/metadata administration and review provider changes. These are follow-up implementation items, not gaps fixed by these documentation changes.</p>
+<p>The standards alignment is therefore partial: current MCP's callback checks depend on authenticated, validated issuer metadata. <a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#authorization-response-validation">Authorization response validation</a></p>
+<h3 id="scope-and-lifetime">Scope and lifetime</h3>
+<p>The broker can cap requested and recorded scope names; it cannot narrow a vendor-issued token by editing metadata. An empty ceiling delegates permission policy to the vendor. The minimum token lifetime is a target with clamping and short-lived-token exceptions. See <a href="#resolve-a-token">scope and lifetime semantics</a>.</p>
+<h3 id="revocation-historical-storage-and-recovery">Revocation, historical storage, and recovery</h3>
+<p>Unsupported vendor revocation removes the local connection only. If custody fails after code redemption, revocation of the newly acquired grant is best-effort. <code>max_versions=2</code> retains up to two credential versions; scrubbing the current STALE entry does not erase every retained historical version.</p>
+<p>CAS prevents a losing refresh write from overwriting a newer stored version. It cannot undo a refresh already consumed at the vendor. A replica failure at that point can burn a rotating-token family and require re-consent. Cache invalidation is best-effort, bounded by <code>CACHE_TTL_S</code> (default 60 seconds).</p>
+<h3 id="deployment-controls">Deployment controls</h3>
+<p>Use private ingress and gateway workload authentication, TLS, controlled custody policies, and audit logging configured in the custody backend. Those controls are not supplied by the development Compose stack. The broker can sign <code>private_key_jwt</code> client-authentication assertions, but does not issue access tokens. Treat vendor client signing keys as credential material.</p>
+<p>Route <code>broker.stale.mass</code> to monitoring if an on-call notification is required: emitting <code>page: true</code> does not itself contact an alert service. Availability and latency values in the design are targets, not measured guarantees.</p>
+<h2 id="verification-record">Verification record</h2>
+<p>Review baseline: application commit <code>2317b07</code>. Local checks on 2026-09-25:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unit suite</td>
+<td>319 passed</td>
+</tr>
+<tr>
+<td>Docker integration / memory</td>
+<td>61 passed</td>
+</tr>
+<tr>
+<td>Docker integration / Redis</td>
+<td>61 passed</td>
+</tr>
+<tr>
+<td>Multi-replica initial run</td>
+<td>6 passed, sweep-retry deadline test failed</td>
+</tr>
+<tr>
+<td>Multi-replica isolated rerun</td>
+<td>7 passed, no code changes</td>
+</tr>
+<tr>
+<td>Real GitHub</td>
+<td>Skipped; App credentials not configured</td>
+</tr>
+</tbody>
+</table>
+<p>The first multi-replica failure was consistent with a retained 120-second sweep lease from the preceding standalone Redis broker exceeding the test's 60-second deadline. Its remaining TTL was not captured at failure, so this explanation is not definitive. Host/container clocks aligned. Documented <a href="#run-the-automated-checks">test isolation</a> avoids that handoff ambiguity.</p>
+<p>These checks use the mock vendor and do not establish real-provider interoperability, MCP client compatibility, production load capacity, or penetration-test results. <a href="#smoke-tests">Manual verification</a> explains the individual probes.</p>
+<h2 id="enterprise-migration">Enterprise migration</h2>
+<p>EMA is optional and requires compatible clients, IdPs, and resource authorization servers. Evaluate downstream vendor access before retiring a broker integration. Keep readiness evidence per vendor, with a review date. An <code>ema_status</code> change alone has no runtime effect. <a href="https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization">Enterprise-Managed Authorization</a></p>
+</section>
+<hr class='sep'/>
 <section id="design">
 <div class="section-head"><h1>Design</h1><p class="blurb">The normative design: role, standards basis, trust boundaries, API, state machine, failure modes, deployment profiles.</p><p class="src">source: <code>docs/design.md</code></p></div>
-<h1>Vendor Token Broker — Design</h1>
-<p><strong>Version:</strong> 1.0 · <strong>Status:</strong> implemented (this repository)</p>
+<p><strong>Software:</strong> 1.1.0 (unreleased) · <strong>Reviewed:</strong> 2026-09-25</p>
+<p>Start with the <a href="#overview">overview</a>, <a href="#api">API reference</a>, or
+<a href="#security">security and MCP alignment</a>. This page explains internal behavior.</p>
 <p>Adapted from the source lab's design document; the lab's known
 implementation deltas (single-replica-only locking, <code>client_secret_post</code>-only
 vendor auth, fixed-interval sweeper) are closed by this implementation and
 replaced by the deployment profiles in §14. Every lifecycle path described
-here is drawn as a sequence diagram in <a href="#lifecycle"><code>token-lifecycle.md</code></a>.</p>
+here is drawn as a sequence diagram in <code>token-lifecycle.md</code>.</p>
 <hr />
-<h2>1. Role definition</h2>
+<h2 id="1-role-definition">1. Role definition</h2>
 <p>The Vendor Token Broker acquires, custodies, refreshes, and revokes OAuth
 credentials issued by third-party SaaS authorization servers (GitHub,
 Notion, Atlassian, …) on behalf of individual enterprise users, and
 resolves them per-request for the egress gateway tier.</p>
 <p><strong>The broker is an OAuth client and credential custodian. It is not an
-authorization server and MUST NOT mint, sign, or transform tokens.</strong> The
+authorization server and MUST NOT issue access tokens.</strong> It may sign
+<code>private_key_jwt</code> assertions to authenticate to vendors. The
 workforce IdP (the "hub") remains the sole issuer for the platform. Any
 future requirement that appears to need broker-issued tokens is a design
 error to be escalated, not implemented.</p>
-<p>The broker exists because most SaaS vendors' authorization servers do not
-yet accept the Identity Assertion JWT Authorization Grant (ID-JAG) on which
-MCP Enterprise-Managed Authorization (EMA) is built. It is deliberately
-transitional: §13 defines per-vendor sunset criteria. Architect every
-vendor integration as a removable module.</p>
-<h2>2. Standards basis</h2>
+<p>The broker supports vendors that require a separate user OAuth grant.
+MCP Enterprise-Managed Authorization (EMA) is a possible future migration
+path when it also supplies the downstream access needed by the application.
+It is not implemented here. See <a href="#mcp">the integration guide</a>.</p>
+<h2 id="2-standards-basis">2. Standards basis</h2>
 <table>
 <thead>
 <tr>
@@ -120,7 +1069,7 @@ vendor integration as a removable module.</p>
 <tr>
 <td>Acquisition</td>
 <td>RFC 9207 issuer identification</td>
-<td>Callback validates <code>iss</code> (when present or advertised) against the issuer recorded at transaction creation — strict string comparison, no URI normalization; a missing <code>iss</code> from an AS that advertises support is rejected as a mix-up signal</td>
+<td>When a recorded issuer exists, callback validates <code>iss</code> (when present or advertised) against the issuer recorded at transaction creation — strict string comparison, no URI normalization; a missing <code>iss</code> from an AS that advertises support is rejected as a mix-up signal</td>
 </tr>
 <tr>
 <td>Client auth</td>
@@ -130,7 +1079,7 @@ vendor integration as a removable module.</p>
 <tr>
 <td>Hardening</td>
 <td>RFC 9700 OAuth 2.0 Security BCP</td>
-<td>Normative checklist for the whole client stack; deviations documented per vendor</td>
+<td>Review basis; <a href="#known-limitations">known limitations</a> prevent a blanket conformance claim</td>
 </tr>
 <tr>
 <td>Lifecycle</td>
@@ -145,17 +1094,18 @@ vendor integration as a removable module.</p>
 <tr>
 <td>Exchange (future)</td>
 <td>MCP EMA: ID-JAG via RFC 8693 token exchange + RFC 7523 grant</td>
-<td>The standardized replacement; drives §13 sunset</td>
+<td>Conditional future migration; no exchange implementation here</td>
 </tr>
 </tbody>
 </table>
-<h2>3. Architecture and trust boundaries</h2>
+<h2 id="3-architecture-and-trust-boundaries">3. Architecture and trust boundaries</h2>
 <pre class="mermaid">flowchart LR
     subgraph userplane[&quot;User plane&quot;]
         C[&quot;MCP client&quot;]
         UA[&quot;Browser&lt;br/&gt;(consent legs only)&quot;]
     end
     subgraph platform[&quot;Platform — private tier&quot;]
+        S[&quot;MCP server — external to this repo&quot;]
         G[&quot;Egress gateway&quot;]
         B[&quot;Vendor Token Broker&quot;]
         K[&quot;Custody&lt;br/&gt;OpenBao / Vault KV-v2&quot;]
@@ -164,10 +1114,11 @@ vendor integration as a removable module.</p>
     H[&quot;Workforce IdP — the hub&lt;br/&gt;SOLE token issuer&quot;]
     V[&quot;Vendor AS + API&lt;br/&gt;(GitHub, Notion, …)&quot;]
 
-    C -- &quot;tool call (hub JWT)&quot; --&gt; G
+    C -- &quot;MCP resource access token&quot; --&gt; S
+    S -- &quot;authorized vendor operation&quot; --&gt; G
     G -- &quot;resolve — hub JWT&lt;br/&gt;re-validated by the broker&quot; --&gt; B
     UA -- &quot;authorize / callback&lt;br/&gt;(private ingress only)&quot; --&gt; B
-    B -. &quot;JWKS only — the broker&lt;br/&gt;never mints tokens&quot; .-&gt; H
+    B -. &quot;JWKS + OIDC discovery&lt;br/&gt;and login code redemption&quot; .-&gt; H
     B -- &quot;OAuth legs, per-vendor&lt;br/&gt;client auth&quot; --&gt; V
     G -- &quot;vendor token upstream,&lt;br/&gt;hub JWT STRIPPED&quot; --&gt; V
     B -- &quot;grants (CAS) +&lt;br/&gt;client credentials&quot; --&gt; K
@@ -182,12 +1133,14 @@ vendor integration as a removable module.</p>
     class V vendor
     class K custody
     class R coord
-    class C,UA,G,H neutral
+    class C,UA,S,G,H neutral
 </pre>
-<p>Two tokens never cross a boundary they shouldn't: the <strong>hub JWT stops at
+<p>Required deployment boundaries: the <strong>hub JWT stops at
 the gateway/broker</strong> (stripped before anything goes upstream to a vendor),
-and <strong>vendor tokens never reach the client</strong> (they exist only between
-gateway, broker, custody, and vendor).</p>
+and <strong>vendor tokens must never reach the MCP client</strong>. The gateway must
+enforce these boundaries; this repository does not implement the gateway.
+The internal hub JWT is a separate credential contract from MCP resource
+authorization. See <a href="#three-authorization-boundaries">three authorization boundaries</a>.</p>
 <p>Callers and trust:</p>
 <ul>
 <li><strong>Egress gateway → broker</strong> (<code>/v1/tokens/resolve</code>): the request carries the
@@ -202,38 +1155,20 @@ gateway, broker, custody, and vendor).</p>
   per-vendor confidential client credential from <code>vendor-clients/{vendor}</code>,
   preferring <code>private_key_jwt</code> over shared secrets where supported.</li>
 <li><strong>Broker → custody backend</strong>: the only role with read on
-  <code>vendor-tokens/*</code>; every read is an audited event.</li>
+  <code>vendor-tokens/*</code> under the deployed policy. Operators must configure
+  custody-backend audit logging to record reads; the broker does not emit
+  a dedicated audit event for every storage read.</li>
 </ul>
-<h2>4. API (the whole surface — 7 routes)</h2>
+<h2 id="4-api-the-whole-surface-7-routes">4. API (the whole surface — 7 routes)</h2>
 <p>Errors follow RFC 9457 problem details. No token material ever appears in
 an error body or log line. The <code>title</code> slugs and response fields are wire
 contract (see <code>docs/operations.md</code>).</p>
-<h3>4.1 <code>POST /v1/tokens/resolve</code></h3>
-<p>Request: <code>{"vendor", "sub"?, "min_ttl_s"?, "required_scopes"?}</code> + hub JWT.
-The JWT's <code>sub</code> is authoritative; a mismatched body <code>sub</code> is a 400.
-<code>required_scopes</code> is capped by the registry <code>scope_ceiling</code> (403
-<code>scope-exceeds-ceiling</code> beyond it). An empty ceiling means scopes are
-governed vendor-side (e.g. GitHub App permissions): the broker then neither
-requests nor enforces <code>required_scopes</code> for that vendor.
-- <code>200 {access_token, expires_at, granted_scopes}</code> — live for ≥ <code>min_ttl_s</code>
-  (refresh performed inline if needed). <code>min_ttl_s</code> (default 120) is
-  honored up to <code>REFRESH_BUFFER_S</code>; larger values are clamped and audited
-  (<code>min_ttl_clamped_from</code>). A token the vendor has just issued is served
-  even if it lives less than <code>min_ttl_s</code>, since refreshing again cannot
-  produce a longer-lived one (audited <code>short_ttl</code>). <code>granted_scopes</code> never
-  exceeds a non-empty ceiling; extra vendor scopes are dropped and audited
-  (<code>scope_widened</code>).
-- <code>404 needs-consent {authorize_uri}</code> — no entry or STALE entry
-- <code>409 needs-reconsent-scope {missing_scopes, authorize_uri}</code> — grant
-  narrower than required; re-consent unions held+required (≤ ceiling)
-- <code>409 revoke-pending</code> — entry mid-revocation
-- <code>400 invalid-request</code> — malformed body (not a JSON object, missing
-  <code>vendor</code>, non-integer or negative <code>min_ttl_s</code>, non-string scopes)
-- <code>401 invalid-hub-token</code> — the hub JWT failed validation
-- <code>503 vendor-unavailable | vault-unavailable | coordination-unavailable |
-  hub-unavailable</code> — retriable; entry state unchanged. Problem <code>detail</code>
-  strings are fixed text and never carry backend hostnames or raw errors.</p>
-<h3>4.2 <code>GET /v1/authorize/{vendor}?txn=…</code></h3>
+<h3 id="41-post-v1tokensresolve">4.1 <code>POST /v1/tokens/resolve</code></h3>
+<p>See <a href="#resolve-a-token">resolve a token</a> for request fields, lifetime
+exceptions, scope policy, and the canonical <a href="#errors-and-caller-actions">error/action table</a>.
+The JWT subject is authoritative. Resolve reads the local cache or custody,
+then refreshes inline when necessary; §§7–8 explain concurrency.</p>
+<h3 id="42-get-v1authorizevendortxn">4.2 <code>GET /v1/authorize/{vendor}?txn=…</code></h3>
 <p>Starts consent (§6). The link is single use and valid for 5 minutes. The
 broker sets an HttpOnly, <code>SameSite=Lax</code> binding cookie (<code>Secure</code> behind
 https) and sends the browser to log in at the hub: OIDC authorization code
@@ -243,7 +1178,7 @@ opaque handle to a server-side record <code>{sub, vendor, nonce,
 pkce_verifier, issuer, created_at, scopes, binding}</code> (TTL 10 min, single
 use); never a JWT, never decodable client-side. Scopes = min(tool
 requirement, registry ceiling).</p>
-<h3>4.3 <code>GET /v1/callback/{vendor}?code&amp;state</code></h3>
+<h3 id="43-get-v1callbackvendorcodestate">4.3 <code>GET /v1/callback/{vendor}?code&amp;state</code></h3>
 <p><code>/v1/callback/_hub</code> is the hub-login return (<code>_</code> never appears in a vendor
 id): it checks the binding cookie and <code>iss</code>, consumes the login state,
 redeems the hub code, validates the ID token (signature from the hub
@@ -264,7 +1199,7 @@ user retries later. An ACTIVE or STALE predecessor is simply overwritten:
 revoking it could also revoke the new grant at vendors that revoke per
 user and client. A <code>state</code> replay or mismatch is a
 security alert, not just a 400.</p>
-<h3>4.4 <code>DELETE /v1/grants/{vendor}/{sub}</code></h3>
+<h3 id="44-delete-v1grantsvendorsub">4.4 <code>DELETE /v1/grants/{vendor}/{sub}</code></h3>
 <p>Self-service (sub must match the hub JWT). Order: RFC 7009 revoke at
 vendor → delete custody entry → audit, all under the entry's refresh lock
 so no refresh can rotate the pair in between (a pair that lands after a
@@ -274,7 +1209,7 @@ with no revocation endpoint cannot revoke: the entry is deleted locally,
 audited <code>outcome: "unsupported"</code>, and the response adds
 <code>"vendor_revocation": "unsupported"</code> (the vendor-side grant lives until
 its own expiry).</p>
-<h3>4.5 <code>GET /v1/grants</code> · <code>GET /v1/admin/vendors/{vendor}</code></h3>
+<h3 id="45-get-v1grants-get-v1adminvendorsvendor">4.5 <code>GET /v1/grants</code> · <code>GET /v1/admin/vendors/{vendor}</code></h3>
 <p>Self-service listing; authenticated admin read of a registry record
 (requires <code>ADMIN_GROUP</code> in the hub JWT's <code>groups</code> claim, which must be a
 JSON array; a string claim never matches). Registry mutation is deliberately
@@ -282,7 +1217,7 @@ a reviewed git change validated against
 <code>schemas/vendor-registry.schema.json</code> — for this broker that is the
 stronger control, not a gap. Changing <code>scope_ceiling</code> requires
 token-contract-level sign-off.</p>
-<h2>5. Custody schema</h2>
+<h2 id="5-custody-schema">5. Custody schema</h2>
 <pre><code>vendor-tokens/{vendor}/sub-b64.{base64url(sub)}
                                {access_token, refresh_token, expires_at,
                                 granted_scopes[], vendor_user_id,
@@ -303,16 +1238,17 @@ the CAS handle.</p>
 that reaches its refresh buffer goes STALE without a vendor call (the user
 re-consents); it is audited <code>broker.stale</code> but does not count toward the
 mass-STALE page.</p>
-<h2>6. Consent dance (first-time)</h2>
-<p>(Full sequence diagram: <a href="#lifecycle"><code>token-lifecycle.md</code></a> §1.)</p>
+<h2 id="6-consent-dance-first-time">6. Consent dance (first-time)</h2>
+<p>(Full sequence diagram: <code>token-lifecycle.md</code> §1.)</p>
 <p>resolve → 404 + <code>authorize_uri(txn)</code> → browser →
 <code>/v1/authorize/{vendor}</code> (link used up, binding cookie set) → hub login →
 <code>/v1/callback/_hub</code> (same browser, logged-in <code>sub</code> == link <code>sub</code>) →
 vendor AS consent → <code>/v1/callback/{vendor}?code&amp;state&amp;iss</code> → binding,
 state and iss validated, state consumed, code redeemed server-side →
 entry written <code>ACTIVE gen=1</code> → "connected" page → retry resolves 200.</p>
-<p>Properties: the PKCE verifiers and <code>state</code>s never leave the broker in
-decodable form; scopes are capped by the registry ceiling regardless of
+<p>Properties: PKCE verifiers stay out of browser URLs and are sent only in
+server-side token requests; browser-visible <code>state</code> values are opaque handles
+to records held by the broker; scopes are capped by the registry ceiling regardless of
 what the tool asked for; and consent is bound to both the <strong>user</strong> and the
 <strong>browser</strong>:</p>
 <ul>
@@ -329,12 +1265,13 @@ what the tool asked for; and consent is bound to both the <strong>user</strong> 
 <li>The broker is an OIDC <em>relying party</em> of the hub here: it consumes a hub
   ID token and still issues nothing (§1).</li>
 </ul>
-<h2>7. Steady-state resolve</h2>
-<p>(Sequence diagrams: <a href="#lifecycle"><code>token-lifecycle.md</code></a> §2 cache hit, §3 lazy refresh.)</p>
-<p>Per-replica in-memory cache (TTL ≤ 60s, also the §10 outage grace cap) →
-custody read (audited) → serve if <code>expires_at - now ≥ max(min_ttl,
+<h2 id="7-steady-state-resolve">7. Steady-state resolve</h2>
+<p>(Sequence diagrams: <code>token-lifecycle.md</code> §2 cache hit, §3 lazy refresh.)</p>
+<p>Per-replica in-memory cache (<code>CACHE_TTL_S</code>, default 60s, also the §10 outage
+grace cap) → custody read (no broker audit event; the custody backend's own
+audit log records it) → serve if <code>expires_at - now ≥ max(min_ttl,
 REFRESH_BUFFER_S)</code> → otherwise inline single-flight refresh (§8).</p>
-<h2>8. Refresh state machine and race defense</h2>
+<h2 id="8-refresh-state-machine-and-race-defense">8. Refresh state machine and race defense</h2>
 <pre class="mermaid">stateDiagram-v2
     classDef live fill:#10b98122,stroke:#10b981
     classDef transient fill:#6366f122,stroke:#6366f1
@@ -353,14 +1290,14 @@ REFRESH_BUFFER_S)</code> → otherwise inline single-flight refresh (§8).</p>
     class REFRESHING transient
     class STALE,REVOKE_PENDING dead
 </pre>
-<p>(Message-level sequences for every transition: <a href="#lifecycle"><code>token-lifecycle.md</code></a>
+<p>(Message-level sequences for every transition: <code>token-lifecycle.md</code>
 §§3–5, 7–8.)</p>
 <p>Rotating-refresh-token vendors (GitHub-class) burn the whole token family
 if two refreshes race. Defense in depth:</p>
 <ol>
 <li><strong>Single-flight lock</strong> per <code>{vendor, sub}</code> — in-process (memory profile)
-   or Redis <code>SET NX PX</code> (redis profile); held only for the vendor
-   round-trip; waiters re-read and serve the winner's token.</li>
+   or Redis <code>SET NX PX</code> (redis profile); held for the refresh critical
+   section (re-read, marker write, vendor round-trip, outcome CAS write); waiters re-read and serve the winner's token.</li>
 <li><strong>Persisted <code>REFRESHING</code></strong> (redis profile) with owner + started-at:
    other replicas distinguish in-flight from stale; a marker abandoned past
    <code>REFRESHING_TTL_S</code> is taken over by the next lock holder. Never surfaces
@@ -372,10 +1309,10 @@ if two refreshes race. Defense in depth:</p>
 <p>Triggers: lazy (resolve inside <code>REFRESH_BUFFER_S</code>) and proactive (sweeper,
 entries expiring within <code>PROACTIVE_REFRESH_S</code>, leader-only + jittered in
 the redis profile). <code>invalid_grant</code> → STALE; ≥<code>MASS_STALE_THRESHOLD</code>
-STALEs for one vendor inside <code>MASS_STALE_WINDOW_S</code> is treated as an
-org-level uninstall and pages (<code>broker.stale.mass</code>).</p>
-<h2>9. Failure modes</h2>
-<p>(Outage sequences: <a href="#lifecycle"><code>token-lifecycle.md</code></a> §9; replica-death recovery: §5.)</p>
+STALEs for one vendor inside <code>MASS_STALE_WINDOW_S</code> emits a possible org-level uninstall alert signal (<code>broker.stale.mass</code>);
+monitoring must route it to on-call.</p>
+<h2 id="9-failure-modes">9. Failure modes</h2>
+<p>(Outage sequences: <code>token-lifecycle.md</code> §9; replica-death recovery: §5.)</p>
 <table>
 <thead>
 <tr>
@@ -403,12 +1340,12 @@ org-level uninstall and pages (<code>broker.stale.mass</code>).</p>
 <tr>
 <td>Custody unavailable</td>
 <td>Read/write errors</td>
-<td><strong>Fail closed.</strong> No grace beyond the ≤60s in-memory cache; 503 <code>vault-unavailable</code></td>
+<td><strong>Fail closed.</strong> No grace beyond the in-memory cache (<code>CACHE_TTL_S</code>, default 60s); 503 <code>vault-unavailable</code></td>
 </tr>
 <tr>
 <td>Coordination (redis) unavailable</td>
 <td>Lock/store errors</td>
-<td>503 <code>coordination-unavailable</code> on the refresh path only; cache hits still serve</td>
+<td>503 <code>coordination-unavailable</code> on every path that needs redis: refresh, minting a consent link (so absent/STALE/insufficient-scope resolves get 503, not 404/409), authorize, callbacks, DELETE. Resolves served without a refresh still return 200</td>
 </tr>
 <tr>
 <td>Vendor AS outage</td>
@@ -427,18 +1364,17 @@ org-level uninstall and pages (<code>broker.stale.mass</code>).</p>
 </tr>
 </tbody>
 </table>
-<h2>10. Security requirements</h2>
-<p>No issuance: no signing keys, no token or JWKS endpoint (route audit in
-CI). Token material never logged, never in errors, never in traces
+<h2 id="10-security-requirements">10. Security requirements</h2>
+<p>No access-token issuance or JWKS endpoint (route audit in CI). Vendor
+client-authentication assertions may be signed using keys from custody. Token material never logged, never in errors, never in traces
 (token-in-log grep in CI). Per-user entries only — no shared vendor
 service accounts through this path. Registry scope ceilings enforced at
 authorize time. Consent is bound to the hub-authenticated user and to the
-initiating browser (§6). Callback host on the private tier only. The consent dance
-(CSRF, mix-up, code injection per RFC 9700 §4) is in annual pen-test
-scope. The broker stores credentials, not business data; DLP at the
+initiating browser (§6). Callback host on the private tier only. Include the consent dance (CSRF, mix-up, code injection per RFC 9700 §4)
+in deployment penetration testing; this repository provides no pen-test report. The broker stores credentials, not business data; DLP at the
 egress gateway (not the broker) is the control preventing sensitive data
 reaching vendors.</p>
-<h2>11. Audit events</h2>
+<h2 id="11-audit-events">11. Audit events</h2>
 <p>One JSON line per event on stdout; ids, states, and generations only.
 Vocabulary (wire-frozen): <code>broker.resolve</code> (decision + path),
 <code>broker.consent.start|complete|fail</code>, <code>broker.refresh</code> (generation
@@ -447,18 +1383,20 @@ transition), <code>broker.stale</code>, <code>broker.stale.mass</code>, <code>br
 <code>broker.custody.renew_failed</code>. Every vendor-side action is
 joinable: hub <code>jti</code> → resolve → gateway record → vendor audit log via
 <code>vendor_user_id</code>.</p>
-<h2>12. SLOs and capacity</h2>
-<p>resolve p99 ≤ 25 ms (cache hit) / 400 ms (inline refresh); availability
+<h2 id="12-slos-and-capacity">12. SLOs and capacity</h2>
+<p><strong>Design targets, not measured results:</strong> resolve p99 ≤ 25 ms (cache hit) / 400 ms (inline refresh); availability
 99.9% (egress hot path; gateways treat 503 as retriable). Sizing: ~tens of
 vendor refreshes per user per day — the hot path is cache-served resolves.
 One modest replica pair is HA engineering, not throughput engineering.</p>
-<h2>13. Sunset criteria (per vendor)</h2>
-<p>A vendor exits the broker when: its Resource Authorization Server
-advertises <code>urn:ietf:params:oauth:grant-profile:id-jag</code>, the workforce IdP
-issues ID-JAGs, and a 30-day dual-run shows EMA-path parity. Exit =
-registry flag flips, consent disabled, existing entries revoked on a drain
-schedule. The broker's success metric is its own shrinking registry.</p>
-<h2>14. Deployment profiles</h2>
+<h2 id="13-sunset-criteria-per-vendor">13. Sunset criteria (per vendor)</h2>
+<p>A proposed migration requires compatible clients, identity provider, and
+resource authorization server, plus evidence that the replacement supplies
+the required downstream vendor access. Evaluate parity in a controlled
+dual-run before retiring consent and draining grants.</p>
+<p><code>ema_status</code> is informational tracking only. No registry flag currently
+automates ID-JAG exchange, consent shutdown, or scheduled draining. Those
+features require a separate implementation and rollout plan.</p>
+<h2 id="14-deployment-profiles">14. Deployment profiles</h2>
 <pre class="mermaid">flowchart TB
     subgraph mem[&quot;memory profile — exactly 1 replica, zero extra infra&quot;]
         direction LR
@@ -490,19 +1428,18 @@ schedule. The broker's success metric is its own shrinking registry.</p>
     class R2 coord
     class LB neutral
 </pre>
-<h3>Single replica (<code>COORD_BACKEND=memory</code>, the default)</h3>
+<h3 id="single-replica-coord_backendmemory-the-default">Single replica (<code>COORD_BACKEND=memory</code>, the default)</h3>
 <p>In-process asyncio lock per <code>{vendor, sub}</code>, replica-local consent
 records, fixed-interval sweeper, <code>REFRESHING</code> never persisted. Zero extra
 infrastructure. <strong>Correct only while replicas = 1.</strong></p>
-<h3>Multi-replica (<code>COORD_BACKEND=redis</code>)</h3>
+<h3 id="multi-replica-coord_backendredis">Multi-replica (<code>COORD_BACKEND=redis</code>)</h3>
 <p>Redis 7 provides: the distributed single-flight lock, shared single-use
 consent state (so consent may authorize on one replica and call back on
 another — no session affinity required), persisted <code>REFRESHING</code> with
 abandoned-marker takeover, the sweep leader lease (+ jittered interval),
 the shared mass-STALE window, and best-effort pub/sub cache invalidation
-on revoke/STALE/delete (worst case without it stays the documented ≤60s
-per-replica cache TTL). Redis is an availability optimization on the
-refresh path; the KV-v2 CAS remains the correctness guarantee. See
+on revoke/STALE/delete (worst case without it stays the per-replica <code>CACHE_TTL_S</code>, default
+60s). Redis is an availability optimization; the KV-v2 CAS remains the correctness guarantee. See
 <code>docs/adr/0001-redis-coordination.md</code>.</p>
 <p>Both profiles pass the same acceptance suite; the multi profile
 additionally passes <code>tests/integration/test_multi_replica.py</code>.</p>
@@ -510,11 +1447,10 @@ additionally passes <code>tests/integration/test_multi_replica.py</code>.</p>
 <hr class='sep'/>
 <section id="lifecycle">
 <div class="section-head"><h1>Token Lifecycle</h1><p class="blurb">Every path a grant takes, as sequence diagrams — consent, refresh, multi-replica takeover, revocation, outages.</p><p class="src">source: <code>docs/token-lifecycle.md</code></p></div>
-<h1>Token lifecycle — sequence diagrams</h1>
 <p>Every path a vendor grant can take through the broker, from first consent
-to deletion, drawn to match the implementation exactly (timings are the
-defaults from <code>config.py</code>). Companion documents: <a href="#design"><code>design.md</code></a> (normative
-behavior), <a href="#smoke-tests"><code>smoke-tests.md</code></a> (hands-on verification of these same paths).</p>
+to deletion, illustrating the implementation and its failure paths (timings are the
+defaults from <code>config.py</code>). Companion documents: <code>design.md</code> (normative
+behavior), <code>smoke-tests.md</code> (hands-on verification of these same paths).</p>
 <p><strong>Cast</strong>, common to all diagrams:</p>
 <table>
 <thead>
@@ -526,7 +1462,7 @@ behavior), <a href="#smoke-tests"><code>smoke-tests.md</code></a> (hands-on veri
 <tbody>
 <tr>
 <td>Client</td>
-<td>The caller behind the egress gateway (carries the user's hub JWT)</td>
+<td>The trusted gateway calling the broker with the user's internal hub JWT; not the MCP client</td>
 </tr>
 <tr>
 <td>Broker</td>
@@ -546,7 +1482,7 @@ behavior), <a href="#smoke-tests"><code>smoke-tests.md</code></a> (hands-on veri
 </tr>
 </tbody>
 </table>
-<h2>0. Orientation — the states and which diagram covers each transition</h2>
+<h2 id="0-orientation-the-states-and-which-diagram-covers-each-transition">0. Orientation — the states and which diagram covers each transition</h2>
 <pre class="mermaid">stateDiagram-v2
     classDef live fill:#10b98122,stroke:#10b981
     classDef transient fill:#6366f122,stroke:#6366f1
@@ -612,7 +1548,7 @@ behavior), <a href="#smoke-tests"><code>smoke-tests.md</code></a> (hands-on veri
 <p><code>REFRESHING</code> exists only in the redis profile and never surfaces
 externally (<code>/v1/grants</code> reports it as <code>ACTIVE</code>).</p>
 <hr />
-<h2>1. Birth — first-time consent dance</h2>
+<h2 id="1-birth-first-time-consent-dance">1. Birth — first-time consent dance</h2>
 <p>Trigger: a resolve finds no entry (or a STALE one) for <code>{vendor, sub}</code>.</p>
 <pre class="mermaid">sequenceDiagram
     autonumber
@@ -651,7 +1587,7 @@ externally (<code>/v1/grants</code> reports it as <code>ACTIVE</code>).</p>
     Note over B: mint vendor PKCE verifier (S256) +&lt;br/&gt;single-use state {sub, vendor, issuer,&lt;br/&gt;scopes ≤ registry ceiling, binding} — record&lt;br/&gt;whether the AS advertises RFC 9207 iss
     B--&gt;&gt;UA: 307 → vendor authorize&lt;br/&gt;(client_id, code_challenge, state)
     UA-&gt;&gt;V: user consents as themself
-    V--&gt;&gt;UA: 302 → /v1/callback?code&amp;state&amp;iss
+    V--&gt;&gt;UA: 302 → /v1/callback/{vendor}?code&amp;state&amp;iss
     UA-&gt;&gt;B: GET /v1/callback/{vendor}?code&amp;state&amp;iss
     Note over B: 1. state exists, unconsumed, vendor matches&lt;br/&gt;2. iss == recorded issuer (strict string —&lt;br/&gt;   omission = mix-up if advertised)&lt;br/&gt;3. binding cookie = the starting browser&lt;br/&gt;4. consume state — single use, BEFORE redeem
     B-&gt;&gt;V: POST /token (code + PKCE verifier + client auth¹)
@@ -667,13 +1603,12 @@ externally (<code>/v1/grants</code> reports it as <code>ACTIVE</code>).</p>
 (RFC 7523 assertion signed with the key from <code>vendor-clients/{vendor}</code>).</p>
 <p>Defenses in this diagram: only the user the link was issued for, in the
 browser that opened it, can complete consent (hub login + binding cookie);
-the code is redeemed server-side only; the PKCE
-verifier and state never leave the broker in decodable form; a replayed
+the code is redeemed server-side only; the browser sees only opaque state handles; the verifier is sent only in server-side token requests; a replayed
 callback (state already consumed) is a 400 <strong>and</strong> a
 <code>security_event: true</code> audit line; a tampered or missing <code>iss</code> is rejected
 <em>before</em> consumption, so the legitimate callback still completes.</p>
 <hr />
-<h2>2. Steady state — cache-hit resolve</h2>
+<h2 id="2-steady-state-cache-hit-resolve">2. Steady state — cache-hit resolve</h2>
 <p>Condition: <code>expires_at − now ≥ max(min_ttl_s, REFRESH_BUFFER_S=300)</code>.</p>
 <pre class="mermaid">sequenceDiagram
     autonumber
@@ -688,19 +1623,19 @@ callback (state already consumed) is a 400 <strong>and</strong> a
     end
 
     C-&gt;&gt;B: resolve (hub JWT)
-    alt per-replica cache fresh (≤ 60s)
+    alt per-replica cache fresh (≤ CACHE_TTL_S, default 60s)
         Note over B: serve from memory — no custody read
     else cache miss/expired
-        B-&gt;&gt;K: read entry (audited)
+        B-&gt;&gt;K: read entry
         K--&gt;&gt;B: ACTIVE, expires_at, version
-        Note over B: cache {entry, version} for ≤ 60s
+        Note over B: cache {entry, version} for ≤ CACHE_TTL_S
     end
     B--&gt;&gt;C: 200 {access_token, expires_at, granted_scopes}
 </pre>
 <p>This is the hot path (SLO p99 ≤ 25 ms). The 60-second cache is also the
 <strong>only</strong> grace the broker allows during a custody outage (§9).</p>
 <hr />
-<h2>3. Lazy refresh — single-flight inside the buffer</h2>
+<h2 id="3-lazy-refresh-single-flight-inside-the-buffer">3. Lazy refresh — single-flight inside the buffer</h2>
 <p>Condition: entry ACTIVE but <code>expires_at − now &lt; max(min_ttl, 300)</code>.
 Rotating-RT vendors revoke the whole token family if a consumed refresh
 token is replayed — so concurrent resolves must produce exactly one
@@ -736,13 +1671,14 @@ vendor call.</p>
     B--&gt;&gt;C1: 200 AT(gen N+1)
     Note over B: lock released — C2 re-reads,&lt;br/&gt;sees gen N+1 with enough TTL
     B--&gt;&gt;C2: 200 AT(gen N+1) — same token,&lt;br/&gt;zero extra vendor calls
+    Note over K: memory profile shown — the redis profile first&lt;br/&gt;CAS-writes a REFRESHING marker (§5), so the result is v+2
 </pre>
 <p>Waiter outcomes, in order of preference: generation advanced → serve the
 winner's token; lock wait exceeds 10s → re-read once and serve if still
 usable, else <code>503 vendor-unavailable</code> (retriable); winner hit
 <code>invalid_grant</code> → the waiter finds STALE and answers <code>needs-consent</code>.</p>
 <hr />
-<h2>4. Proactive refresh — the sweeper</h2>
+<h2 id="4-proactive-refresh-the-sweeper">4. Proactive refresh — the sweeper</h2>
 <p>Runs every <code>SWEEP_INTERVAL_S=60</code> (leader-only + ±20% jitter in the redis
 profile). Targets entries in the 5–15 minute band; the 0–5 minute band is
 left to lazy resolve.</p>
@@ -765,12 +1701,13 @@ left to lazy resolve.</p>
     S-&gt;&gt;R: SET vtb:sweep-lease NX PX 2×interval
     R--&gt;&gt;S: leader (others skip this pass)
     S-&gt;&gt;K: list subjects per enabled vendor
-    loop each entry
+    loop each entry, up to SWEEP_MAX_ENTRIES per pass (round-robin cursor)
         S-&gt;&gt;K: read entry
         alt state REVOKE_PENDING
             Note over S: §8 — retry vendor revocation
-        else ACTIVE and 300 &lt; remaining ≤ 900
+        else REFRESHING abandoned (≥ REFRESHING_TTL_S) or ACTIVE and 300 &lt; remaining ≤ 900
             S-&gt;&gt;B: try_lock (non-blocking — a resolve may own it)
+            B-&gt;&gt;K: re-read under lock
             B-&gt;&gt;V: refresh_token grant
             V--&gt;&gt;B: new AT + RT
             B-&gt;&gt;K: CAS write gen+1
@@ -782,7 +1719,7 @@ left to lazy resolve.</p>
 </pre>
 <p>A failed entry never kills the loop (<code>broker.sweep.error</code> and continue).</p>
 <hr />
-<h2>5. Multi-replica refresh — persisted REFRESHING, takeover, CAS backstop</h2>
+<h2 id="5-multi-replica-refresh-persisted-refreshing-takeover-cas-backstop">5. Multi-replica refresh — persisted REFRESHING, takeover, CAS backstop</h2>
 <p>Redis profile only. The lock is the optimization; the custody CAS is the
 correctness guarantee — a replica that dies mid-refresh can never corrupt
 the stored pair.</p>
@@ -802,13 +1739,15 @@ the stored pair.</p>
         participant K as Custody
     end
 
-    A-&gt;&gt;R: SET vtb:lock:{vendor}:{sub} NX PX 15000
+    A-&gt;&gt;R: SET vtb:lock:{vendor}:{sub} NX PX 20000
     R--&gt;&gt;A: acquired
     A-&gt;&gt;K: CAS write state=REFRESHING + owner=A + started_at (v → v1)
     A-&gt;&gt;V: refresh_token grant …
     Note over A: 💀 replica A dies here
     Bb-&gt;&gt;R: SET NX … (retry 200ms±jitter, re-reading each try)
-    Note over R: lock expires after 15s TTL
+    Note over Bb: gives up after LOCK_TIMEOUT_S = 10s —&lt;br/&gt;that resolve gets 503 vendor-unavailable (entry REFRESHING)
+    Note over R: lock expires after 20s TTL
+    Bb-&gt;&gt;R: a later resolve: SET NX …
     R--&gt;&gt;Bb: acquired
     Bb-&gt;&gt;K: re-read: REFRESHING, owner=A
     alt marker fresh (&lt; REFRESHING_TTL_S = 30s)
@@ -828,7 +1767,7 @@ the stored pair.</p>
     Note over A,K: if zombie A wakes and writes its outcome,&lt;br/&gt;its CAS (against v1) fails — the stale pair is discarded
 </pre>
 <hr />
-<h2>6. Scope step-up — 409 needs-reconsent-scope</h2>
+<h2 id="6-scope-step-up-409-needs-reconsent-scope">6. Scope step-up — 409 needs-reconsent-scope</h2>
 <p>A grant exists but is narrower than the tool's <code>required_scopes</code>.
 The caller can never widen past the registry ceiling.</p>
 <pre class="mermaid">sequenceDiagram
@@ -859,7 +1798,7 @@ The caller can never widen past the registry ceiling.</p>
     B--&gt;&gt;C: 200
 </pre>
 <hr />
-<h2>7. Death by vendor — STALE and the mass-STALE page</h2>
+<h2 id="7-death-by-vendor-stale-and-the-mass-stale-page">7. Death by vendor — STALE and the mass-STALE page</h2>
 <p><code>invalid_grant</code> on refresh means the grant itself is gone: user revoked at
 the vendor, refresh token expired from disuse, or the org uninstalled the
 app.</p>
@@ -892,15 +1831,15 @@ app.</p>
     rect rgba(239,68,68,0.12)
         Note over B,O: mass event: ≥ 3 STALEs for ONE vendor&lt;br/&gt;inside a 60s window = org-uninstall signature
         B-&gt;&gt;O: audit broker.stale.mass {page: true, security_event: true}
-        Note over O: page fires once per window per vendor&lt;br/&gt;(deduped) — per-entry behavior unchanged
+        Note over O: alert signal emitted once per window per vendor&lt;br/&gt;(deduped) — per-entry behavior unchanged
     end
 </pre>
-<p>A single STALE is expected hygiene, not an incident. The burst is the
-anomaly worth waking someone for.</p>
+<p>A single STALE is expected hygiene, not an incident. Route the burst signal through monitoring if it should notify on-call.</p>
 <hr />
-<h2>8. Death by choice — revocation, vendor-first</h2>
-<p>Order matters: revoke at the vendor <strong>before</strong> deleting custody, so a
-vendor-side token can never outlive the broker's record of it.</p>
+<h2 id="8-death-by-choice-revocation-vendor-first">8. Death by choice — revocation, vendor-first</h2>
+<p>Order matters: attempt vendor revocation before deleting custody. A vendor
+without a revocation endpoint is deleted locally only, with
+<code>vendor_revocation: "unsupported"</code>. Upstream access can survive that deletion.</p>
 <pre class="mermaid">sequenceDiagram
     autonumber
     box rgba(148,163,184,0.14) User side
@@ -940,7 +1879,7 @@ vendor-side token can never outlive the broker's record of it.</p>
 <p>² GitHub's documented deviation: grant-deletion API with basic auth
 instead of RFC 7009 (<code>revocation.type: github_grant</code> in the registry).</p>
 <hr />
-<h2>9. Outages — fail closed, distinguishably</h2>
+<h2 id="9-outages-fail-closed-distinguishably">9. Outages — fail closed, distinguishably</h2>
 <p>The two backends fail differently on purpose, and neither failure is ever
 conflated with "no grant" (which would trigger a mass re-consent
 stampede).</p>
@@ -966,21 +1905,23 @@ stampede).</p>
     end
 
     rect rgba(59,130,246,0.10)
-        Note over C,R: redis outage — refresh path only (redis profile)
-        C-&gt;&gt;B: resolve, entry NOT near expiry
+        Note over C,R: redis outage — every path that needs redis (redis profile)
+        C-&gt;&gt;B: resolve, entry ACTIVE, sufficient scopes, NOT near expiry
         B--&gt;&gt;C: 200 — cache/custody path touches no redis
         C-&gt;&gt;B: resolve, entry inside refresh buffer
         B--xR: lock acquisition fails
         B--&gt;&gt;C: 503 coordination-unavailable (retriable)
+        Note over B: consent links need redis too: absent/STALE/&lt;br/&gt;insufficient-scope resolves also get 503, not 404/409
         Note over B: no lock ⇒ no refresh: refreshing without&lt;br/&gt;single-flight could burn a rotating RT family.&lt;br/&gt;Custody CAS still guards correctness regardless.
     end
 </pre>
-<p>Recovery is automatic in both cases: no state is lost (custody is the
-source of truth; redis holds only reconstructible coordination state).</p>
+<p>Recovery resumes after dependencies return. Custody remains the durable
+source of credentials; lost Redis consent records require users to start
+a new browser flow.</p>
 <hr />
-<h2>Reading the audit trail</h2>
-<p>Every transition above emits exactly one id-only JSON line (never token
-material). The joins:</p>
+<h2 id="reading-the-audit-trail">Reading the audit trail</h2>
+<p>Every transition above emits id-only JSON lines (never token material);
+a lazy refresh, for example, logs both <code>broker.refresh</code> and <code>broker.resolve</code>. The joins:</p>
 <table>
 <thead>
 <tr>
@@ -1011,9 +1952,9 @@ material). The joins:</p>
 <td><code>sub</code>/<code>vendor</code>; mass carries <code>page: true</code></td>
 </tr>
 <tr>
-<td><code>broker.revoke</code> {outcome, path}</td>
+<td><code>broker.revoke</code> {outcome: revoked|unsupported|pending, path?: sweep-retry|reconsent}</td>
 <td>§8</td>
-<td><code>sub</code>, <code>vendor</code>, <code>hub_jti</code></td>
+<td><code>sub</code>, <code>vendor</code>; <code>hub_jti</code> only on self-service DELETE</td>
 </tr>
 </tbody>
 </table>
@@ -1023,11 +1964,10 @@ material). The joins:</p>
 <hr class='sep'/>
 <section id="smoke-tests">
 <div class="section-head"><h1>Smoke Tests</h1><p class="blurb">The illustrated hands-on walkthrough: every security property verified with curl and a browser.</p><p class="src">source: <code>docs/smoke-tests.md</code></p></div>
-<h1>Manual smoke tests — illustrated walkthrough</h1>
-<p>A hands-on verification of every security property the broker claims, run
+<p>A hands-on walkthrough of selected broker security and lifecycle properties, run
 against the self-contained test stack with nothing but <code>curl</code> and a
-browser. Each test below was executed for real; the outputs shown are
-actual captures. The same properties are enforced continuously by the
+browser. Outputs below illustrate expected responses; identifiers and timestamps
+vary. See the <a href="#verification-record">verification record</a> for dated suite results. The same properties are enforced continuously by the
 automated suite (<code>tests/unit</code>, <code>tests/integration</code>).</p>
 <p><strong>Conventions used throughout</strong> (wrap-proof for narrow terminals):</p>
 <pre><code class="language-sh">echo '{&quot;vendor&quot;:&quot;mockhub&quot;}' &gt; /tmp/req.json    # resolve request body
@@ -1035,17 +1975,17 @@ automated suite (<code>tests/unit</code>, <code>tests/integration</code>).</p>
 #   curl -s -X POST localhost:8300/v1/tokens/resolve \
 #        -d @/tmp/req.json -H &quot;Authorization: Bearer $(cat /tmp/tok)&quot;
 </code></pre>
-<h2>The stack under test</h2>
+<h2 id="the-stack-under-test">The stack under test</h2>
 <pre class="mermaid">flowchart LR
     subgraph host[&quot;Your machine&quot;]
-        T[&quot;Terminal / Browser&lt;br/&gt;(plays the MCP client + user)&quot;]
+        T[&quot;Terminal / Browser&lt;br/&gt;(plays the trusted gateway + user)&quot;]
     end
     subgraph compose[&quot;docker compose — tests/stack&quot;]
         B[&quot;vtb-broker :8300&lt;br/&gt;the service under test&quot;]
         H[&quot;vtb-hub-stub :8320&lt;br/&gt;fake workforce IdP&lt;br/&gt;JWKS + /_test/token mint&quot;]
         M[&quot;vtb-mock-vendor :8310&lt;br/&gt;hostile vendor AS&lt;br/&gt;60s tokens, rotating RTs&quot;]
         V[&quot;vtb-openbao :8210&lt;br/&gt;KV-v2 custody&quot;]
-        R[&quot;vtb-redis&lt;br/&gt;coordination (redis profile)&quot;]
+        R[&quot;vtb-redis&lt;br/&gt;coordination (COORD_BACKEND=redis)&quot;]
         I[&quot;vtb-openbao-init&lt;br/&gt;one-shot provisioner&quot;]
     end
     T -- &quot;resolve / consent&quot; --&gt; B
@@ -1073,9 +2013,9 @@ refresh tokens where replaying a consumed one <strong>revokes the whole family</
 (GitHub-class), PKCE verified for real, RFC 8414 metadata + RFC 9207 <code>iss</code>
 on redirects, RFC 7009 revocation.</p>
 <hr />
-<h2>Test 1 — stack up, scoped custody token</h2>
+<h2 id="test-1-stack-up-scoped-custody-token">Test 1 — stack up, scoped custody token</h2>
 <pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml up -d --build --wait
-curl -s http://localhost:8300/healthz        # -&gt; {&quot;ok&quot;:true}
+curl -s http://localhost:8300/healthz        # -&gt; {&quot;ok&quot;:true,&quot;custody&quot;:&quot;ok&quot;}
 docker logs vtb-openbao-init
 </code></pre>
 <p>Observed provisioner receipt:</p>
@@ -1089,7 +2029,7 @@ docker logs vtb-openbao-init
 root. Vendor client credentials (including the <code>private_key_jwt</code> signing
 key) live in custody, not in the registry or environment.</p>
 <hr />
-<h2>Test 2 — hub-JWT validation at the door, consent challenge</h2>
+<h2 id="test-2-hub-jwt-validation-at-the-door-consent-challenge">Test 2 — hub-JWT validation at the door, consent challenge</h2>
 <p>Mint a workforce JWT from the hub-stub, then ask the broker to resolve:</p>
 <pre><code class="language-sh">curl -s -X POST localhost:8320/_test/token -d '{&quot;sub&quot;:&quot;wf-smoke&quot;}' -o /tmp/mint.json
 sed 's/.*&quot;access_token&quot;:&quot;\([^&quot;]*\)&quot;.*/\1/' /tmp/mint.json &gt; /tmp/tok
@@ -1114,16 +2054,16 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
     end
     C-&gt;&gt;B: POST /v1/tokens/resolve (hub JWT)
     Note over B: re-validate JWT: signature (JWKS),&lt;br/&gt;alg ∈ {PS256, ES256}, issuer,&lt;br/&gt;exactly one tier audience,&lt;br/&gt;mcp_contract, exp/iat/sub/jti
-    B-&gt;&gt;V: read vendor-tokens/mockhub/wf-smoke
+    B-&gt;&gt;V: read vendor-tokens/mockhub/sub-b64.{encoded subject}
     V--&gt;&gt;B: not found
     B--&gt;&gt;C: 404 needs-consent + authorize_uri(txn)
-    Note over C: a gateway would forward this as the&lt;br/&gt;MCP authorization-required challenge
+    Note over C: a gateway would forward this as the&lt;br/&gt;custom consent prompt; see the MCP integration guide
 </pre>
 <p><strong>What this proves:</strong> a valid hub JWT is accepted but <em>authorization is
 per-user</em>: no grant → no token, only a one-time consent transaction
-(<code>txn</code>, TTL 10 min).</p>
+(<code>txn</code>, usable to start consent for 5 minutes; consent state defaults to 10 minutes).</p>
 <hr />
-<h2>Test 3 — the consent dance (terminal and real browser)</h2>
+<h2 id="test-3-the-consent-dance-terminal-and-real-browser">Test 3 — the consent dance (terminal and real browser)</h2>
 <p>Follow the <code>authorize_uri</code>. In a terminal, with a cookie jar (the flow is
 bound to the browser that starts it, so cookies must persist across the
 redirects): <code>curl -sL -c /tmp/jar -b /tmp/jar "&lt;authorize_uri&gt;"</code>. In a real
@@ -1181,7 +2121,7 @@ shows the matching audit pair:</p>
     Note over B: ID token valid and its sub == the link's sub&lt;br/&gt;create single-use vendor state record&lt;br/&gt;{sub, vendor, PKCE verifier, issuer,&lt;br/&gt;scopes ≤ registry ceiling, binding}, TTL 10 min
     B--&gt;&gt;UA: 307 → vendor authorize&lt;br/&gt;(client_id, code_challenge S256, state)
     UA-&gt;&gt;M: GET /authorize (auto-consent as mock-4217)
-    M--&gt;&gt;UA: 302 → broker callback (code, state, iss)
+    M--&gt;&gt;UA: 307 → broker callback (code, state, iss)
     UA-&gt;&gt;B: GET /v1/callback/mockhub?code&amp;state&amp;iss
     Note over B: validate state (exists, unconsumed,&lt;br/&gt;vendor match) → validate RFC 9207 iss&lt;br/&gt;→ binding cookie = this browser&lt;br/&gt;→ consume state (single-use)&lt;br/&gt;→ THEN redeem code
     B-&gt;&gt;M: POST /token (code + PKCE verifier + client auth)
@@ -1196,31 +2136,35 @@ shows the matching audit pair:</p>
 <pre><code class="language-json">{&quot;access_token&quot;:&quot;mock-at-nV2-JGwg…&quot;,&quot;expires_at&quot;:1784286345.61,
  &quot;granted_scopes&quot;:[&quot;issues:read&quot;,&quot;issues:write&quot;]}
 </code></pre>
-<p><strong>What this proves:</strong>
-- The PKCE verifier and <code>state</code> never leave the broker in decodable form;
-  the vendor <code>code</code> is redeemed server-side only.
-- Consent is bound to the <strong>user</strong> (the hub login must be the link's <code>sub</code>)
+<p><strong>What this proves:</strong></p>
+<ul>
+<li>The PKCE verifier is sent only in server-side token requests; browser
+  <code>state</code> values are opaque handles;
+  the vendor <code>code</code> is redeemed server-side only.</li>
+<li>Consent is bound to the <strong>user</strong> (the hub login must be the link's <code>sub</code>)
   and to the <strong>browser</strong> (the binding cookie). A link forwarded to or stolen
   from someone else is refused before the vendor is involved
   (<code>reason: login_sub_mismatch</code>), and a leg finished in another browser is
   refused before any code is redeemed (<code>reason: browser_mismatch</code>). Both
-  are <code>security_event: true</code> audit lines.
-- The authorize link is single use: opening it again returns 400
-  <code>invalid-transaction</code>.
-- The RFC 9207 <code>iss</code> in the callback URL is string-compared against the
+  are <code>security_event: true</code> audit lines.</li>
+<li>The authorize link is single use: opening it again returns 400
+  <code>invalid-transaction</code>.</li>
+<li>The RFC 9207 <code>iss</code> in the callback URL is string-compared against the
   issuer recorded at transaction creation <em>before</em> the code is redeemed
   (mix-up defense). An AS that advertises <code>iss</code> support but omits it is
-  rejected the same way.
-- <strong>Replay demo:</strong> reloading the "Connected" page returns
+  rejected the same way.</li>
+<li><strong>Replay demo:</strong> reloading the "Connected" page returns
   <em>"Invalid or expired authorization state."</em> — the state was consumed;
   the replay raises a <code>security_event: true</code> audit line
-  (<code>reason: state_invalid_or_replayed</code>).
-- The caller now holds a <strong>vendor</strong> token — the hub JWT never transits to
-  the vendor.</p>
+  (<code>reason: state_invalid_or_replayed</code>).</li>
+<li>The simulated trusted gateway now holds a <strong>vendor</strong> token — the hub JWT never transits to
+  the vendor.</li>
+</ul>
 <hr />
-<h2>Test 4 — single-flight refresh and the generation counter</h2>
-<p>The mock's 60-second tokens force a refresh on every resolve. Resolve
-twice, then read the audit trail:</p>
+<h2 id="test-4-single-flight-refresh-and-the-generation-counter">Test 4 — single-flight refresh and the generation counter</h2>
+<p>The mock's 60-second tokens force a refresh on every resolve. The Test 3
+retry already refreshed gen 1→2; resolve once more, then read the audit
+trail:</p>
 <pre><code class="language-sh">curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
      -H &quot;Authorization: Bearer $(cat /tmp/tok)&quot;       # new mock-at-… each time
 docker logs --since 5m vtb-broker 2&gt;&amp;1 | grep broker.refresh | tail -3
@@ -1259,13 +2203,15 @@ docker logs --since 5m vtb-broker 2&gt;&amp;1 | grep broker.refresh | tail -3
 <p><strong>What this proves:</strong> every refresh advances the monotonic
 <code>refresh_generation</code>, and the KV-v2 compare-and-swap on that version is
 the correctness backstop: two racing refreshes can never both persist, so
-a rotating refresh-token family is never burned. (The automated suite
+a losing writer cannot overwrite a newer stored version. A crash after
+the vendor consumes a refresh token can still burn the family and require
+re-consent. (The automated suite
 drives 20 parallel resolves and asserts <em>exactly one</em> vendor refresh and
 <em>zero</em> RT replays — including across two replicas behind a load balancer.)
 Note also what the audit lines contain: ids, states, generations — never
 token material.</p>
 <hr />
-<h2>Test 5 — forged-algorithm token rejected at the door</h2>
+<h2 id="test-5-forged-algorithm-token-rejected-at-the-door">Test 5 — forged-algorithm token rejected at the door</h2>
 <p>The hub-stub mints an <strong>RS256</strong> token signed with the <em>same trusted RSA
 key</em> that's in its JWKS — cryptographically valid, key resolvable, wrong
 algorithm:</p>
@@ -1283,7 +2229,7 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
     C -- &quot;no (RS256, HS256…)&quot; --&gt; X1[&quot;401&quot;]
     C -- yes --&gt; D{&quot;issuer == HUB_ISSUER?&quot;}
     D -- no --&gt; X2[&quot;401&quot;]
-    D -- yes --&gt; E{&quot;exactly one&lt;br/&gt;mcp://tier/* audience?&quot;}
+    D -- yes --&gt; E{&quot;aud contains HUB_TIER_AUDIENCE&lt;br/&gt;and exactly one mcp://tier/* audience?&quot;}
     E -- no --&gt; X3[&quot;401&quot;]
     E -- yes --&gt; F{&quot;exp / iat / sub / jti&lt;br/&gt;present + fresh?&quot;}
     F -- no --&gt; X4[&quot;401&quot;]
@@ -1299,7 +2245,7 @@ live, a <em>genuinely expired</em> previously-good token:
 <p><strong>What this proves:</strong> the broker never trusts the gateway; it re-validates
 every inbound hub JWT itself, with algorithms pinned.</p>
 <hr />
-<h2>Test 6 — the no-issuance wall</h2>
+<h2 id="test-6-the-no-issuance-wall">Test 6 — the no-issuance wall</h2>
 <pre><code class="language-sh">for p in /token /oauth/token /keys /v1/tokens/issue \
          /.well-known/jwks.json /.well-known/openid-configuration; do
   curl -s -o /dev/null -w &quot;$p -&gt; %{http_code}\n&quot; localhost:8300$p
@@ -1317,11 +2263,12 @@ done
 API is seven routes — <code>/healthz</code>, <code>/v1/tokens/resolve</code>,
 <code>/v1/authorize/{vendor}</code>, <code>/v1/callback/{vendor}</code>,
 <code>/v1/grants/{vendor}/{sub}</code>, <code>/v1/grants</code>, <code>/v1/admin/vendors/{vendor}</code> —
-no token minting, no JWKS, no signing keys anywhere in the process.
-(<code>tests/unit/test_routes.py</code> freezes this at the OpenAPI level on every
+no access-token issuance or JWKS endpoint. The broker can hold vendor
+client-authentication keys and sign <code>private_key_jwt</code> assertions.
+(<code>tests/unit/test_routes.py</code> audits the actual route table on every
 push.)</p>
 <hr />
-<h2>Test 7 — self-service revocation, vendor-first</h2>
+<h2 id="test-7-self-service-revocation-vendor-first">Test 7 — self-service revocation, vendor-first</h2>
 <pre><code class="language-sh">curl -s localhost:8310/_test/state | grep -o '&quot;revoke&quot;:[0-9]*'   # &quot;revoke&quot;:0
 curl -s -X DELETE localhost:8300/v1/grants/mockhub/wf-smoke \
      -H &quot;Authorization: Bearer $(cat /tmp/tok)&quot;                   # {&quot;revoked&quot;:true}
@@ -1347,15 +2294,15 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
     Note over B: sub in path MUST match JWT sub&lt;br/&gt;(anyone else → 403 forbidden)
     B-&gt;&gt;M: POST /revoke (RFC 7009, refresh token)
     M--&gt;&gt;B: 200 — family revoked at the vendor
-    B-&gt;&gt;V: delete vendor-tokens/mockhub/wf-smoke
+    B-&gt;&gt;V: delete vendor-tokens/mockhub/sub-b64.{encoded subject}
     B--&gt;&gt;U: {&quot;revoked&quot;: true}
     Note over B,M: if the vendor were down: entry parks&lt;br/&gt;REVOKE_PENDING (502), unusable for resolve,&lt;br/&gt;sweeper retries until the vendor recovers
 </pre>
-<p><strong>What this proves:</strong> revocation is ordered vendor-first, so a vendor-side
-token can never outlive the broker's record; grants are strictly
+<p><strong>What this proves:</strong> this mock supports vendor-first revocation; vendors without
+revocation support are deleted locally only. Grants are strictly
 self-service; the lifecycle returns cleanly to <code>needs-consent</code>.</p>
 <hr />
-<h2>The full lifecycle we walked</h2>
+<h2 id="the-full-lifecycle-we-walked">The full lifecycle we walked</h2>
 <pre class="mermaid">stateDiagram-v2
     classDef live fill:#10b98122,stroke:#10b981
     classDef dead fill:#ef444422,stroke:#ef4444
@@ -1372,7 +2319,7 @@ self-service; the lifecycle returns cleanly to <code>needs-consent</code>.</p>
     class ACTIVE live
     class STALE,REVOKE_PENDING dead
 </pre>
-<h2>Scorecard</h2>
+<h2 id="scorecard">Scorecard</h2>
 <table>
 <thead>
 <tr>
@@ -1423,11 +2370,79 @@ self-service; the lifecycle returns cleanly to <code>needs-consent</code>.</p>
 <pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml down
 </code></pre>
 </section>
+<hr class='sep'/>
+<section id="adr">
+<div class="section-head"><h1>Redis ADR</h1><p class="blurb">Why Redis coordinates multi-replica refresh and consent state.</p><p class="src">source: <code>docs/adr/0001-redis-coordination.md</code></p></div>
+<p><strong>Status:</strong> accepted · <strong>Date:</strong> 2026-07-16</p>
+<h2 id="context">Context</h2>
+<p>The source lab ran the broker single-replica: an in-process asyncio lock
+per <code>{vendor, sub}</code> gave single-flight refresh, consent transactions and
+<code>state</code> records lived in process dicts, and the sweeper ran unconditionally.
+Documented as correct <strong>only</strong> for one replica. Anything beyond one replica
+needs, together: a distributed single-flight lock, persisted
+<code>REFRESHING</code>, a jittered leader-elected sweeper, shared single-use consent
+state (or session affinity), and honesty about the per-replica token cache.</p>
+<p>The crucial constraint: the lock is an <strong>optimization</strong> that protects
+rotating refresh-token families from being burned; the KV-v2 generation
+compare-and-swap is the <strong>correctness guarantee</strong>. The coordination backend
+therefore needs speed and TTL semantics, not durability.</p>
+<h2 id="decision">Decision</h2>
+<p>Redis 7 behind a <code>Coordination</code> protocol (<code>coordination.py</code>), selected by
+<code>COORD_BACKEND</code>; <code>memory</code> stays the default and preserves the lab's exact
+single-replica semantics with zero extra infrastructure.</p>
+<p>Redis mapping (defaults updated for 1.1.0):</p>
+<ul>
+<li>Lock: <code>SET vtb:lock:{vendor}:{sub} &lt;token&gt; NX PX 20000</code>; waiters retry
+  200ms±jitter up to 10s, re-reading the entry each retry and serving
+  without the lock once the generation advances; release via
+  compare-and-DEL Lua (a lock is only ever released by its holder).</li>
+<li>Consent txns/states: <code>SETEX</code> (TTL 600) with atomic <code>GETDEL</code> single-use
+  consumption; for states, peek-validate-consume ordering keeps an iss-mismatch
+  rejection from burning the state the legitimate callback needs.</li>
+<li>Persisted <code>REFRESHING</code> lives in the custody entry (not redis), CAS-written
+  before the vendor call; abandoned markers (≥ <code>REFRESHING_TTL_S</code>) are taken
+  over by the next lock holder.</li>
+<li>Mass-STALE window: per-vendor ZSET + <code>SET NX PX</code> page dedup.</li>
+<li>Sweeper: leader lease <code>SET NX PX 2×interval</code>, ±20% interval jitter.
+  A stopped leader may retain its lease until expiry (120 seconds by
+  default); successors wait for that lease before taking over.</li>
+<li>Cache invalidation: best-effort pub/sub on revoke/STALE/delete; worst
+  case without it stays the per-replica <code>CACHE_TTL_S</code> (default 60s).</li>
+</ul>
+<p>Redis loss fails closed (503 <code>coordination-unavailable</code>) on every path that
+needs redis — refresh, minting consent links (so absent/STALE/insufficient-
+scope resolves get 503, not 404/409), authorize, callbacks and DELETE —
+while resolves that need no refresh keep serving — mirroring the custody fail-closed posture
+with a distinguishable problem title.</p>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<ul>
+<li><strong>Postgres advisory locks</strong>: fencing-capable and durable, but drags a
+  relational database into a service that needs no relational state; TTL
+  and pub/sub must be emulated.</li>
+<li><strong>DynamoDB conditional writes</strong>: viable for AWS-only estates; higher
+  latency on the lock hot path; no pub/sub.</li>
+<li><strong>Custody-backend-only (CAS, no lock)</strong>: correct but burns rotating RT
+  families under concurrency — exactly the incident class the broker
+  exists to prevent.</li>
+</ul>
+<h2 id="consequences">Consequences</h2>
+<ul>
+<li>Multi-replica deployments gain one infrastructure dependency; single
+  replica deployments gain none (<code>memory</code> default).</li>
+<li>Consent flows need no session affinity at the balancer.</li>
+<li>All coordination state is reconstructible: redis can be flushed with no
+  custody impact (in-flight consents restart; locks re-form).</li>
+<li>Proven by <code>tests/integration/test_multi_replica.py</code>: exactly-one refresh
+  across replicas with zero RT replays, cross-replica consent, single sweep
+  leader, abandoned-marker takeover, redis-down semantics, cache
+  invalidation.</li>
+</ul>
+</section>
 <footer>Generated from <code>docs/*.md</code> by <code>tools/build-pages.py</code>.
 Diagrams render client-side with mermaid.</footer>
 </main>
 <script type="module">
-  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.esm.min.mjs";
   const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral" });
 </script>

@@ -1,11 +1,11 @@
 # Self-contained acceptance stack: OpenBao (+ one-shot init), Redis,
-# mock-vendor (hostile GitHub-class AS), hub-stub (JWKS + token mint), and
+# mock-vendor (hostile GitHub-class AS), hub-stub (JWKS, token mint, OIDC login), and
 # the broker under test. No dependency on any external lab.
 #
 #   docker compose -f tests/stack/docker-compose.yml up -d --build
 #   pytest tests/integration
 #
-# The `multi` profile (docker-compose.multi.yml) adds broker-a/b behind a
+# The `multi` profile (defined in this file) adds broker-a/b behind a
 # round-robin nginx for the multi-replica proof.
 
 services:

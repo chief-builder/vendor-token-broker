@@ -1,9 +1,9 @@
 # Manual smoke tests — illustrated walkthrough
 
-A hands-on verification of every security property the broker claims, run
+A hands-on walkthrough of selected broker security and lifecycle properties, run
 against the self-contained test stack with nothing but `curl` and a
-browser. Each test below was executed for real; the outputs shown are
-actual captures. The same properties are enforced continuously by the
+browser. Outputs below illustrate expected responses; identifiers and timestamps
+vary. See the [verification record](security.md#verification-record) for dated suite results. The same properties are enforced continuously by the
 automated suite (`tests/unit`, `tests/integration`).
 
 **Conventions used throughout** (wrap-proof for narrow terminals):
@@ -20,14 +20,14 @@ echo '{"vendor":"mockhub"}' > /tmp/req.json    # resolve request body
 ```mermaid
 flowchart LR
     subgraph host["Your machine"]
-        T["Terminal / Browser<br/>(plays the MCP client + user)"]
+        T["Terminal / Browser<br/>(plays the trusted gateway + user)"]
     end
     subgraph compose["docker compose — tests/stack"]
         B["vtb-broker :8300<br/>the service under test"]
         H["vtb-hub-stub :8320<br/>fake workforce IdP<br/>JWKS + /_test/token mint"]
         M["vtb-mock-vendor :8310<br/>hostile vendor AS<br/>60s tokens, rotating RTs"]
         V["vtb-openbao :8210<br/>KV-v2 custody"]
-        R["vtb-redis<br/>coordination (redis profile)"]
+        R["vtb-redis<br/>coordination (COORD_BACKEND=redis)"]
         I["vtb-openbao-init<br/>one-shot provisioner"]
     end
     T -- "resolve / consent" --> B
@@ -62,7 +62,7 @@ on redirects, RFC 7009 revocation.
 
 ```sh
 docker compose -f tests/stack/docker-compose.yml up -d --build --wait
-curl -s http://localhost:8300/healthz        # -> {"ok":true}
+curl -s http://localhost:8300/healthz        # -> {"ok":true,"custody":"ok"}
 docker logs vtb-openbao-init
 ```
 
@@ -115,15 +115,15 @@ sequenceDiagram
     end
     C->>B: POST /v1/tokens/resolve (hub JWT)
     Note over B: re-validate JWT: signature (JWKS),<br/>alg ∈ {PS256, ES256}, issuer,<br/>exactly one tier audience,<br/>mcp_contract, exp/iat/sub/jti
-    B->>V: read vendor-tokens/mockhub/wf-smoke
+    B->>V: read vendor-tokens/mockhub/sub-b64.{encoded subject}
     V-->>B: not found
     B-->>C: 404 needs-consent + authorize_uri(txn)
-    Note over C: a gateway would forward this as the<br/>MCP authorization-required challenge
+    Note over C: a gateway would forward this as the<br/>custom consent prompt; see the MCP integration guide
 ```
 
 **What this proves:** a valid hub JWT is accepted but *authorization is
 per-user*: no grant → no token, only a one-time consent transaction
-(`txn`, TTL 10 min).
+(`txn`, usable to start consent for 5 minutes; consent state defaults to 10 minutes).
 
 ---
 
@@ -197,7 +197,7 @@ sequenceDiagram
     Note over B: ID token valid and its sub == the link's sub<br/>create single-use vendor state record<br/>{sub, vendor, PKCE verifier, issuer,<br/>scopes ≤ registry ceiling, binding}, TTL 10 min
     B-->>UA: 307 → vendor authorize<br/>(client_id, code_challenge S256, state)
     UA->>M: GET /authorize (auto-consent as mock-4217)
-    M-->>UA: 302 → broker callback (code, state, iss)
+    M-->>UA: 307 → broker callback (code, state, iss)
     UA->>B: GET /v1/callback/mockhub?code&state&iss
     Note over B: validate state (exists, unconsumed,<br/>vendor match) → validate RFC 9207 iss<br/>→ binding cookie = this browser<br/>→ consume state (single-use)<br/>→ THEN redeem code
     B->>M: POST /token (code + PKCE verifier + client auth)
@@ -219,7 +219,9 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 ```
 
 **What this proves:**
-- The PKCE verifier and `state` never leave the broker in decodable form;
+
+- The PKCE verifier is sent only in server-side token requests; browser
+  `state` values are opaque handles;
   the vendor `code` is redeemed server-side only.
 - Consent is bound to the **user** (the hub login must be the link's `sub`)
   and to the **browser** (the binding cookie). A link forwarded to or stolen
@@ -237,15 +239,16 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
   *"Invalid or expired authorization state."* — the state was consumed;
   the replay raises a `security_event: true` audit line
   (`reason: state_invalid_or_replayed`).
-- The caller now holds a **vendor** token — the hub JWT never transits to
+- The simulated trusted gateway now holds a **vendor** token — the hub JWT never transits to
   the vendor.
 
 ---
 
 ## Test 4 — single-flight refresh and the generation counter
 
-The mock's 60-second tokens force a refresh on every resolve. Resolve
-twice, then read the audit trail:
+The mock's 60-second tokens force a refresh on every resolve. The Test 3
+retry already refreshed gen 1→2; resolve once more, then read the audit
+trail:
 
 ```sh
 curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
@@ -292,7 +295,9 @@ sequenceDiagram
 **What this proves:** every refresh advances the monotonic
 `refresh_generation`, and the KV-v2 compare-and-swap on that version is
 the correctness backstop: two racing refreshes can never both persist, so
-a rotating refresh-token family is never burned. (The automated suite
+a losing writer cannot overwrite a newer stored version. A crash after
+the vendor consumes a refresh token can still burn the family and require
+re-consent. (The automated suite
 drives 20 parallel resolves and asserts *exactly one* vendor refresh and
 *zero* RT replays — including across two replicas behind a load balancer.)
 Note also what the audit lines contain: ids, states, generations — never
@@ -326,7 +331,7 @@ flowchart LR
     C -- "no (RS256, HS256…)" --> X1["401"]
     C -- yes --> D{"issuer == HUB_ISSUER?"}
     D -- no --> X2["401"]
-    D -- yes --> E{"exactly one<br/>mcp://tier/* audience?"}
+    D -- yes --> E{"aud contains HUB_TIER_AUDIENCE<br/>and exactly one mcp://tier/* audience?"}
     E -- no --> X3["401"]
     E -- yes --> F{"exp / iat / sub / jti<br/>present + fresh?"}
     F -- no --> X4["401"]
@@ -370,8 +375,9 @@ Observed:
 API is seven routes — `/healthz`, `/v1/tokens/resolve`,
 `/v1/authorize/{vendor}`, `/v1/callback/{vendor}`,
 `/v1/grants/{vendor}/{sub}`, `/v1/grants`, `/v1/admin/vendors/{vendor}` —
-no token minting, no JWKS, no signing keys anywhere in the process.
-(`tests/unit/test_routes.py` freezes this at the OpenAPI level on every
+no access-token issuance or JWKS endpoint. The broker can hold vendor
+client-authentication keys and sign `private_key_jwt` assertions.
+(`tests/unit/test_routes.py` audits the actual route table on every
 push.)
 
 ---
@@ -406,13 +412,13 @@ sequenceDiagram
     Note over B: sub in path MUST match JWT sub<br/>(anyone else → 403 forbidden)
     B->>M: POST /revoke (RFC 7009, refresh token)
     M-->>B: 200 — family revoked at the vendor
-    B->>V: delete vendor-tokens/mockhub/wf-smoke
+    B->>V: delete vendor-tokens/mockhub/sub-b64.{encoded subject}
     B-->>U: {"revoked": true}
     Note over B,M: if the vendor were down: entry parks<br/>REVOKE_PENDING (502), unusable for resolve,<br/>sweeper retries until the vendor recovers
 ```
 
-**What this proves:** revocation is ordered vendor-first, so a vendor-side
-token can never outlive the broker's record; grants are strictly
+**What this proves:** this mock supports vendor-first revocation; vendors without
+revocation support are deleted locally only. Grants are strictly
 self-service; the lifecycle returns cleanly to `needs-consent`.
 
 ---

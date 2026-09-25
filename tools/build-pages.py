@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Build docs/index.html for GitHub Pages from the three documentation
-sources: design.md, token-lifecycle.md, smoke-tests.md.
+"""Build docs/index.html for GitHub Pages from the reader-focused docs.
 
 Usage:  pip install markdown && python tools/build-pages.py
 
 Markdown is pre-rendered to static HTML here; mermaid diagrams render
 client-side (mermaid from the jsDelivr CDN), theme-matched to the
-visitor's light/dark preference. Re-run after editing any of the three
-source documents.
+visitor's light/dark preference. Re-run after editing any source
+document listed in SECTIONS.
 
 Publishing: this repo is private, so the generated docs/index.html is
 served from the public companion repo `vendor-token-broker-docs`
 (GitHub Pages: https://chief-builder.github.io/vendor-token-broker-docs/).
 After rebuilding, copy index.html there and push.
+
+Use ``python tools/build-pages.py --check`` in CI to verify that the checked-in
+HTML is current and that generated internal anchors resolve.
 """
 import html
 import re
+import sys
 from pathlib import Path
 
 import markdown
@@ -24,6 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 
 SECTIONS = [
+    ("overview", "Overview", "overview.md", "What the broker does and where it fits in an MCP deployment."),
+    ("quickstart", "Quickstart", "quickstart.md", "Run one complete local consent, resolve, and disconnect flow."),
+    ("mcp", "Integrate with MCP", "mcp-integration.md", "Separate MCP authorization, the internal broker contract, and vendor consent."),
+    ("api", "API Reference", "api.md", "The internal REST contract, stable errors, and caller actions."),
+    ("operations", "Deploy and Operate", "operations.md", "Provision custody, configure replicas, and respond to failures."),
+    ("security", "Security and MCP Alignment", "security.md", "Evidence, ownership, limitations, and the current MCP baseline."),
     ("design", "Design", "design.md",
      "The normative design: role, standards basis, trust boundaries, API, "
      "state machine, failure modes, deployment profiles."),
@@ -32,8 +41,12 @@ SECTIONS = [
      "multi-replica takeover, revocation, outages."),
     ("smoke-tests", "Smoke Tests", "smoke-tests.md",
      "The illustrated hands-on walkthrough: every security property "
-     "verified with curl and a browser."),
+        "verified with curl and a browser."),
+    ("adr", "Redis ADR", "adr/0001-redis-coordination.md",
+     "Why Redis coordinates multi-replica refresh and consent state."),
 ]
+
+SECTION_BY_FILE = {fname: sid for sid, _, fname, _ in SECTIONS}
 
 MERMAID_BLOCK = re.compile(
     r'<pre><code class="language-mermaid">(.*?)</code></pre>', re.S)
@@ -41,16 +54,25 @@ MERMAID_BLOCK = re.compile(
 
 def render(md_path: Path, section_id: str) -> str:
     text = md_path.read_text()
-    body = markdown.markdown(text, extensions=["fenced_code", "tables"])
+    body = markdown.markdown(text, extensions=["fenced_code", "tables", "toc"])
     body = MERMAID_BLOCK.sub(r'<pre class="mermaid">\1</pre>', body)
-    # Make cross-references between the three documents jump to sections.
-    for sid, _, fname, _ in SECTIONS:
-        body = body.replace(f"<code>{fname}</code>",
-                            f'<a href="#{sid}"><code>{fname}</code></a>')
+    # The section wrapper supplies the visible document title.
+    body = re.sub(r"^<h1 id=\"[^\"]+\">.*?</h1>\n?", "", body, count=1)
+    # Source Markdown links to another guide become deep links in the one-page
+    # artifact; links to repository files remain ordinary relative links.
+    def rewrite_link(match: re.Match[str]) -> str:
+        target = match.group(1)
+        path, sep, fragment = target.partition("#")
+        target_name = path.removeprefix("docs/")
+        target_sid = SECTION_BY_FILE.get(target_name)
+        if target_sid:
+            return f'href="#{fragment if sep and fragment else target_sid}"'
+        return match.group(0)
+    body = re.sub(r'href="([^"]*)"', rewrite_link, body)
     return body
 
 
-def main() -> None:
+def build_page() -> str:
     sections_html = []
     nav_html = []
     for sid, title, fname, blurb in SECTIONS:
@@ -63,8 +85,36 @@ def main() -> None:
             f'<p class="src">source: <code>docs/{fname}</code></p></div>\n'
             f"{body}\n</section>")
 
-    page = TEMPLATE.replace("{{NAV}}", "\n".join(nav_html)) \
+    return TEMPLATE.replace("{{NAV}}", "\n".join(nav_html)) \
                    .replace("{{SECTIONS}}", "\n<hr class='sep'/>\n".join(sections_html))
+
+
+def validate(page: str) -> list[str]:
+    errors: list[str] = []
+    ids = set(re.findall(r'\bid="([^"]+)"', page))
+    for target in re.findall(r'href="#([^"]+)"', page):
+        anchor = target.split("#", 1)[0]
+        if anchor and anchor not in ids:
+            errors.append(f"missing internal anchor: #{target}")
+    return errors
+
+
+def main() -> None:
+    check = "--check" in sys.argv[1:]
+    missing = [f"missing source: docs/{fname}" for _, _, fname, _ in SECTIONS
+               if not (DOCS / fname).exists()]
+    if missing:
+        raise SystemExit("\n".join(missing))
+    page = build_page()
+    errors = validate(page)
+    if errors:
+        raise SystemExit("\n".join(errors))
+    if check:
+        current = (DOCS / "index.html").read_text()
+        if current != page:
+            raise SystemExit("docs/index.html is stale; run tools/build-pages.py")
+        print("docs/index.html is current; internal anchors resolve")
+        return
     (DOCS / "index.html").write_text(page)
     print(f"wrote {DOCS / 'index.html'} ({len(page)//1024} KiB)")
 
@@ -101,8 +151,12 @@ TEMPLATE = """<!DOCTYPE html>
   nav .brand { font-weight: 700; margin-right: .75rem; }
   nav a { color: var(--accent); text-decoration: none; font-weight: 500; }
   nav a:hover { text-decoration: underline; }
+  nav a:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
   main { max-width: 980px; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+  .skip { position: absolute; left: -9999px; top: .5rem; background: var(--bg); color: var(--fg); padding: .4rem .7rem; z-index: 20; }
+  .skip:focus { left: .75rem; }
   h1, h2, h3 { line-height: 1.25; }
+  h1, h2, h3 { scroll-margin-top: 5rem; }
   section > h2 { border-bottom: 1px solid var(--line); padding-bottom: .3rem; margin-top: 2.2rem; }
   .section-head h1 { font-size: 2rem; margin-bottom: .2rem; color: var(--accent); }
   .blurb { color: var(--muted); margin: .2rem 0; }
@@ -130,18 +184,19 @@ TEMPLATE = """<!DOCTYPE html>
 </style>
 </head>
 <body>
+<a class="skip" href="#content">Skip to content</a>
 <nav>
   <span class="brand">vendor-token-broker</span>
   {{NAV}}
   <a href="https://github.com/chief-builder/vendor-token-broker">repo</a>
 </nav>
-<main>
+<main id="content">
 {{SECTIONS}}
 <footer>Generated from <code>docs/*.md</code> by <code>tools/build-pages.py</code>.
 Diagrams render client-side with mermaid.</footer>
 </main>
 <script type="module">
-  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.esm.min.mjs";
   const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral" });
 </script>

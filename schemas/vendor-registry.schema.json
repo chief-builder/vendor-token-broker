@@ -50,7 +50,7 @@
       },
       "refresh_rotation": {
         "type": "boolean",
-        "description": "True when the vendor rotates refresh tokens on use — activates the single-flight discipline (design §8)."
+        "description": "True when the vendor rotates refresh tokens on use. Informational: single-flight refresh (design §8) applies to every vendor regardless."
       },
       "ema_status": {
         "enum": ["none", "announced", "available"],
