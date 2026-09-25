@@ -56,18 +56,20 @@ Route `broker.stale.mass` to monitoring if an on-call notification is required: 
 
 ## Verification record
 
-Review baseline: application commit `2317b07`. Local checks on 2026-09-25:
+Review baseline: application commit `99bd39f`. Checks on 2026-09-25:
 
 | Check | Result |
 |---|---|
-| Unit suite | 319 passed |
+| Unit suite | 321 passed |
 | Docker integration / memory | 61 passed |
 | Docker integration / Redis | 61 passed |
-| Multi-replica initial run | 6 passed, sweep-retry deadline test failed |
-| Multi-replica isolated rerun | 7 passed, no code changes |
+| Multi-replica (local, isolated) | 7 passed |
+| Multi-replica (CI) | First run: 20-parallel single-flight test saw 2 refreshes; rerun of the failed job passed |
 | Real GitHub | Skipped; App credentials not configured |
 
-The first multi-replica failure was consistent with a retained 120-second sweep lease from the preceding standalone Redis broker exceeding the test's 60-second deadline. Its remaining TTL was not captured at failure, so this explanation is not definitive. Host/container clocks aligned. Documented [test isolation](quickstart.md#run-the-automated-checks) avoids that handoff ambiguity.
+The CI failure is a test-timing race, not a single-flight defect: mock tokens (60 seconds) sit inside `REFRESH_BUFFER_S` (300), so a resolve whose first read lands after the first refresh completes legitimately refreshes again.
+
+At the earlier `2317b07` review, the first multi-replica failure was consistent with a retained 120-second sweep lease from the preceding standalone Redis broker exceeding the test's 60-second deadline. Its remaining TTL was not captured at failure, so this explanation is not definitive. Host/container clocks aligned. Documented [test isolation](quickstart.md#run-the-automated-checks) avoids that handoff ambiguity.
 
 These checks use the mock vendor and do not establish real-provider interoperability, MCP client compatibility, production load capacity, or penetration-test results. [Manual verification](smoke-tests.md) explains the individual probes.
 

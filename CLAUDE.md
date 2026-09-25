@@ -10,7 +10,9 @@ runbook), `docs/adr/0001-redis-coordination.md`.
 ## Hard invariants — never break these
 
 - **Custodian, not issuer.** Exactly 7 routes; no token minting, no JWKS,
-  no signing keys. `tests/unit/test_routes.py` enforces this.
+  no issuer signing keys. `tests/unit/test_routes.py` enforces this. (Vendor
+  `private_key_jwt` client-assertion keys live in custody as credential
+  material, never in config or logs.)
 - **Wire freeze.** Resolve statuses 200/404/409/5xx; response fields
   `access_token`, `authorize_uri`, `missing_scopes`; problem `title` slugs;
   audit event names. Existing gateway plugins parse these. Only the URN
@@ -23,7 +25,9 @@ runbook), `docs/adr/0001-redis-coordination.md`.
   re-read.
 - **Fail closed, distinguishably.** Custody outage → 503
   `vault-unavailable` (never "absent" → consent); redis outage → 503
-  `coordination-unavailable` on the refresh path only, cache hits serve.
+  `coordination-unavailable` on every path that needs redis (refresh,
+  consent-link minting, authorize/callbacks, DELETE); resolves that need no
+  refresh keep serving.
 - `memory` coordination backend must keep exact single-replica semantics;
   multi-replica behavior belongs in the `redis` backend only.
 

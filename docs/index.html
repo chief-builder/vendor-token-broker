@@ -974,7 +974,7 @@ describes isolation between standalone and multi-replica runs.</p>
 <p>Use private ingress and gateway workload authentication, TLS, controlled custody policies, and audit logging configured in the custody backend. Those controls are not supplied by the development Compose stack. The broker can sign <code>private_key_jwt</code> client-authentication assertions, but does not issue access tokens. Treat vendor client signing keys as credential material.</p>
 <p>Route <code>broker.stale.mass</code> to monitoring if an on-call notification is required: emitting <code>page: true</code> does not itself contact an alert service. Availability and latency values in the design are targets, not measured guarantees.</p>
 <h2 id="verification-record">Verification record</h2>
-<p>Review baseline: application commit <code>2317b07</code>. Local checks on 2026-09-25:</p>
+<p>Review baseline: application commit <code>99bd39f</code>. Checks on 2026-09-25:</p>
 <table>
 <thead>
 <tr>
@@ -985,7 +985,7 @@ describes isolation between standalone and multi-replica runs.</p>
 <tbody>
 <tr>
 <td>Unit suite</td>
-<td>319 passed</td>
+<td>321 passed</td>
 </tr>
 <tr>
 <td>Docker integration / memory</td>
@@ -996,12 +996,12 @@ describes isolation between standalone and multi-replica runs.</p>
 <td>61 passed</td>
 </tr>
 <tr>
-<td>Multi-replica initial run</td>
-<td>6 passed, sweep-retry deadline test failed</td>
+<td>Multi-replica (local, isolated)</td>
+<td>7 passed</td>
 </tr>
 <tr>
-<td>Multi-replica isolated rerun</td>
-<td>7 passed, no code changes</td>
+<td>Multi-replica (CI)</td>
+<td>First run: 20-parallel single-flight test saw 2 refreshes; rerun of the failed job passed</td>
 </tr>
 <tr>
 <td>Real GitHub</td>
@@ -1009,7 +1009,8 @@ describes isolation between standalone and multi-replica runs.</p>
 </tr>
 </tbody>
 </table>
-<p>The first multi-replica failure was consistent with a retained 120-second sweep lease from the preceding standalone Redis broker exceeding the test's 60-second deadline. Its remaining TTL was not captured at failure, so this explanation is not definitive. Host/container clocks aligned. Documented <a href="#run-the-automated-checks">test isolation</a> avoids that handoff ambiguity.</p>
+<p>The CI failure is a test-timing race, not a single-flight defect: mock tokens (60 seconds) sit inside <code>REFRESH_BUFFER_S</code> (300), so a resolve whose first read lands after the first refresh completes legitimately refreshes again.</p>
+<p>At the earlier <code>2317b07</code> review, the first multi-replica failure was consistent with a retained 120-second sweep lease from the preceding standalone Redis broker exceeding the test's 60-second deadline. Its remaining TTL was not captured at failure, so this explanation is not definitive. Host/container clocks aligned. Documented <a href="#run-the-automated-checks">test isolation</a> avoids that handoff ambiguity.</p>
 <p>These checks use the mock vendor and do not establish real-provider interoperability, MCP client compatibility, production load capacity, or penetration-test results. <a href="#smoke-tests">Manual verification</a> explains the individual probes.</p>
 <h2 id="enterprise-migration">Enterprise migration</h2>
 <p>EMA is optional and requires compatible clients, IdPs, and resource authorization servers. Evaluate downstream vendor access before retiring a broker integration. Keep readiness evidence per vendor, with a review date. An <code>ema_status</code> change alone has no runtime effect. <a href="https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization">Enterprise-Managed Authorization</a></p>
