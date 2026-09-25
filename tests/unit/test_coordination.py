@@ -94,8 +94,9 @@ async def test_txn_roundtrip(backend, request):
                                "scopes": ["a"], "created_at": time.time()})
     rec = await coord.get_txn("t1")
     assert rec["sub"] == "alice"
-    await coord.pop_txn("t1")
+    assert (await coord.take_txn("t1"))["sub"] == "alice"
     assert await coord.get_txn("t1") is None
+    assert await coord.take_txn("t1") is None  # replay loses
 
 
 async def test_memory_txn_ttl_expires(mem):
@@ -128,6 +129,15 @@ async def test_concurrent_consumption_has_one_winner(backend, request):
                                    "iss_required": False, "scopes": [],
                                    "created_at": time.time()})
     results = await asyncio.gather(*[coord.consume_state("race") for _ in range(5)])
+    assert sum(r is not None for r in results) == 1
+
+
+@pytest.mark.parametrize("backend", ["mem", "red"])
+async def test_concurrent_txn_take_has_one_winner(backend, request):
+    coord = request.getfixturevalue(backend)
+    await coord.put_txn("race", {"sub": "a", "vendor": "v", "scopes": [],
+                                 "created_at": time.time()})
+    results = await asyncio.gather(*[coord.take_txn("race") for _ in range(5)])
     assert sum(r is not None for r in results) == 1
 
 

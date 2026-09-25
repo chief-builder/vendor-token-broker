@@ -55,7 +55,7 @@ class Coordination(Protocol):
 
     async def put_txn(self, txn_id: str, record: dict) -> None: ...
     async def get_txn(self, txn_id: str) -> dict | None: ...
-    async def pop_txn(self, txn_id: str) -> None: ...
+    async def take_txn(self, txn_id: str) -> dict | None: ...
 
     async def put_state(self, state: str, record: dict) -> None: ...
     async def peek_state(self, state: str) -> dict | None: ...
@@ -154,8 +154,8 @@ class MemoryCoordination:
     async def get_txn(self, txn_id) -> dict | None:
         return self._fresh(self._txns.get(txn_id))
 
-    async def pop_txn(self, txn_id) -> None:
-        self._txns.pop(txn_id, None)
+    async def take_txn(self, txn_id) -> dict | None:
+        return self._fresh(self._txns.pop(txn_id, None))
 
     async def put_state(self, state, record) -> None:
         self._states[state] = {**record, "consumed": False}
@@ -352,11 +352,13 @@ class RedisCoordination:
     async def get_txn(self, txn_id) -> dict | None:
         return await self._get_json(f"vtb:txn:{txn_id}")
 
-    async def pop_txn(self, txn_id) -> None:
+    async def take_txn(self, txn_id) -> dict | None:
+        """Atomic single-use take: GETDEL — one link starts one flow."""
         try:
-            await self._r.delete(f"vtb:txn:{txn_id}")
+            raw = await self._r.getdel(f"vtb:txn:{txn_id}")
         except self._exc as exc:
             raise CoordinationUnavailable(exc) from exc
+        return json.loads(raw) if raw else None
 
     async def put_state(self, state, record) -> None:
         await self._setex_json(f"vtb:state:{state}", record)

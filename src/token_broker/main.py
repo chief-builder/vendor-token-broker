@@ -1,8 +1,9 @@
 """Vendor Token Broker — app factory and the 7-route surface.
 
-Custodian, not issuer (design §1/§10): this service holds no signing keys
-and exposes no token-minting or JWKS endpoint — tests/unit/test_routes.py
-audits the route table for exactly that on every push.
+Custodian, not issuer (design §1/§10): this service holds no issuer signing
+keys and exposes no token-minting or JWKS endpoint — tests/unit/test_routes.py
+audits the route table for exactly that on every push. Vendor private_key_jwt
+client-assertion keys live in custody as credential material.
 
 Run: uvicorn --factory token_broker.main:create_app
 """
@@ -435,9 +436,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
         at the hub; the vendor leg starts only for the user the link was
         issued to (review H1, design §6)."""
         try:
-            record = await b.coord.get_txn(txn)
-            if record is not None:
-                await b.coord.pop_txn(txn)          # one link starts one flow
+            record = await b.coord.take_txn(txn)    # one link starts one flow
         except CoordinationUnavailable as exc:
             return problem(503, "coordination-unavailable", str(exc))
         if record is None or record["vendor"] != vendor or \
