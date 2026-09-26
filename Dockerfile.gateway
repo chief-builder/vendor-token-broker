@@ -1,0 +1,12 @@
+# MCP gateway image. Same pinned base as the broker; dependencies from its
+# own hash-checked lock (FastMCP never enters the broker image).
+FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+WORKDIR /app
+COPY requirements-gateway.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements-gateway.lock
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps .
+USER 65534
+CMD ["python", "-m", "uvicorn", "--factory", "mcp_gateway.server:create_app", \
+     "--host", "0.0.0.0", "--port", "8500"]

@@ -66,6 +66,12 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   private_key_jwt), `custody.py` (KV-v2 CAS store), `coordination.py`
   (memory/redis backends), `refresh.py` (shared single-flight refresh
   core), `sweeper.py`, `problems.py` (frozen titles), `audit.py`
+- `src/mcp_gateway/` — separate service (own `Dockerfile.gateway`,
+  `requirements-gateway.lock`, FastMCP 4.0.10; never in the broker image):
+  MCP server to clients, MCP client to GitHub's MCP server. `server.py`
+  (tools, consent elicitation in both protocol eras, auth wiring),
+  `clients.py` (hub RFC 8693 exchange, broker resolve/grants),
+  `upstream.py` (fresh session per call), `config.py`
 - `tests/stack/` — self-contained compose: OpenBao (+ init writing a
   scoped token, never root), redis, mock-vendor (hostile: 60s tokens,
   rotating RTs, replay burns the family), hub-stub (JWKS, good and bad
