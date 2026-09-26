@@ -277,3 +277,53 @@ services:
         condition: service_completed_successfully
       mock-vendor:
         condition: service_started
+
+  # Stand-in for GitHub's MCP server: accepts only live mockhub tokens.
+  mock-github-mcp:
+    build:
+      context: ../..
+      dockerfile: tests/stack/mock-github-mcp/Dockerfile
+    container_name: vtb-mock-github-mcp
+    profiles: ["gateway"]
+    environment:
+      MOCK_VENDOR_URL: http://mock-vendor:8310
+    ports:
+      - "8330:8330"
+    depends_on:
+      mock-vendor:
+        condition: service_started
+
+  mcp-gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.gateway
+    container_name: vtb-mcp-gateway
+    profiles: ["gateway"]
+    environment:
+      GATEWAY_PUBLIC_URL: http://localhost:8500
+      HUB_ISSUER: http://keycloak.localhost:8180/realms/mcp
+      HUB_JWKS_URI: http://keycloak.localhost:8180/realms/mcp/protocol/openid-connect/certs
+      HUB_TOKEN_ENDPOINT: http://keycloak.localhost:8180/realms/mcp/protocol/openid-connect/token
+      GATEWAY_CLIENT_ID: mcp-gateway
+      GATEWAY_CLIENT_SECRET: gateway-dev-secret
+      BROKER_URL: http://broker-kc:8300
+      VENDOR: mockhub
+      UPSTREAM_MCP_URL: http://mock-github-mcp:8330/mcp
+      # Short, so "accepted but never finished" runs in test time.
+      CONSENT_WAIT_S: "15"
+      # Short, so paused-dependency tests fail over quickly.
+      HTTP_TIMEOUT_S: "5"
+    ports:
+      - "8500:8500"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8500/.well-known/oauth-protected-resource/mcp').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+    depends_on:
+      broker-kc:
+        condition: service_healthy
+      mock-github-mcp:
+        condition: service_started

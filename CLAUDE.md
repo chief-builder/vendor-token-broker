@@ -47,7 +47,7 @@ docker compose -f tests/stack/docker-compose.yml --profile multi up -d --build -
 BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
   pytest tests/integration/test_multi_replica.py -q
 
-# Keycloak as the real hub (MCP gateway work): keycloak + broker-kc (:8600)
+# MCP gateway end to end: Keycloak hub, broker-kc, mock-github-mcp, mcp-gateway
 docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
 pytest tests/integration -m gateway -q
 ```
@@ -76,6 +76,10 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   scoped token, never root), redis, mock-vendor (hostile: 60s tokens,
   rotating RTs, replay burns the family), hub-stub (JWKS, good and bad
   hub JWTs via `POST /_test/token`, OIDC login for the consent leg)
+  — plus, in the `gateway` profile, Keycloak (real hub), broker-kc (:8600,
+  own OpenBao), mock-github-mcp (:8330, GitHub MCP stand-in accepting only
+  live mockhub tokens; `/_test/state` records per-call headers and token
+  fingerprints) and mcp-gateway (:8500, VENDOR=mockhub)
 - `registry.example.json` + `schemas/vendor-registry.schema.json` —
   registry changes are reviewed changes; `scope_ceiling` is a security
   boundary
