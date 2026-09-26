@@ -45,6 +45,15 @@ class Config:
     hub_contract_version: str = "1.0"
     admin_group: str = "mcp-platform-admin"
     hub_login_client_secret: str = ""   # empty: public client (PKCE only)
+    # OIDC login_hint on the consent-leg login: "sub" suits hubs that key
+    # sign-in on the subject (hub-stub); real IdPs expect a username or email,
+    # so send "none". UX only: the logged-in sub is still checked (H1).
+    hub_login_hint: str = "sub"
+    # Where to fetch the hub's OIDC discovery document. Empty: derived from
+    # HUB_ISSUER. Set it when the broker reaches the hub by an internal URL
+    # that differs from the public issuer; the document must still name
+    # HUB_ISSUER as its issuer.
+    hub_discovery_url: str = ""
     problem_urn_prefix: str = "urn:vendor-token-broker"
 
     # Timing knobs (design §§7-9: cache ≤60s, txn TTL 10 min, lock hard timeout).
@@ -69,6 +78,9 @@ class Config:
     refreshing_ttl_s: int = 30
 
     def __post_init__(self):
+        if self.hub_login_hint not in ("sub", "none"):
+            raise ConfigError(
+                f"HUB_LOGIN_HINT must be 'sub' or 'none', not {self.hub_login_hint!r}")
         if not self.hub_algorithms:
             raise ConfigError("HUB_ALGORITHMS must name at least one algorithm")
         bad = [a for a in self.hub_algorithms if a not in ALLOWED_HUB_ALGORITHMS]
@@ -132,6 +144,8 @@ class Config:
             registry_path=Path(env["REGISTRY_PATH"]),
             hub_login_client_id=env["HUB_LOGIN_CLIENT_ID"],
             hub_login_client_secret=env.get("HUB_LOGIN_CLIENT_SECRET", ""),
+            hub_login_hint=env.get("HUB_LOGIN_HINT", cls.hub_login_hint),
+            hub_discovery_url=env.get("HUB_DISCOVERY_URL", cls.hub_discovery_url),
             hub_tier_audience=env.get("HUB_TIER_AUDIENCE", cls.hub_tier_audience),
             hub_algorithms=tuple(
                 a.strip() for a in env.get("HUB_ALGORITHMS", "PS256,ES256").split(",") if a.strip()

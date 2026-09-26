@@ -39,6 +39,13 @@ async def test_authorize_sends_the_browser_to_the_hub_bound_to_it():
     assert "Secure" not in cookie                 # http public URL in this config
 
 
+async def test_real_idp_mode_sends_no_login_hint():
+    """HUB_LOGIN_HINT=none: an opaque sub is no username hint for a real IdP."""
+    h = Harness(hub_login_hint="none")
+    r = await h.authorize("wf-user-1")
+    assert "login_hint" not in query(r.headers["location"])
+
+
 async def test_binding_cookie_is_secure_behind_https():
     h = Harness(broker_public_url="https://broker.example")
     r = await h.authorize()

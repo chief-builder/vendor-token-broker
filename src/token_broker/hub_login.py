@@ -41,7 +41,8 @@ class HubLogin:
     async def _metadata(self) -> dict:
         if self._meta is not None:
             return self._meta
-        url = f"{self._cfg.hub_issuer.rstrip('/')}/.well-known/openid-configuration"
+        url = self._cfg.hub_discovery_url or \
+            f"{self._cfg.hub_issuer.rstrip('/')}/.well-known/openid-configuration"
         try:
             async with httpx.AsyncClient(timeout=self._cfg.jwks_timeout_s) as c:
                 r = await c.get(url)
@@ -58,7 +59,7 @@ class HubLogin:
         return meta
 
     async def authorization_url(self, *, state: str, nonce: str, challenge: str,
-                                login_hint: str, redirect_uri: str) -> str:
+                                login_hint: str | None, redirect_uri: str) -> str:
         meta = await self._metadata()
         params = {
             "client_id": self._cfg.hub_login_client_id,
@@ -69,8 +70,9 @@ class HubLogin:
             "nonce": nonce,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
-            "login_hint": login_hint,
         }
+        if login_hint:
+            params["login_hint"] = login_hint
         return f"{meta['authorization_endpoint']}?{urlencode(params)}"
 
     async def exchange(self, *, code: str, verifier: str, redirect_uri: str,

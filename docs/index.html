@@ -645,7 +645,12 @@ grace limited to each replica's in-memory cache (<code>CACHE_TTL_S</code>, defau
 <p>Required (startup aborts listing every missing name):
 <code>HUB_ISSUER</code>, <code>HUB_JWKS_URI</code>, <code>BROKER_PUBLIC_URL</code>, <code>VAULT_ADDR</code>,
 <code>VAULT_TOKEN</code> or <code>VAULT_TOKEN_FILE</code>, <code>REGISTRY_PATH</code>, <code>HUB_LOGIN_CLIENT_ID</code>.
-Optional: <code>HUB_LOGIN_CLIENT_SECRET</code> (omit for a public client; PKCE is
+Optional: <code>HUB_DISCOVERY_URL</code> (where to fetch the hub's OIDC discovery
+document when the broker reaches the hub by an internal URL; defaults to
+<code>HUB_ISSUER/.well-known/openid-configuration</code>, and the document must still
+name <code>HUB_ISSUER</code>), <code>HUB_LOGIN_HINT</code> (<code>sub</code>, the default, sends the user's subject as
+the OIDC <code>login_hint</code>; set <code>none</code> for a real IdP such as Keycloak, which
+expects a username), <code>HUB_LOGIN_CLIENT_SECRET</code> (omit for a public client; PKCE is
 always used).</p>
 <table>
 <thead>

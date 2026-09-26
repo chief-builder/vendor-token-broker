@@ -55,7 +55,12 @@ grace limited to each replica's in-memory cache (`CACHE_TTL_S`, default 60s).
 Required (startup aborts listing every missing name):
 `HUB_ISSUER`, `HUB_JWKS_URI`, `BROKER_PUBLIC_URL`, `VAULT_ADDR`,
 `VAULT_TOKEN` or `VAULT_TOKEN_FILE`, `REGISTRY_PATH`, `HUB_LOGIN_CLIENT_ID`.
-Optional: `HUB_LOGIN_CLIENT_SECRET` (omit for a public client; PKCE is
+Optional: `HUB_DISCOVERY_URL` (where to fetch the hub's OIDC discovery
+document when the broker reaches the hub by an internal URL; defaults to
+`HUB_ISSUER/.well-known/openid-configuration`, and the document must still
+name `HUB_ISSUER`), `HUB_LOGIN_HINT` (`sub`, the default, sends the user's subject as
+the OIDC `login_hint`; set `none` for a real IdP such as Keycloak, which
+expects a username), `HUB_LOGIN_CLIENT_SECRET` (omit for a public client; PKCE is
 always used).
 
 | Variable | Default | Notes |

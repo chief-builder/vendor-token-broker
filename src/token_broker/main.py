@@ -453,7 +453,8 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
         try:
             login_url = await b.hub_login.authorization_url(
                 state=hub_state, nonce=nonce, challenge=challenge,
-                login_hint=record["sub"], redirect_uri=hub_redirect)
+                login_hint=record["sub"] if cfg.hub_login_hint == "sub" else None,
+                redirect_uri=hub_redirect)
         except (HubUnavailable, HubLoginError) as exc:
             audit("broker.consent.fail", vendor=vendor, sub=record["sub"],
                   reason="hub_unavailable", security_event=False)

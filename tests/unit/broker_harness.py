@@ -139,9 +139,11 @@ class FakeHubLogin:
             raise self.check_error
 
     async def authorization_url(self, *, state, nonce, challenge, login_hint, redirect_uri):
-        return f"{self.AUTHORIZE}?" + urlencode({
-            "state": state, "nonce": nonce, "code_challenge": challenge,
-            "login_hint": login_hint, "redirect_uri": redirect_uri})
+        params = {"state": state, "nonce": nonce, "code_challenge": challenge,
+                  "redirect_uri": redirect_uri}
+        if login_hint:
+            params["login_hint"] = login_hint
+        return f"{self.AUTHORIZE}?" + urlencode(params)
 
     async def exchange(self, *, code, verifier, redirect_uri, nonce):
         if self.exchange_error is not None:

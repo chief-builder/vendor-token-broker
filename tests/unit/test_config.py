@@ -105,3 +105,13 @@ def test_sweep_max_entries_knob():
     assert Config.from_env({**FULL_ENV, "SWEEP_MAX_ENTRIES": "50"}).sweep_max_entries == 50
     with pytest.raises(ConfigError):
         Config.from_env({**FULL_ENV, "SWEEP_MAX_ENTRIES": "0"})
+
+
+def test_login_hint_defaults_to_sub_and_accepts_none():
+    assert Config.from_env(FULL_ENV).hub_login_hint == "sub"
+    assert Config.from_env({**FULL_ENV, "HUB_LOGIN_HINT": "none"}).hub_login_hint == "none"
+
+
+def test_unknown_login_hint_mode_is_a_config_error():
+    with pytest.raises(ConfigError, match="HUB_LOGIN_HINT"):
+        Config.from_env({**FULL_ENV, "HUB_LOGIN_HINT": "email"})

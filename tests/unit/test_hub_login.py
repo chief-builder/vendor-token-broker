@@ -70,6 +70,13 @@ async def test_authorization_url_carries_oidc_pkce_and_hint(hub, rsa_key):
                  "login_hint": "wf-user-1"}
 
 
+async def test_authorization_url_omits_an_absent_hint(hub, rsa_key):
+    url = await login(rsa_key).authorization_url(
+        state="s", nonce="n", challenge="ch", login_hint=None,
+        redirect_uri="https://b/v1/callback/_hub")
+    assert "login_hint" not in dict(httpx.URL(url).params)
+
+
 async def test_valid_id_token_returns_claims(hub, rsa_key):
     routes, posted = hub
     routes[TOKEN] = httpx.Response(200, json={"id_token": id_token(rsa_key)})
@@ -133,3 +140,25 @@ async def test_discovery_failures(hub, rsa_key, discovery, error):
     routes[DISCOVERY] = discovery
     with pytest.raises(error):
         await login(rsa_key).check()
+
+
+INTERNAL = "http://hub.internal:8080/realms/mcp-plane/.well-known/openid-configuration"
+
+
+async def test_discovery_can_come_from_an_internal_url(hub, rsa_key):
+    """Public issuer, internal address: the document is fetched from
+    HUB_DISCOVERY_URL and must still name the public issuer."""
+    routes, _ = hub
+    del routes[DISCOVERY]
+    routes[INTERNAL] = httpx.Response(200, json=META)
+    url = await login(rsa_key, hub_discovery_url=INTERNAL).authorization_url(
+        state="s", nonce="n", challenge="ch", login_hint=None,
+        redirect_uri="https://b/v1/callback/_hub")
+    assert url.startswith(f"{ISSUER}/auth?")
+
+
+async def test_internal_discovery_must_name_the_configured_issuer(hub, rsa_key):
+    routes, _ = hub
+    routes[INTERNAL] = httpx.Response(200, json={**META, "issuer": "http://hub.internal:8080"})
+    with pytest.raises(HubLoginError):
+        await login(rsa_key, hub_discovery_url=INTERNAL).check()
