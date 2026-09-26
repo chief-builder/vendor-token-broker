@@ -9,11 +9,11 @@ import html
 import json
 import re
 import secrets
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 
-KC_REALM = "http://keycloak.localhost:8180/realms/mcp"
+KC_REALM = "http://localhost:8180/realms/mcp"
 KC_AUTH = f"{KC_REALM}/protocol/openid-connect/auth"
 KC_TOKEN = f"{KC_REALM}/protocol/openid-connect/token"
 BROKER_KC = "http://localhost:8600"
@@ -48,7 +48,9 @@ class _Browser(requests.Session):
     def send(self, request, **kwargs):
         response = super().send(request, **kwargs)
         for cookie in self.cookies:
-            if cookie.domain == "localhost" or cookie.domain.endswith(".localhost"):
+            # http.cookiejar files a bare "localhost" cookie under "localhost.local".
+            domain = cookie.domain.lstrip(".").removesuffix(".local")
+            if domain == "localhost" or domain.endswith(".localhost"):
                 cookie.secure = False
         return response
 
@@ -69,25 +71,41 @@ def keycloak_login(browser: requests.Session, login_page: requests.Response,
                         allow_redirects=False, timeout=15)
 
 
-def mcp_token(username: str, scope: str = "openid mcp-gateway") -> str:
+def register_client(redirect_uri: str = "http://localhost:33419/callback") -> requests.Response:
+    """RFC 7591 dynamic registration, as stock MCP clients (Claude Code) do."""
+    return requests.post(f"{KC_REALM}/clients-registrations/openid-connect", json={
+        "client_name": "dcr-test", "redirect_uris": [redirect_uri],
+        "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"],
+        "token_endpoint_auth_method": "none", "scope": "mcp-gateway offline_access"}, timeout=15)
+
+
+def mcp_token(username: str, scope: str = "openid mcp-gateway",
+              client_id: str = MCP_CLIENT_ID, redirect_uri: str = MCP_REDIRECT) -> str:
     """An MCP access token for `username`, obtained the way an MCP client
-    does: authorization code + PKCE against Keycloak."""
+    does: authorization code + PKCE against Keycloak. Self-registered
+    clients get Keycloak's consent screen, which is accepted."""
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     state = secrets.token_urlsafe(16)
     browser = browser_session()
     page = browser.get(KC_AUTH, params={
-        "client_id": MCP_CLIENT_ID, "response_type": "code", "redirect_uri": MCP_REDIRECT,
+        "client_id": client_id, "response_type": "code", "redirect_uri": redirect_uri,
         "scope": scope, "state": state, "code_challenge": challenge,
         "code_challenge_method": "S256"}, timeout=15)
     back = keycloak_login(browser, page, username)
+    if "/login-actions/" in back.headers.get("location", ""):       # consent screen
+        consent = browser.get(back.headers["location"], timeout=15)
+        action = re.search(r'<form[^>]*action="([^"]+)"', consent.text).group(1)
+        fields = dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', consent.text))
+        back = browser.post(urljoin(consent.url, html.unescape(action)),
+                            data={**fields, "accept": "Yes"}, allow_redirects=False, timeout=15)
     assert back.status_code == 302, back.text[:300]
     query = parse_qs(urlparse(back.headers["location"]).query)
-    assert query["state"] == [state]
+    assert query["state"] == [state], query
     r = requests.post(KC_TOKEN, data={
-        "grant_type": "authorization_code", "client_id": MCP_CLIENT_ID,
-        "code": query["code"][0], "redirect_uri": MCP_REDIRECT,
+        "grant_type": "authorization_code", "client_id": client_id,
+        "code": query["code"][0], "redirect_uri": redirect_uri,
         "code_verifier": verifier}, timeout=15)
     r.raise_for_status()
     return r.json()["access_token"]

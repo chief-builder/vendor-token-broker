@@ -48,6 +48,11 @@ def _wait_healthy(url: str, timeout: float = 60) -> None:
 def fresh_gateway():
     """Start from a gateway that has never loaded the catalog, and users
     who have never connected."""
+    vendor = subprocess.run(["docker", "exec", "vtb-mcp-gateway", "printenv", "VENDOR"],
+                            capture_output=True, text=True).stdout.strip()
+    if vendor != "mockhub":
+        pytest.skip(f"gateway is pointed at {vendor!r}, not the mockhub stand-in; "
+                    "recreate it without GATEWAY_VENDOR/GATEWAY_UPSTREAM_URL")
     subprocess.run(["docker", "restart", "vtb-mcp-gateway"], check=True, capture_output=True)
     _wait_healthy("http://localhost:8500/.well-known/oauth-protected-resource/mcp")
     for user in ("alice", "bob"):
@@ -87,9 +92,10 @@ async def _call(username: str, tool: str, args: dict | None = None, **kw):
 
 # ------------------------------------------------------------- first contact
 
-async def test_before_anyone_connects_only_connect_github_is_listed():
+async def test_all_tools_are_listed_before_anyone_connects():
+    """Pinned tool list: no client ever needs a list-changed notification."""
     async with gateway_client("alice") as c:
-        assert [t.name for t in await c.list_tools()] == ["connect_github"]
+        assert {t.name for t in await c.list_tools()} == ALLOWLISTED | {"connect_github"}
 
 
 @pytest.mark.parametrize("username, mode", [("alice", "legacy"), ("bob", "2026-07-28")])

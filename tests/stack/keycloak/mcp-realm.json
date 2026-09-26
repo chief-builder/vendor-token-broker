@@ -3,66 +3,333 @@
   "enabled": true,
   "defaultSignatureAlgorithm": "PS256",
   "accessTokenLifespan": 300,
+  "defaultDefaultClientScopes": [
+    "basic"
+  ],
+  "defaultOptionalClientScopes": [
+    "offline_access",
+    "mcp-gateway"
+  ],
   "components": {
     "org.keycloak.keys.KeyProvider": [
-      {"name": "ps256", "providerId": "rsa-generated",
-       "config": {"priority": ["200"], "keySize": ["2048"], "algorithm": ["PS256"]}}
+      {
+        "name": "ps256",
+        "providerId": "rsa-generated",
+        "config": {
+          "priority": [
+            "200"
+          ],
+          "keySize": [
+            "2048"
+          ],
+          "algorithm": [
+            "PS256"
+          ]
+        }
+      }
+    ],
+    "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy": [
+      {
+        "name": "Allowed Client Scopes",
+        "providerId": "allowed-client-templates",
+        "subType": "anonymous",
+        "config": {
+          "allow-default-scopes": [
+            "true"
+          ],
+          "allowed-client-scopes": [
+            "mcp-gateway",
+            "offline_access"
+          ]
+        }
+      },
+      {
+        "name": "Allowed Protocol Mapper Types",
+        "providerId": "allowed-protocol-mappers",
+        "subType": "anonymous",
+        "config": {
+          "allowed-protocol-mapper-types": [
+            "oidc-usermodel-attribute-mapper",
+            "oidc-usermodel-property-mapper",
+            "saml-user-attribute-mapper",
+            "oidc-sha256-pairwise-sub-mapper",
+            "oidc-full-name-mapper",
+            "saml-user-property-mapper",
+            "saml-role-list-mapper",
+            "oidc-address-mapper"
+          ]
+        }
+      },
+      {
+        "name": "Allowed Registration Web Origins",
+        "providerId": "registration-web-origins",
+        "subType": "anonymous",
+        "config": {}
+      },
+      {
+        "name": "Consent Required",
+        "providerId": "consent-required",
+        "subType": "anonymous",
+        "config": {}
+      },
+      {
+        "name": "Full Scope Disabled",
+        "providerId": "scope",
+        "subType": "anonymous",
+        "config": {}
+      },
+      {
+        "name": "Max Clients Limit",
+        "providerId": "max-clients",
+        "subType": "anonymous",
+        "config": {
+          "max-clients": [
+            "200"
+          ]
+        }
+      },
+      {
+        "name": "Trusted Hosts",
+        "providerId": "trusted-hosts",
+        "subType": "anonymous",
+        "config": {
+          "host-sending-registration-request-must-match": [
+            "false"
+          ],
+          "trusted-hosts": [
+            "localhost",
+            "127.0.0.1"
+          ],
+          "client-uris-must-match": [
+            "true"
+          ]
+        }
+      },
+      {
+        "name": "Allowed Client Scopes",
+        "providerId": "allowed-client-templates",
+        "subType": "authenticated",
+        "config": {
+          "allow-default-scopes": [
+            "true"
+          ]
+        }
+      },
+      {
+        "name": "Allowed Protocol Mapper Types",
+        "providerId": "allowed-protocol-mappers",
+        "subType": "authenticated",
+        "config": {
+          "allowed-protocol-mapper-types": [
+            "oidc-usermodel-property-mapper",
+            "saml-user-attribute-mapper",
+            "saml-role-list-mapper",
+            "oidc-full-name-mapper",
+            "oidc-usermodel-attribute-mapper",
+            "saml-user-property-mapper",
+            "oidc-sha256-pairwise-sub-mapper",
+            "oidc-address-mapper"
+          ]
+        }
+      },
+      {
+        "name": "Allowed Registration Web Origins",
+        "providerId": "registration-web-origins",
+        "subType": "authenticated",
+        "config": {}
+      }
     ]
   },
   "clientScopes": [
-    {"name": "basic", "protocol": "openid-connect",
-     "attributes": {"include.in.token.scope": "false"},
-     "protocolMappers": [
-       {"name": "sub", "protocol": "openid-connect", "protocolMapper": "oidc-sub-mapper",
-        "config": {"access.token.claim": "true", "introspection.token.claim": "true"}}
-     ]},
-    {"name": "mcp-gateway", "protocol": "openid-connect",
-     "attributes": {"include.in.token.scope": "true"},
-     "protocolMappers": [
-       {"name": "gateway-resource-audience", "protocol": "openid-connect",
-        "protocolMapper": "oidc-audience-mapper",
-        "config": {"included.custom.audience": "http://localhost:8500/mcp",
-                   "access.token.claim": "true", "id.token.claim": "false"}},
-       {"name": "gateway-client-audience", "protocol": "openid-connect",
-        "protocolMapper": "oidc-audience-mapper",
-        "config": {"included.client.audience": "mcp-gateway",
-                   "access.token.claim": "true", "id.token.claim": "false"}}
-     ]},
-    {"name": "hub-tier", "protocol": "openid-connect",
-     "attributes": {"include.in.token.scope": "true"},
-     "protocolMappers": [
-       {"name": "tier-audience", "protocol": "openid-connect",
-        "protocolMapper": "oidc-audience-mapper",
-        "config": {"included.custom.audience": "mcp://tier/internal",
-                   "access.token.claim": "true", "id.token.claim": "false"}},
-       {"name": "mcp-contract", "protocol": "openid-connect",
-        "protocolMapper": "oidc-hardcoded-claim-mapper",
-        "config": {"claim.name": "mcp_contract", "claim.value": "1.0",
-                   "jsonType.label": "String", "access.token.claim": "true"}}
-     ]}
+    {
+      "name": "basic",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mcp-gateway",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "gateway-resource-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "http://localhost:8500/mcp",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "gateway-client-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "mcp-gateway",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "hub-tier",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "tier-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "mcp://tier/internal",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "mcp-contract",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "mcp_contract",
+            "claim.value": "1.0",
+            "jsonType.label": "String",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
   ],
   "clients": [
-    {"clientId": "mcp-demo-cli", "publicClient": true,
-     "standardFlowEnabled": true, "directAccessGrantsEnabled": false,
-     "redirectUris": ["http://localhost:33418/callback", "http://127.0.0.1:33418/callback"],
-     "attributes": {"pkce.code.challenge.method": "S256"},
-     "defaultClientScopes": ["basic"], "optionalClientScopes": ["mcp-gateway"]},
-    {"clientId": "mcp-gateway", "publicClient": false, "secret": "gateway-dev-secret",
-     "standardFlowEnabled": false, "directAccessGrantsEnabled": false,
-     "attributes": {"standard.token.exchange.enabled": "true"},
-     "defaultClientScopes": ["basic"], "optionalClientScopes": ["hub-tier"]},
-    {"clientId": "vtb-broker", "publicClient": false, "secret": "hub-login-secret",
-     "standardFlowEnabled": true, "directAccessGrantsEnabled": false,
-     "redirectUris": ["http://localhost:8600/v1/callback/_hub"],
-     "attributes": {"pkce.code.challenge.method": "S256"},
-     "defaultClientScopes": ["basic"]}
+    {
+      "clientId": "mcp-demo-cli",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:33418/callback",
+        "http://127.0.0.1:33418/callback"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": [
+        "basic"
+      ],
+      "optionalClientScopes": [
+        "mcp-gateway",
+        "offline_access"
+      ]
+    },
+    {
+      "clientId": "claude-code",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:33419/callback"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": [
+        "basic"
+      ],
+      "optionalClientScopes": [
+        "mcp-gateway",
+        "offline_access"
+      ]
+    },
+    {
+      "clientId": "mcp-gateway",
+      "publicClient": false,
+      "secret": "gateway-dev-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "standard.token.exchange.enabled": "true"
+      },
+      "defaultClientScopes": [
+        "basic"
+      ],
+      "optionalClientScopes": [
+        "hub-tier"
+      ]
+    },
+    {
+      "clientId": "vtb-broker",
+      "publicClient": false,
+      "secret": "hub-login-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8600/v1/callback/_hub"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": [
+        "basic"
+      ]
+    }
   ],
   "users": [
-    {"id": "a11ce000-0000-4000-8000-000000000001", "username": "alice", "enabled": true,
-     "email": "alice@example.com", "emailVerified": true, "firstName": "Alice", "lastName": "Dev",
-     "credentials": [{"type": "password", "value": "alice", "temporary": false}]},
-    {"id": "b0b00000-0000-4000-8000-000000000002", "username": "bob", "enabled": true,
-     "email": "bob@example.com", "emailVerified": true, "firstName": "Bob", "lastName": "Dev",
-     "credentials": [{"type": "password", "value": "bob", "temporary": false}]}
+    {
+      "id": "a11ce000-0000-4000-8000-000000000001",
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Dev",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "offline_access"
+      ]
+    },
+    {
+      "id": "b0b00000-0000-4000-8000-000000000002",
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.com",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Dev",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "bob",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "offline_access"
+      ]
+    }
   ]
 }

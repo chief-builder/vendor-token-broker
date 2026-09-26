@@ -194,11 +194,13 @@ services:
     image: quay.io/keycloak/keycloak:26.7.4
     container_name: vtb-keycloak
     profiles: ["gateway"]
-    # One issuer URL for browsers and containers: the host resolves
-    # *.localhost to 127.0.0.1 (published port); containers resolve this
-    # alias to Keycloak itself.
+    # Public issuer http://localhost:8180 for browsers and MCP clients (Claude
+    # Code only sends credentials over plain http to exactly localhost);
+    # containers reach it as http://keycloak:8180, and backchannel-dynamic
+    # hands them internal token/JWKS endpoints. Tokens always carry the
+    # public issuer.
     command: ["start-dev", "--import-realm", "--http-port=8180",
-              "--hostname=http://keycloak.localhost:8180"]
+              "--hostname=http://localhost:8180", "--hostname-backchannel-dynamic=true"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
@@ -207,9 +209,6 @@ services:
       - ./keycloak:/opt/keycloak/data/import:ro
     ports:
       - "8180:8180"
-    networks:
-      default:
-        aliases: [keycloak.localhost]
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
       interval: 5s
@@ -249,10 +248,12 @@ services:
     container_name: vtb-broker-kc
     profiles: ["gateway"]
     environment:
-      HUB_ISSUER: http://keycloak.localhost:8180/realms/mcp
-      HUB_JWKS_URI: http://keycloak.localhost:8180/realms/mcp/protocol/openid-connect/certs
+      HUB_ISSUER: http://localhost:8180/realms/mcp
+      HUB_JWKS_URI: http://keycloak:8180/realms/mcp/protocol/openid-connect/certs
+      HUB_DISCOVERY_URL: http://keycloak:8180/realms/mcp/.well-known/openid-configuration
       HUB_LOGIN_CLIENT_ID: vtb-broker
       HUB_LOGIN_CLIENT_SECRET: hub-login-secret
+      HUB_LOGIN_HINT: none
       BROKER_PUBLIC_URL: http://localhost:8600
       VAULT_ADDR: http://openbao-kc:8200
       VAULT_TOKEN: ${BROKER_VAULT_TOKEN:-vtb-dev-broker-token}
@@ -301,16 +302,19 @@ services:
     profiles: ["gateway"]
     environment:
       GATEWAY_PUBLIC_URL: http://localhost:8500
-      HUB_ISSUER: http://keycloak.localhost:8180/realms/mcp
-      HUB_JWKS_URI: http://keycloak.localhost:8180/realms/mcp/protocol/openid-connect/certs
-      HUB_TOKEN_ENDPOINT: http://keycloak.localhost:8180/realms/mcp/protocol/openid-connect/token
+      HUB_ISSUER: http://localhost:8180/realms/mcp
+      HUB_JWKS_URI: http://keycloak:8180/realms/mcp/protocol/openid-connect/certs
+      HUB_TOKEN_ENDPOINT: http://keycloak:8180/realms/mcp/protocol/openid-connect/token
       GATEWAY_CLIENT_ID: mcp-gateway
       GATEWAY_CLIENT_SECRET: gateway-dev-secret
       BROKER_URL: http://broker-kc:8300
-      VENDOR: mockhub
-      UPSTREAM_MCP_URL: http://mock-github-mcp:8330/mcp
+      # Real GitHub instead of the stand-in (needs a configured GitHub App):
+      #   GATEWAY_VENDOR=github GATEWAY_UPSTREAM_URL=https://api.githubcopilot.com/mcp/
+      VENDOR: ${GATEWAY_VENDOR:-mockhub}
+      UPSTREAM_MCP_URL: ${GATEWAY_UPSTREAM_URL:-http://mock-github-mcp:8330/mcp}
       # Short, so "accepted but never finished" runs in test time.
-      CONSENT_WAIT_S: "15"
+      # Manual runs (a person in the browser): GATEWAY_CONSENT_WAIT_S=120.
+      CONSENT_WAIT_S: ${GATEWAY_CONSENT_WAIT_S:-15}
       # Short, so paused-dependency tests fail over quickly.
       HTTP_TIMEOUT_S: "5"
     ports:

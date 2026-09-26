@@ -70,9 +70,9 @@ class FakeBroker:
         return self.is_connected
 
 
-def _tool(name: str) -> mcp_types.Tool:
+def upstream_tool(name: str, param: str = "owner") -> mcp_types.Tool:
     return mcp_types.Tool(name=name, description=f"upstream {name}", input_schema={
-        "type": "object", "properties": {"owner": {"type": "string"}}})
+        "type": "object", "properties": {param: {"type": "string"}}})
 
 
 @dataclass
@@ -85,7 +85,7 @@ class FakeUpstream:
     async def list_tools(self, token: str) -> list[mcp_types.Tool]:
         assert token == VENDOR_TOKEN
         self.lists += 1
-        return [_tool(n) for n in self.names]
+        return [upstream_tool(n) for n in self.names]
 
     async def call_tool(self, token: str, name: str, arguments: dict[str, Any]
                         ) -> mcp_types.CallToolResult:
@@ -96,11 +96,12 @@ class FakeUpstream:
             content=[mcp_types.TextContent(type="text", text=f"{name} ok {arguments}")])
 
 
-def make_gateway(connected: bool = True, **cfg) -> tuple[Gateway, FakeHub, FakeBroker,
-                                                         FakeUpstream]:
+def make_gateway(connected: bool = True, snapshot: list[mcp_types.Tool] | None = None,
+                 **cfg) -> tuple[Gateway, FakeHub, FakeBroker, FakeUpstream]:
+    """No snapshot by default: tools appear on the first connected call."""
     hub, broker, upstream = FakeHub(), FakeBroker(connected), FakeUpstream()
     gw = Gateway(make_gateway_config(**cfg), hub, broker, upstream,
-                 current_token=lambda: (MCP_TOKEN, "alice"))
+                 current_token=lambda: (MCP_TOKEN, "alice"), snapshot=snapshot)
     build_server(gw)
     return gw, hub, broker, upstream
 

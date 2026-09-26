@@ -72,6 +72,11 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   (tools, consent elicitation in both protocol eras, auth wiring),
   `clients.py` (hub RFC 8693 exchange, broker resolve/grants),
   `upstream.py` (fresh session per call), `config.py`
+  `github_tools.json` pins the allowlisted tools' schemas so clients see them
+  from startup (2026-07-28 clients only take list-changed on
+  subscriptions/listen, which FastMCP 4.0.10 lacks); the first connected
+  call re-reads live schemas and logs drift. Refresh it with
+  `GITHUB_TOKEN=$(gh auth token) .venv/bin/python tools/refresh-github-tool-snapshot.py`
 - `tests/stack/` — self-contained compose: OpenBao (+ init writing a
   scoped token, never root), redis, mock-vendor (hostile: 60s tokens,
   rotating RTs, replay burns the family), hub-stub (JWKS, good and bad
@@ -97,11 +102,18 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   imports collide when both suites are collected together.
 - Integration asserts read audit events from `docker logs` of `vtb-broker`
   (or replicas via `BROKER_CONTAINERS`); container names matter.
-- Gateway profile: Keycloak's issuer is `http://keycloak.localhost:8180` for
-  browsers and containers alike (host resolves *.localhost to 127.0.0.1;
-  containers get a network alias). Keycloak sets Secure cookies over http,
-  so test browsers must send Secure cookies to *.localhost like real
-  browsers do (`keycloak_stack.browser_session`). broker-kc has its own
+- Gateway profile: Keycloak's public issuer is `http://localhost:8180`
+  (Claude Code only sends OAuth credentials over plain http to exactly
+  localhost); containers reach it as `http://keycloak:8180` and get
+  internal endpoints (`--hostname-backchannel-dynamic`), so broker-kc sets
+  `HUB_DISCOVERY_URL` and the gateway uses internal JWKS/token URLs.
+  Keycloak sets Secure cookies over http, so test browsers must send Secure
+  cookies to localhost like real browsers do (`keycloak_stack.browser_session`).
+  The realm allows anonymous dynamic client registration only for localhost
+  redirect URIs (stock MCP clients such as Claude Code register themselves)
+  and requires consent for such clients. Switch the gateway between the
+  stand-in and real GitHub with `up -d --no-deps mcp-gateway` (the e2e suite
+  pauses broker-kc, so its health can lag and block dependency gating). broker-kc has its own
   OpenBao so its sweeper never shares custody with `broker`.
 - Use `docker pause` (not stop) to simulate OpenBao/mock outages — dev-mode
   OpenBao state is in-memory and a restart wipes provisioning.

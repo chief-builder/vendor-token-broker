@@ -1,16 +1,17 @@
 """Gateway configuration and its OAuth protected-resource wiring."""
+import json
+import logging
 import time
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastmcp.server.auth.providers.jwt import JWTVerifier
 from gateway_helpers import make_gateway, make_gateway_config
 from starlette.testclient import TestClient
 
 from mcp_gateway.config import ConfigError, GatewayConfig
-from mcp_gateway.server import build_auth, build_server
+from mcp_gateway.server import AuditingJWTVerifier, build_app, build_auth
 
 CFG = make_gateway_config()
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -32,10 +33,10 @@ def _token(aud=CFG.resource_url, scope="openid mcp-gateway", alg="PS256", **over
 @pytest.fixture(scope="module")
 def http():
     gw, *_ = make_gateway()
-    verifier = JWTVerifier(public_key=PUBLIC_PEM, issuer=CFG.hub_issuer,
+    verifier = AuditingJWTVerifier(public_key=PUBLIC_PEM, issuer=CFG.hub_issuer,
                            audience=CFG.resource_url, algorithm="PS256",
                            required_scopes=["mcp-gateway"])
-    app = build_server(gw, auth=build_auth(CFG, verifier)).http_app(path="/mcp")
+    app = build_app(gw, build_auth(CFG, verifier))
     with TestClient(app, base_url="http://localhost:8500") as c:
         yield c
 
@@ -56,16 +57,41 @@ def test_unauthenticated_request_gets_the_discovery_challenge(http):
     assert "resource_metadata=" in challenge and 'scope="mcp-gateway"' in challenge
 
 
-@pytest.mark.parametrize("token", [
-    _token(aud="http://elsewhere/mcp"),               # meant for another resource
-    _token(scope="openid"),                           # gateway scope not granted
-    _token(alg="RS256"),                              # algorithm not pinned
-    _token(iss="http://attacker/realms/mcp"),         # another issuer
-    _token(exp=int(time.time()) - 60),                # expired
+@pytest.mark.parametrize("token, reason", [
+    (_token(aud="http://elsewhere/mcp"), "audience"),       # meant for another resource
+    (_token(scope="openid"), "scope"),                      # gateway scope not granted
+    (_token(alg="RS256"), "algorithm"),                     # algorithm not pinned
+    (_token(iss="http://attacker/realms/mcp"), "issuer"),   # another issuer
+    (_token(exp=int(time.time()) - 60), "expired"),         # expired
+    ("not-a-jwt", "malformed"),
 ])
-def test_bad_tokens_are_rejected(http, token):
+def test_bad_tokens_are_rejected_and_the_reason_audited(http, token, reason, caplog):
+    caplog.set_level(logging.INFO, logger="mcp_gateway")
     r = http.post("/mcp", json=INIT, headers={**HEADERS, "Authorization": f"Bearer {token}"})
     assert r.status_code == 401
+    denials = [json.loads(m) for m in caplog.messages if '"gateway.auth"' in m]
+    assert denials and denials[-1]["reason"] == reason
+    assert token not in caplog.text
+
+
+def test_request_without_a_bearer_token_is_audited_as_missing(http, caplog):
+    caplog.set_level(logging.INFO, logger="mcp_gateway")
+    assert http.post("/mcp", json=INIT, headers=HEADERS).status_code == 401
+    assert json.loads([m for m in caplog.messages if '"gateway.auth"' in m][-1])["reason"] \
+        == "missing"
+
+
+def test_forged_signature_is_audited_as_signature(http, caplog):
+    caplog.set_level(logging.INFO, logger="mcp_gateway")
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = int(time.time())
+    forged = jwt.encode({"iss": CFG.hub_issuer, "sub": "alice", "aud": CFG.resource_url,
+                         "scope": "mcp-gateway", "iat": now, "exp": now + 300},
+                        other, algorithm="PS256")
+    r = http.post("/mcp", json=INIT, headers={**HEADERS, "Authorization": f"Bearer {forged}"})
+    assert r.status_code == 401
+    assert json.loads([m for m in caplog.messages if '"gateway.auth"' in m][-1])["reason"] \
+        == "signature"
 
 
 def test_valid_token_reaches_the_mcp_endpoint(http):

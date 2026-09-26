@@ -1,6 +1,7 @@
 """MCP gateway behavior with fake hub, broker and upstream: the tool
 catalog, forwarding, the consent flow in both protocol eras, error mapping,
 and token handling."""
+import json
 import logging
 
 import pytest
@@ -14,7 +15,11 @@ from gateway_helpers import (
     Unavailable,
     client,
     make_gateway,
+    upstream_tool,
 )
+
+from mcp_gateway.config import DEFAULT_TOOLS
+from mcp_gateway.server import load_snapshot
 
 ERAS = ["legacy", "2026-07-28"]
 
@@ -22,6 +27,76 @@ ERAS = ["legacy", "2026-07-28"]
 async def _names(c) -> list[str]:
     return sorted(t.name for t in await c.list_tools())
 
+
+def _catalog_events(caplog) -> list[dict]:
+    return [json.loads(m) for m in caplog.messages if '"gateway.catalog"' in m]
+
+
+# ------------------------------------------------ pinned tool list (snapshot)
+
+async def test_snapshot_tools_are_listed_before_anyone_connects():
+    gw, *_ = make_gateway(snapshot=[upstream_tool(n) for n in
+                                    ("get_me", "issue_read", "create_issue")])
+    async with client(gw) as c:
+        # create_issue is in the snapshot but not allowlisted.
+        assert await _names(c) == ["connect_github", "get_me", "issue_read"]
+
+
+@pytest.mark.parametrize("mode", ERAS)
+async def test_snapshot_matching_upstream_changes_nothing(mode, caplog):
+    caplog.set_level(logging.INFO, logger="mcp_gateway")
+    gw, *_ = make_gateway(snapshot=[upstream_tool("get_me"), upstream_tool("issue_read")],
+                          upstream_tools=("get_me", "issue_read"))
+    messages = ListChanged()
+    async with client(gw, mode=mode, messages=messages) as c:
+        await c.call_tool("connect_github", {})
+    event = _catalog_events(caplog)[-1]
+    assert (event["added"], event["changed"], event["missing"]) == ([], [], [])
+    assert messages.count == 0
+
+
+async def test_drifted_schema_is_replaced_by_the_live_one(caplog):
+    caplog.set_level(logging.INFO, logger="mcp_gateway")
+    gw, *_ = make_gateway(snapshot=[upstream_tool("get_me"),
+                                    upstream_tool("issue_read", param="old_param")])
+    messages = ListChanged()
+    async with client(gw, messages=messages) as c:
+        await c.call_tool("connect_github", {})
+        tool = next(t for t in await c.list_tools() if t.name == "issue_read")
+    assert list(tool.input_schema["properties"]) == ["owner"]
+    assert _catalog_events(caplog)[-1]["changed"] == ["issue_read"]
+    assert messages.count == 0                    # same names: nothing to announce
+
+
+async def test_allowlisted_tool_missing_from_snapshot_is_added_and_announced(caplog):
+    caplog.set_level(logging.INFO, logger="mcp_gateway")
+    gw, *_ = make_gateway(snapshot=[upstream_tool("get_me")])
+    messages = ListChanged()
+    async with client(gw, messages=messages) as c:
+        await c.call_tool("connect_github", {})
+        assert await _names(c) == ["connect_github", "get_me", "issue_read"]
+    assert _catalog_events(caplog)[-1]["added"] == ["issue_read"]
+    assert messages.count == 1
+
+
+async def test_tool_the_vendor_dropped_stays_listed_and_is_reported(caplog):
+    caplog.set_level(logging.INFO, logger="mcp_gateway")
+    gw, *_ = make_gateway(snapshot=[upstream_tool(n) for n in ("get_me", "list_issues")],
+                          upstream_tools=("get_me", "list_issues"))
+    async with client(gw) as c:
+        await c.call_tool("connect_github", {})
+        assert await _names(c) == ["connect_github", "get_me", "list_issues"]
+    assert _catalog_events(caplog)[-1]["missing"] == ["list_issues"]
+
+
+def test_bundled_snapshot_is_exactly_the_default_allowlist():
+    tools = load_snapshot()
+    assert [t.name for t in tools] == list(DEFAULT_TOOLS)
+    assert all(t.annotations and t.annotations.read_only_hint for t in tools)
+    assert load_snapshot("none") == []
+
+
+# ------------------------------------------- no snapshot (UPSTREAM_TOOL_SNAPSHOT=none)
 
 async def test_starts_with_connect_github_only():
     gw, *_ = make_gateway()

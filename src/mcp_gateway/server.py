@@ -6,10 +6,12 @@ forward the call to the vendor's MCP server in a fresh session. A missing
 vendor connection becomes a URL-mode elicitation pointing at the broker's
 consent link; an outage becomes a retryable error, never "connect".
 
-Tools: `connect_github` always; the allowlisted upstream tools appear (with
-the vendor's own schemas) after the first connected call, announced with
-notifications/tools/list_changed. The vendor token is used for one upstream
-call and never logged, cached, or returned to the client.
+Tools: `connect_github` plus the allowlisted upstream tools, listed from
+startup with the schemas in a checked-in snapshot (github_tools.json) so no
+client ever needs a list-changed notification (2026-07-28 clients only take
+those on subscriptions/listen). The first connected call re-reads the live
+schemas, which stay authoritative, and logs any drift. The vendor token is
+used for one upstream call and never logged, cached, or returned.
 """
 import asyncio
 import json
@@ -17,9 +19,11 @@ import logging
 import secrets
 import time
 from collections.abc import Callable
+from importlib import resources
 from typing import Any
 
 import httpx
+import jwt
 import mcp_types
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
@@ -27,6 +31,7 @@ from fastmcp.server.auth import RemoteAuthProvider
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token, get_context
 from fastmcp.tools.base import InputRequiredToolResult, Tool, ToolResult
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .clients import Broker, HandoffError, Hub, Unavailable
 from .config import GatewayConfig
@@ -46,6 +51,16 @@ def audit(event: str, **fields) -> None:
     log.info(json.dumps({"event": event, "ts": round(time.time(), 3), **fields}))
 
 
+def load_snapshot(path: str = "") -> list[mcp_types.Tool]:
+    """Tool definitions from a snapshot file (default: the bundled GitHub
+    snapshot; "none": no snapshot, tools appear on the first connected call)."""
+    if path == "none":
+        return []
+    text = open(path).read() if path else \
+        resources.files("mcp_gateway").joinpath("github_tools.json").read_text()
+    return [mcp_types.Tool.model_validate(t) for t in json.loads(text)["tools"]]
+
+
 def _mcp_token() -> tuple[str, str]:
     """(raw MCP access token, sub) of the verified caller."""
     token = get_access_token()
@@ -56,9 +71,11 @@ def _mcp_token() -> tuple[str, str]:
 
 class Gateway:
     def __init__(self, cfg: GatewayConfig, hub: Hub, broker: Broker, upstream: Upstream,
-                 current_token: Callable[[], tuple[str, str]] = _mcp_token):
+                 current_token: Callable[[], tuple[str, str]] = _mcp_token,
+                 snapshot: list[mcp_types.Tool] | None = None):
         self.cfg, self.hub, self.broker, self.upstream = cfg, hub, broker, upstream
         self.current_token = current_token
+        self.snapshot = snapshot or []
         self.catalog_loaded = False
         self._catalog_lock = asyncio.Lock()
         self.mcp: FastMCP | None = None
@@ -133,23 +150,38 @@ class Gateway:
 
     # ------------------------------------------------------------- catalog
 
+    def register(self, tool: mcp_types.Tool) -> None:
+        self.mcp.add_tool(UpstreamTool(
+            gateway=self, name=tool.name, description=tool.description or "",
+            parameters=tool.input_schema, annotations=tool.annotations))
+
+    async def _registered(self) -> dict[str, Tool]:
+        return {t.name: t for t in await self.mcp.list_tools() if isinstance(t, UpstreamTool)}
+
     async def load_catalog(self, ctx: Context, vendor_token: str) -> int:
-        """Register the allowlisted upstream tools with the vendor's schemas,
-        once per process. Returns how many are available."""
+        """Reconcile the listed tools with the vendor's live schemas, once per
+        process: re-register tools whose schema drifted from the snapshot, add
+        allowlisted tools the snapshot lacked, and report ones the vendor no
+        longer lists (they stay listed; calling them returns the vendor's
+        error). Returns how many upstream tools are listed."""
         async with self._catalog_lock:
             if not self.catalog_loaded:
-                tools = await self.upstream.list_tools(vendor_token)
-                wanted = set(self.cfg.upstream_tools)
-                found = [t for t in tools if t.name in wanted]
-                for t in found:
-                    self.mcp.add_tool(UpstreamTool(
-                        gateway=self, name=t.name, description=t.description or "",
-                        parameters=t.input_schema, annotations=t.annotations))
-                missing = sorted(wanted - {t.name for t in found})
-                audit("gateway.catalog", loaded=[t.name for t in found], missing=missing)
+                live = {t.name: t for t in await self.upstream.list_tools(vendor_token)
+                        if t.name in self.cfg.upstream_tools}
+                listed = await self._registered()
+                added = sorted(set(live) - set(listed))
+                changed = sorted(n for n in set(live) & set(listed)
+                                 if (live[n].description or "", live[n].input_schema)
+                                 != (listed[n].description, listed[n].parameters))
+                for name in added + changed:
+                    self.register(live[name])
+                missing = sorted(set(self.cfg.upstream_tools) - set(live))
+                audit("gateway.catalog", listed=sorted(live), added=added, changed=changed,
+                      missing=missing)
                 self.catalog_loaded = True
-                await ctx.send_notification(mcp_types.ToolListChangedNotification())
-        return len([t for t in await self.mcp.list_tools() if isinstance(t, UpstreamTool)])
+                if added:        # only older clients act on this; see module docstring
+                    await ctx.send_notification(mcp_types.ToolListChangedNotification())
+        return len(await self._registered())
 
     async def forward(self, ctx: Context, name: str, arguments: dict[str, Any]) -> ToolResult:
         token = await self.vendor_token(ctx, name)
@@ -180,8 +212,11 @@ class UpstreamTool(Tool):
 
 
 def build_server(gateway: Gateway, auth=None) -> FastMCP:
-    mcp = FastMCP("vtb-mcp-gateway", auth=auth)
+    mcp = FastMCP("vtb-mcp-gateway", auth=auth, on_duplicate="replace")
     gateway.mcp = mcp
+    for tool in gateway.snapshot:
+        if tool.name in gateway.cfg.upstream_tools:
+            gateway.register(tool)
 
     @mcp.tool
     async def connect_github(ctx: Context) -> str | mcp_types.InputRequiredResult:
@@ -196,13 +231,48 @@ def build_server(gateway: Gateway, auth=None) -> FastMCP:
     return mcp
 
 
+def _rejection_reason(verifier: JWTVerifier, token: str) -> dict:
+    """Why an MCP token was refused, from its unverified header and claims.
+    Ids and categories only; the token itself is never logged."""
+    try:
+        header = jwt.get_unverified_header(token)
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except jwt.PyJWTError:
+        return {"reason": "malformed"}
+    ids = {"sub": claims.get("sub"), "client": claims.get("azp")}
+    audiences = claims.get("aud", [])
+    audiences = [audiences] if isinstance(audiences, str) else audiences
+    now = time.time()
+    if header.get("alg") != verifier.algorithm:
+        return {**ids, "reason": "algorithm", "alg": header.get("alg")}
+    if claims.get("iss") != verifier.issuer:
+        return {**ids, "reason": "issuer"}
+    if verifier.audience not in audiences:
+        return {**ids, "reason": "audience"}
+    if claims.get("exp", 0) <= now:
+        return {**ids, "reason": "expired", "expired_s_ago": round(now - claims.get("exp", 0))}
+    if not set(verifier.required_scopes or ()) <= set(claims.get("scope", "").split()):
+        return {**ids, "reason": "scope"}
+    return {**ids, "reason": "signature"}
+
+
+class AuditingJWTVerifier(JWTVerifier):
+    """JWTVerifier that records why each refused token was refused."""
+
+    async def verify_token(self, token: str):
+        accepted = await super().verify_token(token)
+        if accepted is None:
+            audit("gateway.auth", outcome="deny", **_rejection_reason(self, token))
+        return accepted
+
+
 def build_auth(cfg: GatewayConfig, verifier: JWTVerifier | None = None) -> RemoteAuthProvider:
     """The gateway as an OAuth protected resource: protected-resource
     metadata naming the hub, and MCP tokens checked for signature (pinned
     algorithm), issuer, audience = this resource, and the gateway scope.
     Clients are told to request the scope because the hub may not support
     RFC 8707 resource indicators (Keycloak doesn't)."""
-    verifier = verifier or JWTVerifier(
+    verifier = verifier or AuditingJWTVerifier(
         jwks_uri=cfg.hub_jwks_uri, issuer=cfg.hub_issuer, audience=cfg.resource_url,
         algorithm=cfg.hub_algorithm, required_scopes=[cfg.gateway_scope])
     return RemoteAuthProvider(token_verifier=verifier, authorization_servers=[cfg.hub_issuer],
@@ -210,10 +280,30 @@ def build_auth(cfg: GatewayConfig, verifier: JWTVerifier | None = None) -> Remot
                               resource_name="vtb mcp-gateway")
 
 
+class AuditMissingBearer:
+    """Records MCP requests that arrive with no bearer token at all: the
+    verifier never sees those, so they would otherwise be a silent 401."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["path"].startswith("/mcp"):
+            auth = dict(scope["headers"]).get(b"authorization", b"")
+            if not auth.lower().startswith(b"bearer ") or not auth[7:].strip():
+                audit("gateway.auth", outcome="deny", reason="missing")
+        await self.app(scope, receive, send)
+
+
+def build_app(gateway: Gateway, auth: RemoteAuthProvider):
+    return AuditMissingBearer(build_server(gateway, auth=auth).http_app(path="/mcp"))
+
+
 def create_app():
     """uvicorn --factory mcp_gateway.server:create_app"""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     cfg = GatewayConfig.from_env()
     http = httpx.AsyncClient(timeout=cfg.http_timeout_s)
-    gateway = Gateway(cfg, Hub(cfg, http), Broker(cfg, http), Upstream(cfg))
-    return build_server(gateway, auth=build_auth(cfg)).http_app(path="/mcp")
+    gateway = Gateway(cfg, Hub(cfg, http), Broker(cfg, http), Upstream(cfg),
+                      snapshot=load_snapshot(cfg.upstream_tool_snapshot))
+    return build_app(gateway, build_auth(cfg))

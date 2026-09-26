@@ -45,6 +45,7 @@ class GatewayConfig:
     upstream_toolsets: tuple[str, ...] = ("repos", "issues", "pull_requests", "context")
     upstream_readonly: bool = True
     upstream_lockdown: bool = True
+    upstream_tool_snapshot: str = ""         # "": bundled GitHub snapshot; "none": no snapshot
     consent_wait_s: int = 120
     http_timeout_s: float = 15.0
 
@@ -87,6 +88,8 @@ class GatewayConfig:
                 else cls.upstream_toolsets,
                 upstream_readonly=_bool("UPSTREAM_READONLY", env.get("UPSTREAM_READONLY", "true")),
                 upstream_lockdown=_bool("UPSTREAM_LOCKDOWN", env.get("UPSTREAM_LOCKDOWN", "true")),
+                upstream_tool_snapshot=env.get("UPSTREAM_TOOL_SNAPSHOT",
+                                               cls.upstream_tool_snapshot),
                 consent_wait_s=int(env.get("CONSENT_WAIT_S", cls.consent_wait_s)),
                 http_timeout_s=float(env.get("HTTP_TIMEOUT_S", cls.http_timeout_s)),
             )
