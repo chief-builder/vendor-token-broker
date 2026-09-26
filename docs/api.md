@@ -1,24 +1,36 @@
 # Broker API reference
 
-This is the authoritative caller reference for the internal REST API. It is not the MCP wire protocol. [Integrate with MCP](mcp-integration.md) explains the adapter boundary.
+Use this page if you are writing your own gateway that calls the broker. It is the main reference for the broker's internal REST API.
+
+- This is not the MCP protocol. MCP clients never talk to the broker directly.
+- If you only want GitHub's MCP server, use the shipped [MCP gateway](mcp-gateway.md). It already calls this API for you.
+- [Integrate with MCP](mcp-integration.md) explains how an MCP server or gateway sits in front of the broker.
 
 ## Authentication and routes
 
-Send `Authorization: Bearer <hub-jwt>` on resolve, list, delete, and admin requests. The JWT subject is authoritative. Consent routes use short-lived transaction state and a browser-binding cookie. Health is unauthenticated.
+The broker has exactly seven routes. Most of them need a hub JWT.
+
+- **The hub** is your company's sign-in service (identity provider). A **hub JWT** is the signed token it issues for a user.
+- Send `Authorization: Bearer <hub-jwt>` on resolve, list, delete, and admin requests.
+- The broker trusts the JWT subject (`sub`) as the user's identity.
+- The consent routes do not use a bearer token. They use short-lived transaction state and a cookie that ties the flow to one browser.
+- `/healthz` needs no authentication.
 
 | Method | Route | Purpose |
 |---|---|---|
-| POST | `/v1/tokens/resolve` | Retrieve a vendor token for the caller |
+| POST | `/v1/tokens/resolve` | Get a vendor token for the caller |
 | GET | `/v1/authorize/{vendor}?txn=…` | Start browser consent |
-| GET | `/v1/callback/{vendor}` | Complete a consent leg; `_hub` is the hub-login callback |
-| GET | `/v1/grants` | List the caller's connections without token material |
-| DELETE | `/v1/grants/{vendor}/{sub}` | Disconnect the caller's vendor grant |
-| GET | `/v1/admin/vendors/{vendor}` | Read a registry entry; requires `ADMIN_GROUP` in the JWT's `groups` array |
-| GET | `/healthz` | Report this replica's custody-token health |
+| GET | `/v1/callback/{vendor}` | Finish one consent step; `_hub` is the callback for the hub sign-in step |
+| GET | `/v1/grants` | List the caller's connections, without any tokens |
+| DELETE | `/v1/grants/{vendor}/{sub}` | Disconnect the caller from a vendor |
+| GET | `/v1/admin/vendors/{vendor}` | Read one registry entry; the JWT's `groups` array must contain `ADMIN_GROUP` |
+| GET | `/healthz` | Report whether this replica's custody token is healthy |
 
-The service has no token-issuance, JWKS, OpenAPI, Swagger, or ReDoc endpoint. See `tests/unit/test_routes.py`.
+The broker has no endpoint that issues tokens. It also has no JWKS, OpenAPI, Swagger, or ReDoc endpoint. `tests/unit/test_routes.py` checks this.
 
 ## Resolve a token
+
+Call resolve to get a live vendor token for the signed-in user. The broker may refresh the token during the call.
 
 ```http
 POST /v1/tokens/resolve
@@ -30,65 +42,123 @@ Content-Type: application/json
 
 | Field | Default | Meaning |
 |---|---|---|
-| `vendor` | Required | Enabled registry vendor ID |
-| `sub` | JWT subject | Optional advisory subject; a non-empty mismatch is rejected |
-| `min_ttl_s` | 120 | Non-negative integer; target remaining lifetime, clamped to `REFRESH_BUFFER_S` |
-| `required_scopes` | `[]` | Array of scope strings; governed by the vendor's scope policy |
+| `vendor` | Required | ID of an enabled vendor in the registry |
+| `sub` | JWT subject | Optional. If you send a non-empty value that differs from the JWT subject, the broker rejects the request |
+| `min_ttl_s` | 120 | Non-negative integer. How long the token should still be valid, in seconds. Capped at `REFRESH_BUFFER_S` |
+| `required_scopes` | `[]` | Array of scope strings. The vendor's scope policy decides how these are used |
 
-Success returns HTTP 200 with `access_token`, Unix-seconds `expires_at` (may be fractional), and `granted_scopes`. Handle the token only inside the trusted gateway. Refresh can occur inline.
+On success the broker returns HTTP 200 with:
 
-**Lifetime is a target, not an unconditional guarantee.** A newly issued vendor token may live less than the requested minimum and can still be returned. Inspect `expires_at` before use. Requests above the refresh buffer are clamped; audit fields include `min_ttl_clamped_from` and, on relevant waiter paths, `short_ttl`.
+- `access_token` — the vendor token. Keep it inside the trusted gateway.
+- `expires_at` — expiry time in Unix seconds. It may have a fractional part.
+- `granted_scopes` — the scopes the broker has recorded for this connection.
+
+**Lifetime is a target, not a guarantee.**
+
+- A vendor can issue a new token that lives less than `min_ttl_s`. The broker still returns it.
+- Check `expires_at` before you use the token.
+- If you ask for more than the refresh buffer, the broker caps the request. The audit event then includes `min_ttl_clamped_from`. On some waiter paths it also includes `short_ttl`.
 
 ### Scope policy
 
-A non-empty registry ceiling caps requested and recorded scopes. Requests beyond it fail with 403. With no required scopes, initial consent requests the full ceiling for legacy callers. Scope expansion unions held and required scopes within the ceiling.
+Each vendor in the registry has a scope ceiling: the most scopes the broker will ever ask for.
 
-An empty ceiling means permissions are vendor-managed: the broker does not request or enforce `required_scopes` for that vendor. Filtering the stored `granted_scopes` list does **not** reduce actual permissions on the token. Unexpected vendor scope widening is audited as `scope_widened`; enforce operation-level authorization in the gateway/server too.
+When the ceiling is **not empty**:
+
+- It caps both requested and recorded scopes.
+- A request for scopes outside the ceiling fails with 403.
+- If a caller sends no `required_scopes`, first-time consent asks for the whole ceiling. This keeps older callers working.
+- When the broker asks for more scopes, it asks for the scopes already held plus the new required ones, within the ceiling.
+
+When the ceiling is **empty**, the vendor manages permissions:
+
+- The broker does not request or enforce `required_scopes` for that vendor.
+- Filtering the stored `granted_scopes` list does **not** reduce what the token can actually do.
+
+In both cases:
+
+- If a vendor widens scopes unexpectedly, the broker writes a `scope_widened` audit event.
+- Your gateway or server must still check what each operation is allowed to do.
 
 ## Errors and caller actions
 
-Broker problem responses use `application/problem+json` with `type`, `title`, and `detail`, plus fields listed below. Branch on HTTP status and the stable `title`; do not parse human-readable `detail` or the configurable `type` prefix. Framework request-validation errors may instead use FastAPI's 422 response shape.
+Errors come back as `application/problem+json`. Branch on the HTTP status and the `title`.
+
+- Each error has `type`, `title`, and `detail`, plus any extra fields in the table below.
+- The `title` is stable. Do not parse `detail` (it is for people) or the `type` prefix (it is configurable).
+- Request validation errors from the web framework may use FastAPI's 422 response shape instead.
 
 | Status / title | Additional fields | Action |
 |---|---|---|
-| 400 `invalid-request` | — | Correct malformed resolve input |
-| 400 `sub-mismatch` | — | Use the authenticated subject |
-| 400 `invalid-transaction` | — | Obtain a fresh connection URL |
-| 401 `invalid-hub-token` | — | Correct internal token issuer, signature, expiry, audience, or contract |
-| 403 `scope-exceeds-ceiling` | `required`, `ceiling` | Review vendor policy; do not loop consent |
-| 403 `forbidden` | — | Check self-service subject or admin group |
-| 404 `unknown-vendor` | — | Check registry and activation setting |
-| 404 `needs-consent` | `authorize_uri` | No usable grant: connect or reconnect |
-| 404 `no-grant` | — | Delete target is already absent |
-| 409 `needs-reconsent-scope` | `authorize_uri`, `missing_scopes` | Obtain additional vendor consent |
-| 409 `revoke-pending` | — | Resolve cannot use a connection being revoked |
-| 502 `revoke-pending` | — | Delete could not revoke upstream; sweeper will retry |
-| 503 `vendor-unavailable` | — | Retry with backoff; inspect vendor availability / refresh contention |
-| 503 `vault-unavailable` | — | Restore custody; do not ask users to reconnect |
-| 503 `coordination-unavailable` | — | Restore Redis for operations requiring coordination |
-| 503 `hub-unavailable` | — | Restore hub JWKS access / hub availability |
+| 400 `invalid-request` | — | Fix the malformed resolve input |
+| 400 `sub-mismatch` | — | Use the signed-in user's subject |
+| 400 `invalid-transaction` | — | Get a fresh connection URL |
+| 401 `invalid-hub-token` | — | Fix the internal token's issuer, signature, expiry, audience, or contract |
+| 403 `scope-exceeds-ceiling` | `required`, `ceiling` | Review the vendor's policy. Do not loop through consent |
+| 403 `forbidden` | — | Check the self-service subject or the admin group |
+| 404 `unknown-vendor` | — | Check the registry and whether the vendor is enabled |
+| 404 `needs-consent` | `authorize_uri` | No usable connection. Connect or reconnect |
+| 404 `no-grant` | — | Nothing to delete. The connection is already gone |
+| 409 `needs-reconsent-scope` | `authorize_uri`, `missing_scopes` | Ask the user for more vendor permissions |
+| 409 `revoke-pending` | — | Resolve cannot use a connection that is being revoked |
+| 502 `revoke-pending` | — | Delete could not revoke at the vendor. The sweeper will retry |
+| 503 `vendor-unavailable` | — | Retry with backoff. Check whether the vendor is up or refreshes are contending |
+| 503 `vault-unavailable` | — | Restore custody (token storage). Do not ask users to reconnect |
+| 503 `coordination-unavailable` | — | Restore Redis for the operations that need coordination |
+| 503 `hub-unavailable` | — | Restore access to the hub's JWKS, or the hub itself |
 
-Consent callbacks are browser endpoints. They mostly return short HTML pages (400 bad state, issuer, or browser; 403 wrong user; 502 token exchange failed; 503 dependency down). When the hub sign-in callback cannot start the vendor leg, it returns problem JSON 503 instead (`vendor-unavailable`, `vault-unavailable`, or `coordination-unavailable`). [Consent internals](design.md#43-get-v1callbackvendorcodestate) describe state handling.
+The consent callbacks are browser pages, so they mostly return short HTML pages:
+
+- 400 — bad state, issuer, or browser
+- 403 — wrong user
+- 502 — the token exchange failed
+- 503 — a dependency is down
+
+One exception: if the hub sign-in callback cannot start the vendor step, it returns problem JSON 503 (`vendor-unavailable`, `vault-unavailable`, or `coordination-unavailable`). [Consent internals](design.md#43-get-v1callbackvendorcodestate) explain how the broker handles state.
 
 ## Browser consent
 
-Open the supplied `authorize_uri` within five minutes. Keep cookies across redirects. The broker first verifies the browser user's identity through the hub, then begins vendor consent for the same subject. Consent state defaults to ten minutes. The same browser must complete both legs.
+Consent is how a user connects their vendor account. It happens in the user's browser in two steps.
 
-The binding cookie is HttpOnly and SameSite=Lax; its Secure flag requires an HTTPS `BROKER_PUBLIC_URL`. Use the exact registered callback URLs. An expired, cancelled, or consumed transaction requires a new resolve/connection attempt.
+1. The user opens the `authorize_uri` from resolve. They must open it within five minutes.
+2. The broker checks who the user is through the hub.
+3. The broker then starts vendor consent for that same user.
+
+Rules:
+
+- The same browser must finish both steps. Keep cookies across redirects.
+- Consent state lasts ten minutes by default.
+- The binding cookie is HttpOnly and SameSite=Lax. It gets the Secure flag only when `BROKER_PUBLIC_URL` uses HTTPS.
+- Use the exact registered callback URLs.
+- If the transaction expired, was cancelled, or was already used, start again with a new resolve or connection attempt.
 
 ## List and disconnect
 
-`GET /v1/grants` returns `{"grants":[…]}`. Each entry contains `vendor`, `state`, `granted_scopes`, `vendor_user_id`, and `created_at`. Internal `REFRESHING` is reported as `ACTIVE`; tokens are omitted.
+**List.** `GET /v1/grants` returns `{"grants":[…]}`.
 
-`DELETE /v1/grants/{vendor}/{sub}` requires the path subject to match the JWT subject. URL-encode the subject when constructing the path. Success is `{"revoked":true}`. If upstream revocation is unsupported, success additionally includes `"vendor_revocation":"unsupported"`: the local connection is deleted, but vendor permissions can survive. Disconnect at the vendor if required.
+- Each entry has `vendor`, `state`, `granted_scopes`, `vendor_user_id`, and `created_at`.
+- The internal `REFRESHING` state shows as `ACTIVE`.
+- Tokens are never included.
+
+**Disconnect.** `DELETE /v1/grants/{vendor}/{sub}` removes a connection.
+
+- The `sub` in the path must match the JWT subject. URL-encode it when you build the path.
+- Success returns `{"revoked":true}`.
+- If the vendor does not support revocation, success also includes `"vendor_revocation":"unsupported"`. The broker deletes its own copy, but the vendor may still honour the permissions. Disconnect at the vendor too if you need to.
 
 ## Health
 
-Normal response: `{"ok":true,"custody":"ok"}`. Custody outage can return HTTP 200 with `"custody":"unreachable"` to preserve replicas serving valid cached entries. Rejected or nearly expired custody credentials return 503. Health responses are cached for ten seconds. See [the runbook](operations.md#runbook).
+`GET /healthz` normally returns `{"ok":true,"custody":"ok"}`.
+
+- If custody is down, it can still return HTTP 200 with `"custody":"unreachable"`. This keeps replicas serving valid cached entries.
+- If the custody credentials are rejected or nearly expired, it returns 503.
+- The broker caches health responses for ten seconds.
+
+See [the runbook](operations.md#runbook) for what to do next.
 
 ## Legacy gateway mapping
 
-The source lab's gateway expected the following mapping. The broker side is covered by `tests/integration/test_wire_compat.py`; the gateway plugin itself is not in this repository.
+This table shows how the source lab's gateway translated broker results. `tests/integration/test_wire_compat.py` covers the broker side. The gateway plugin itself is not in this repository.
 
 | Broker result | Legacy gateway behavior |
 |---|---|
@@ -98,4 +168,4 @@ The source lab's gateway expected the following mapping. The broker side is cove
 | Plain 409 | 403 carrying the problem title |
 | 5xx | Retriable 503 `vendor_unavailable` |
 
-For a current MCP adapter, use [the integration guide](mcp-integration.md#connecting-a-vendor-during-a-tool-call). Preserve this internal API while adapting the client-facing protocol.
+For a new MCP adapter, follow [the integration guide](mcp-integration.md#connecting-a-vendor-during-a-tool-call) instead. Change the client-facing protocol if you need to, but keep this internal API as it is.

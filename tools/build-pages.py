@@ -27,25 +27,28 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 
 SECTIONS = [
-    ("overview", "Overview", "overview.md", "What the broker does and where it fits in an MCP deployment."),
-    ("quickstart", "Quickstart", "quickstart.md", "Run one complete local consent, resolve, and disconnect flow."),
-    ("mcp", "Integrate with MCP", "mcp-integration.md", "Separate MCP authorization, the internal broker contract, and vendor consent."),
+    ("overview", "Overview", "overview.md",
+     "Let AI assistants use GitHub as each signed-in person, without handling tokens."),
+    ("quickstart", "Quickstart", "quickstart.md",
+     "Try it on your laptop: sign in, connect GitHub, and call tools from Claude Code."),
     ("gateway", "MCP Gateway", "mcp-gateway.md",
-     "Claude Code and other MCP clients to GitHub's MCP server, through the broker."),
-    ("api", "API Reference", "api.md", "The internal REST contract, stable errors, and caller actions."),
-    ("operations", "Deploy and Operate", "operations.md", "Provision custody, configure replicas, and respond to failures."),
-    ("security", "Security and MCP Alignment", "security.md", "Evidence, ownership, limitations, and the current MCP baseline."),
+     "How the gateway works, what your sign-in service must do, and how to configure it."),
+    ("mcp", "Connect Your Own MCP Server", "mcp-integration.md",
+     "Use the token broker from an MCP server or gateway you build yourself."),
+    ("api", "Broker API", "api.md",
+     "The broker's internal REST API: requests, answers, and what to do on each error."),
+    ("operations", "Deploy and Operate", "operations.md",
+     "Set up storage, configure the broker, and fix common problems."),
+    ("security", "Security", "security.md",
+     "Which protections are built in, which are partial, and what we tested."),
     ("design", "Design", "design.md",
-     "The normative design: role, standards basis, trust boundaries, API, "
-     "state machine, failure modes, deployment profiles."),
+     "The broker's full design: roles, rules, states, and failure handling."),
     ("lifecycle", "Token Lifecycle", "token-lifecycle.md",
-     "Every path a grant takes, as sequence diagrams — consent, refresh, "
-     "multi-replica takeover, revocation, outages."),
+     "Every path a connection takes, step by step: connect, refresh, disconnect, outages."),
     ("smoke-tests", "Smoke Tests", "smoke-tests.md",
-     "The illustrated hands-on walkthrough: every security property "
-        "verified with curl and a browser."),
-    ("adr", "Redis ADR", "adr/0001-redis-coordination.md",
-     "Why Redis coordinates multi-replica refresh and consent state."),
+     "A hands-on tour that checks each protection with curl and a browser."),
+    ("adr", "Redis Decision", "adr/0001-redis-coordination.md",
+     "Why Redis coordinates several brokers running side by side."),
 ]
 
 SECTION_BY_FILE = {fname: sid for sid, _, fname, _ in SECTIONS}
@@ -126,7 +129,7 @@ TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Vendor Token Broker — Documentation</title>
+<title>MCP Gateway and Token Broker — Documentation</title>
 <style>
   /* Beige / dark-grey theme: warm paper in light mode, charcoal in dark. */
   :root {

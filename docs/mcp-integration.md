@@ -1,36 +1,71 @@
 # Integrate with MCP
 
-**Baseline: MCP 2026-07-28 · reviewed 2026-09-26.** The broker implements an internal REST contract. This repository also ships an [MCP gateway](mcp-gateway.md) for GitHub's MCP server that implements the MCP side described here; use this page to integrate the broker with your own MCP server or gateway instead.
+**Baseline: MCP 2026-07-28 · reviewed 2026-09-26.**
+
+Use this page to connect **your own** MCP server or gateway to the broker.
+
+- **Just want GitHub?** You do not need this page. The shipped [MCP gateway](mcp-gateway.md) already connects GitHub's MCP server to the broker and handles all the MCP work described here.
+- The broker itself does not speak MCP. It offers an internal REST API ([API reference](api.md)). Your gateway sits between MCP clients and that API.
 
 ## Three authorization boundaries
 
+Three separate credentials are in play. Keep them apart.
+
 | Boundary | Credential and validator | Owner |
 |---|---|---|
-| MCP client → MCP server | Access token issued for that MCP resource; validated by the MCP server | Your MCP client and authorization server; the shipped gateway validates it |
-| Gateway → broker | Internal hub JWT, revalidated by `HubValidator` | Your identity handoff and this broker |
+| MCP client → MCP server | Access token issued for that MCP resource; checked by the MCP server | Your MCP client and authorization server; the shipped gateway checks it |
+| Gateway → broker | Internal hub JWT, checked again by `HubValidator` | Your identity handoff and this broker |
 | Gateway → vendor API | Vendor access token obtained through broker consent | Gateway, broker, vendor |
 
-The hub JWT's `mcp_contract` claim, `mcp://tier/*` audiences, and algorithm policy are project conventions. They are not MCP protocol versions or standard MCP claim names. Do not blindly forward an MCP-server token to the broker: arrange an internal credential valid for the broker's configured issuer, audience, and contract. The shipped gateway does this with [RFC 8693 token exchange at the hub](mcp-gateway.md#identity-handoff-what-the-hub-must-do).
+**The hub** is your company's sign-in service (identity provider). The **hub JWT** is the internal token it issues, which the broker accepts.
 
-At the MCP boundary, implement protected-resource metadata, authorization-server discovery, resource indicators, intended-audience validation, and appropriate HTTP authorization challenges. The broker does not expose those MCP endpoints; the shipped gateway does. [MCP authorization requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
+**Do not forward the MCP client's token to the broker.** Get an internal credential that matches the broker's configured issuer, audience, and contract instead. The shipped gateway does this with a [token exchange at the hub](mcp-gateway.md#identity-handoff-what-the-hub-must-do) (RFC 8693).
+
+These parts of the hub JWT are this project's own conventions. They are not MCP protocol versions or standard MCP claim names:
+
+- the `mcp_contract` claim
+- the `mcp://tier/*` audiences
+- the algorithm policy
+
+**Your MCP server must handle MCP authorization itself.** The broker does not provide these MCP endpoints. The shipped gateway does. You need:
+
+- protected-resource metadata
+- authorization-server discovery
+- resource indicators
+- checking the token's intended audience
+- the right HTTP authorization challenges
+
+See [MCP authorization requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization).
 
 ## Calling the broker
 
-1. Validate and authorize the MCP tool operation in your server.
-2. Map that operation to an approved vendor and required vendor scopes.
+For each tool call that needs a vendor:
+
+1. Check and authorize the MCP tool operation in your server.
+2. Map the operation to an approved vendor and the vendor scopes it needs.
 3. Have the trusted gateway call [resolve](api.md#resolve-a-token) with the internal hub JWT.
 4. On success, use the token only for the approved vendor API call. Keep it out of tool results, model context, browser storage, and logs.
-5. Return business data to the MCP client. Strip the hub JWT from the vendor request.
+5. Return business data to the MCP client. Remove the hub JWT from the vendor request.
 
-The broker returns tokens to any caller satisfying its internal authentication contract. Network isolation and gateway workload authentication are therefore deployment requirements, not properties the REST response can enforce.
+The broker gives a token to any caller that passes its internal authentication. So you must isolate the network and authenticate the gateway workload when you deploy. The REST response cannot enforce this for you.
 
 ## Connecting a vendor during a tool call
 
-**The shipped gateway implements this; see [its consent behavior](mcp-gateway.md#connecting-github-during-a-tool-call).** The guidance below applies to any adapter. A missing vendor connection is distinct from a client's authorization to call the MCP server.
+**The shipped gateway already does this. See [its consent behavior](mcp-gateway.md#connecting-github-during-a-tool-call).** The guidance below applies to any adapter.
 
-For MCP 2026-07-28, an adapter can put URL-mode `elicitation/create` in an `InputRequiredResult` when the client advertises `elicitation.url`. Point its URL at the broker's `authorize_uri`; the MCP bearer token stays unchanged. The client asks permission before navigation. Use the negotiated protocol revision's SDK to build the full envelope. [URL-mode elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation)
+A missing vendor connection is a different problem from the client's permission to call the MCP server. Handle it separately.
 
-The nested request has this shape (illustrative; the URL comes from resolve). Clients on 2025-11-25 receive the same request directly as `elicitation/create` during the call:
+**How to ask the user to connect (MCP 2026-07-28):**
+
+- If the client advertises `elicitation.url`, put a URL-mode `elicitation/create` inside an `InputRequiredResult`.
+- Set its URL to the broker's `authorize_uri`.
+- The MCP bearer token stays the same.
+- The client asks the user for permission before it opens the URL.
+- Use the SDK for the negotiated protocol revision to build the full envelope.
+
+See [URL-mode elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation).
+
+The nested request looks like this. This is an example; the URL comes from resolve. Clients on 2025-11-25 get the same request directly as `elicitation/create` during the call.
 
 ```json
 {
@@ -43,29 +78,54 @@ The nested request has this shape (illustrative; the URL comes from resolve). Cl
 }
 ```
 
-Adapter decisions:
+**What the adapter should do with each broker result:**
 
 | Broker outcome | Adapter action |
 |---|---|
-| 200 | Call the approved vendor using the returned token |
-| 404 `needs-consent` | Request a vendor connection through the supported browser flow |
-| 409 `needs-reconsent-scope` | Explain additional vendor permissions and use the supplied connection URL |
-| 409 `revoke-pending` | Report that disconnect is pending; do not restart consent automatically |
-| 503 | Apply bounded retry/backoff; do not interpret an outage as missing consent |
-| 401 `invalid-hub-token` | Repair internal authentication; do not assume the MCP client's own token expired |
+| 200 | Call the approved vendor with the returned token |
+| 404 `needs-consent` | Ask for a vendor connection through the supported browser flow |
+| 409 `needs-reconsent-scope` | Explain the extra vendor permissions and use the supplied connection URL |
+| 409 `revoke-pending` | Say that a disconnect is pending. Do not restart consent automatically |
+| 503 | Retry a limited number of times with backoff. Do not treat an outage as missing consent |
+| 401 `invalid-hub-token` | Fix internal authentication. Do not assume the MCP client's own token expired |
 
-After a browser flow, confirm the connection before resolving again with the same authenticated user and required scopes. User acceptance alone does not prove the connection succeeded, and each unsuccessful resolve mints a new connection link, so poll the [grant list](api.md) rather than resolve while waiting. A suggested adapter policy is at most one consent retry per operation before returning an actionable error. Stop on decline or cancellation. If URL elicitation is unsupported, return a clear tool error and a supported manual connection route in your application; do not ask for vendor tokens in chat or form fields.
+**After the browser flow:**
 
-Test the adapter separately for cancellation, unsupported capabilities, expired connection URLs, scope expansion, identity handoff, token redaction, and retry limits. The gateway's end-to-end tests (`tests/integration/test_mcp_gateway.py`) exercise these with a real MCP client.
+- Confirm the connection before you resolve again, with the same user and required scopes.
+- The user accepting the prompt does not prove the connection worked.
+- Each failed resolve creates a new connection link. So while you wait, poll the [grant list](api.md#list-and-disconnect), not resolve.
+- A suggested policy: at most one consent retry per operation, then return an error the user can act on.
+- Stop if the user declines or cancels.
+- If the client does not support URL elicitation, return a clear tool error. Point to a manual connection route that your application supports.
+- Never ask for vendor tokens in chat or form fields.
 
-Do not rely on `notifications/tools/list_changed` to reveal tools after a connection: from 2026-07-28 it may only be sent on `subscriptions/listen`. List tools from the start, as the [gateway's pinned tool list](mcp-gateway.md#tools) does.
+**Test these cases in your adapter:** cancellation, unsupported capabilities, expired connection URLs, scope expansion, identity handoff, token redaction, and retry limits. The gateway's end-to-end tests (`tests/integration/test_mcp_gateway.py`) cover these with a real MCP client.
+
+**List all tools from the start.** Do not count on `notifications/tools/list_changed` to reveal tools after a connection. From 2026-07-28, servers may only send it on `subscriptions/listen`. The [gateway's pinned tool list](mcp-gateway.md#tools) shows this approach.
 
 ## Existing gateway compatibility
 
-The internal broker API remains unchanged. The source lab's Kong plugin used custom client-facing `401 authorization_required` and 401 step-up responses for broker 404/409 consent results. That is a legacy adapter convention, not a demonstrated current MCP wire flow. The plugin is not included here. See [the legacy mapping](api.md#legacy-gateway-mapping) when preserving an existing deployment.
+The internal broker API has not changed.
+
+- The source lab's Kong plugin turned broker 404/409 consent results into custom client-facing `401 authorization_required` and 401 step-up responses.
+- That is an old adapter convention. It has not been shown to work as a current MCP wire flow.
+- The plugin is not in this repository.
+
+If you are keeping an existing deployment, see [the legacy mapping](api.md#legacy-gateway-mapping).
 
 ## Protocol revision and enterprise authorization
 
-Use the MCP implementation's negotiated revision for capabilities and message envelopes. The 2026-07-28 release introduces per-request protocol capabilities, Multi Round-Trip Requests, and routing headers, and deprecates Dynamic Client Registration in favor of Client ID Metadata Documents. These are integration-layer responsibilities. [Release notes](https://blog.modelcontextprotocol.io/posts/2026-07-28/)
+**Use the revision your MCP implementation negotiated** for capabilities and message envelopes. The 2026-07-28 release:
 
-Enterprise-Managed Authorization is an optional extension involving the client, enterprise IdP, and resource authorization server. This broker does not implement ID-JAG exchange. Its `ema_status` registry field tracks migration readiness only; changing it does not disable consent or drain tokens. Evaluate whether a replacement also supplies the downstream vendor access your tools need. [Enterprise-Managed Authorization](https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization)
+- adds per-request protocol capabilities, Multi Round-Trip Requests, and routing headers
+- deprecates Dynamic Client Registration in favor of Client ID Metadata Documents
+
+Your integration layer handles these, not the broker. See the [release notes](https://blog.modelcontextprotocol.io/posts/2026-07-28/).
+
+**Enterprise-Managed Authorization** is an optional extension. It involves the client, the enterprise identity provider, and the resource's authorization server.
+
+- This broker does not implement ID-JAG exchange.
+- The registry field `ema_status` only tracks how ready a vendor is to migrate. Changing it does not turn off consent or remove tokens.
+- If you consider it as a replacement, check that it also gives your tools the vendor access they need.
+
+See [Enterprise-Managed Authorization](https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization).

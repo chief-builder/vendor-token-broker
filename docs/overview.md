@@ -1,64 +1,78 @@
-# Vendor Token Broker
+# Overview
 
-Store each user's vendor credentials once. Resolve a usable token when a trusted gateway needs to call that vendor, refresh it when needed, and revoke the connection when the user disconnects.
+Let Claude Code and other AI assistants use GitHub on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.
 
-The broker is an internal OAuth client and credential custodian. It exposes a REST API for the gateway. A separate [MCP gateway](mcp-gateway.md) in this repository connects MCP clients such as Claude Code to GitHub's MCP server through it.
+This project has two parts:
 
-## Start here
+- **The MCP gateway.** Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to GitHub's own MCP server, using the GitHub account of the person who is signed in.
+- **The token broker.** It keeps each person's GitHub token safe, refreshes it when it expires, and deletes it when the person disconnects. The gateway asks it for a token on every request.
 
-| Your task | Start with |
-|---|---|
-| Run a complete local connection | [Quickstart](quickstart.md) |
-| Use GitHub tools from Claude Code or another MCP client | [MCP gateway](mcp-gateway.md) |
-| Connect your own MCP server or gateway | [Integrate with MCP](mcp-integration.md) |
-| Implement a broker caller | [API reference](api.md) |
-| Provision, deploy, or troubleshoot | [Deploy and operate](operations.md) |
-| Assess controls and limitations | [Security and MCP alignment](security.md) |
-| Understand refresh and concurrency | [Design](design.md) and [token lifecycle](token-lifecycle.md) |
+You get:
 
-## Where it fits
+- **One sign-in.** People sign in with your company's sign-in service, then connect GitHub once in their browser.
+- **No token handling.** The assistant, the chat, and the logs never see a GitHub token.
+- **Read-only GitHub tools by default**, from GitHub's official MCP server.
+
+## How it works
 
 ```mermaid
 flowchart LR
-    C["MCP client"] -->|"MCP access token"| S["MCP server"]
-    S -->|"authorized vendor operation"| G["Trusted egress gateway"]
-    G -->|"internal hub JWT + resolve"| B["Vendor Token Broker"]
-    B -->|"vendor access token"| G
-    G -->|"vendor access token + API call"| V["Vendor API"]
-    B <-->|"read / write credentials"| K["OpenBao or Vault"]
+    C["AI assistant<br/>(Claude Code)"] -->|"1. request, signed in as Alice"| G["MCP gateway"]
+    G -->|"2. whose token?"| B["Token broker"]
+    B -->|"3. Alice's GitHub token"| G
+    G -->|"4. same request, as Alice"| M["GitHub MCP server"]
+    B <-->|"stored safely"| K["Secret store<br/>(OpenBao or Vault)"]
+    C -.->|"sign in"| H["Sign-in service<br/>(Keycloak)"]
 ```
 
-The MCP server validates access to its own resource. The gateway supplies a separately valid internal hub JWT to the broker. The broker validates that JWT and returns the user's vendor token to the trusted gateway. The gateway must strip internal credentials before calling the vendor and keep vendor tokens out of MCP results.
+1. The assistant calls a GitHub tool, such as "who am I?". It sends a sign-in token that proves who the person is.
+2. The gateway checks that token. It swaps it at the sign-in service for a separate internal token, and asks the broker for that person's GitHub token.
+3. The broker returns the GitHub token, refreshing it first if it's about to expire.
+4. The gateway calls GitHub with it, returns the answer, and forgets the token.
 
-This repository implements the broker and, for GitHub's MCP server, the MCP server and gateway roles in one service: the [MCP gateway](mcp-gateway.md), which also performs the identity handoff by token exchange at the hub. Other MCP servers integrate through the same broker API. See the [three authorization boundaries](mcp-integration.md#three-authorization-boundaries).
+Each hop uses its own credential. The assistant's sign-in token never reaches GitHub or the broker, and the GitHub token never reaches the assistant.
 
-## A user's connection
+## The first time someone uses it
 
-1. A tool needs a vendor operation. The gateway asks the broker for a token.
-2. If no usable connection exists, the broker returns a short-lived connection URL.
-3. The user opens that URL, signs in through the enterprise identity provider, and authorizes the vendor in the same browser.
-4. The gateway retries. The broker returns a vendor token, refreshing it when necessary.
-5. The user can disconnect. The broker attempts vendor revocation before deleting the stored connection; unsupported revocation is reported explicitly.
+1. They add the gateway to Claude Code and sign in with the company sign-in service.
+2. They ask for something from GitHub. Their GitHub account isn't connected yet, so Claude Code asks to open a link.
+3. In the browser, they sign in again if needed and approve access on GitHub.
+4. The request finishes. From then on, requests just work, and the broker keeps the token fresh.
+5. They can disconnect at any time. The broker asks GitHub to cancel the token, then deletes its copy.
 
-## What is available
+## Where to go next
 
-Software **1.1.0** is marked **unreleased** in the repository changelog. The implementation includes browser-bound consent, three vendor client-authentication methods, in-memory or Redis coordination, versioned credential storage, and an MCP gateway for GitHub's MCP server tested with Keycloak and Claude Code.
-
-The documentation was reviewed against MCP **2026-07-28** on **2026-09-26**. [Security and MCP alignment](security.md) records which controls are implemented, partial, externally owned, or planned. There is no blanket MCP conformance claim.
-
-## Terms used in these guides
-
-| Term | Meaning here |
+| You want to | Read |
 |---|---|
-| Hub | Enterprise identity provider; validates workforce identity and issues the internal hub JWT |
-| Grant / connection | A user's stored authorization to one vendor |
-| Custody | Protected storage for vendor tokens and client credentials |
-| Scope ceiling | Registry policy limiting requested and recorded scopes; it cannot shrink permissions on a vendor-issued token |
-| Single-flight | Concurrent callers share one refresh operation |
-| CAS | Compare-and-swap: a write succeeds only if the stored version still matches |
-| STALE | A stored connection requiring the user to reconnect |
-| EMA | Enterprise-Managed Authorization, an optional MCP extension and a possible future migration path |
+| Try it on your laptop | [Quickstart](quickstart.md) |
+| Understand and configure the gateway | [MCP gateway](mcp-gateway.md) |
+| Connect your own MCP server instead | [Connect your own MCP server](mcp-integration.md) |
+| Call the broker directly | [Broker API](api.md) |
+| Deploy, configure, or troubleshoot | [Deploy and operate](operations.md) |
+| Check the security controls and limits | [Security](security.md) |
+| Learn how refresh and concurrency work | [Design](design.md) and [Token lifecycle](token-lifecycle.md) |
 
-## Project background
+## Status
 
-Extracted from the internal `mcp-healthcare-reference` lab at commit `ab699f3a46bb18ab96cb9d17f3cb9e883e6011c6`. The [design](design.md) describes the implementation; [ADR-0001](adr/0001-redis-coordination.md) explains the Redis choice.
+Software **1.1.0**, marked **unreleased** in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and GitHub's real MCP server.
+
+These docs were checked against MCP **2026-07-28** (the MCP specification version) on **2026-09-26**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
+
+## Words used in these docs
+
+| Word | Meaning |
+|---|---|
+| MCP | Model Context Protocol: how AI assistants talk to tool servers |
+| MCP client | The AI assistant side, such as Claude Code |
+| Hub | Your company's sign-in service (identity provider), such as Keycloak |
+| Vendor | An outside service that people connect, such as GitHub |
+| Connection (grant) | A person's stored permission to use one vendor |
+| Custody | The protected storage that holds tokens and app secrets |
+| Scope | A named permission, such as "read issues" |
+| Refresh | Swapping an expiring token for a new one without asking the person again |
+| STALE | A connection that no longer works, so the person must reconnect |
+| Single-flight | When many requests need a refresh at once, only one does it and the rest share the result |
+
+## Background
+
+The token broker was taken from the internal `mcp-healthcare-reference` lab at commit `ab699f3a46bb18ab96cb9d17f3cb9e883e6011c6`. The MCP gateway was added in this repository. For the reasoning behind the design, see [Design](design.md) and the [Redis decision record](adr/0001-redis-coordination.md).

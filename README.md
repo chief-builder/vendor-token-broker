@@ -1,49 +1,59 @@
 # vendor-token-broker
 
-OAuth credential custodian for third-party SaaS vendors: acquires,
-custodies, refreshes, and revokes vendor tokens per enterprise user, and
-resolves them per-request for an egress gateway.
+Let Claude Code and other AI assistants use GitHub as each signed-in person,
+without anyone handling tokens.
 
-**Custodian, not issuer.** The broker issues no access tokens and exposes no
-token-minting or JWKS endpoint — the route table is audited for exactly that
-on every push (`tests/unit/test_routes.py`). Vendor client-authentication
-assertions (`private_key_jwt`) may be signed with keys from custody.
+- **MCP gateway** (`src/mcp_gateway/`). Your assistant connects to it like
+  any MCP server. It calls GitHub's official MCP server as the person who is
+  signed in, with read-only tools by default. If their GitHub account isn't
+  connected yet, the assistant shows a link to connect it.
+  ([docs](docs/mcp-gateway.md))
+- **Token broker** (`src/token_broker/`). It keeps each person's vendor
+  tokens (GitHub and others) in OpenBao or Vault, refreshes them before they
+  expire, and cancels them at the vendor when the person disconnects. The
+  gateway asks it for a token on every call.
 
-## What it does
+Neither part ever shows a token to the assistant or writes one to a log.
 
-- **Resolve** (`POST /v1/tokens/resolve`): the egress gateway presents the
-  caller's hub JWT (independently re-validated: algorithms pinned to `HUB_ALGORITHMS` —
-  default PS256/ES256, RS256 and HMAC never allowed — issuer,
-  exactly one tier audience, contract version) and gets back a live vendor
-  access token — refreshed inline when needed, targeting `min_ttl_s` with clamping and short-lived-token exceptions
-  (see [API reference](docs/api.md#resolve-a-token)).
-- **Consent** (`/v1/authorize/{vendor}` → hub sign-in → `/v1/callback/_hub`
-  → vendor AS → `/v1/callback/{vendor}`): the browser must sign in at the hub
-  as the user the link was issued to, and the same browser (binding cookie)
-  must finish both legs. PKCE S256 on both legs, single-use `state`, RFC 9207
-  `iss` validation including the omission case, scopes capped by the registry
-  ceiling.
-- **Lifecycle**: only one request refreshes a user's credential at a time
-  (single-flight), and generation compare-and-swap prevents an older token
-  pair from overwriting a newer one. Definitively invalid grants become
-  `STALE`, require the user to reconnect, and can trigger an organization-wide
-  mass-STALE alert. Deletion revokes the credential at the vendor first
-  (RFC 7009) before removing it locally. If the custody backend is unavailable,
-  the broker uses only its in-memory cache grace (`CACHE_TTL_S`, default 60 s)
-  and then fails closed with 503
-  rather than treating the grant as missing or supplying an unverified token.
-- **Client auth to vendors**: `client_secret_post`, `client_secret_basic`,
-  or `private_key_jwt` (RFC 7523), per registry entry.
-- **MCP gateway** (`src/mcp_gateway/`, a separate service): MCP clients such
-  as Claude Code sign in at the hub and call GitHub's MCP server through it.
-  It exchanges the MCP token for a hub JWT (RFC 8693), resolves the user's
-  GitHub token here, and forwards read-only allowlisted tools; a missing
-  connection becomes an in-client prompt to connect GitHub
-  ([docs](docs/mcp-gateway.md)).
+**The broker keeps tokens; it never creates them.** It has no endpoint that
+issues access tokens or publishes signing keys, and a test checks its seven
+routes on every push (`tests/unit/test_routes.py`). It may sign login
+requests to vendors (`private_key_jwt`) with keys from storage.
 
-## Quickstart (self-contained, no external dependencies)
+## How the broker behaves
 
-Requires Docker and Python 3.12.
+- **Hands out tokens** (`POST /v1/tokens/resolve`). The gateway sends an
+  internal sign-in token (the "hub JWT"). The broker checks it again itself:
+  only the algorithms in `HUB_ALGORITHMS` (default PS256/ES256, never RS256
+  or HMAC), the issuer, exactly one tier audience, and the contract version.
+  It returns a live vendor token, refreshing it first if needed. It aims for
+  `min_ttl_s` of remaining life, with limits and exceptions for vendors whose
+  tokens are short-lived ([details](docs/api.md#resolve-a-token)).
+- **Connects accounts** (`/v1/authorize/{vendor}` → sign in at the hub →
+  `/v1/callback/_hub` → vendor → `/v1/callback/{vendor}`). The person must
+  sign in as the user the link was made for. The same browser must finish
+  every step (a cookie ties them together). Both steps use PKCE, each link
+  works once, the vendor's `iss` is checked (RFC 9207, including when it is
+  missing), and scopes are capped by the vendor registry.
+- **Keeps tokens fresh safely.** Only one request refreshes a person's token
+  at a time. A compare-and-swap check stops an older token from overwriting a
+  newer one. A connection that can't be refreshed any more becomes `STALE`,
+  and the person must reconnect. If many go stale at once at one vendor, the
+  broker raises an alert.
+- **Disconnects cleanly.** It cancels the token at the vendor first
+  (RFC 7009), then deletes its copy.
+- **Fails safe.** If token storage is down, it serves only what is in its
+  short memory cache (`CACHE_TTL_S`, default 60 s). After that it answers
+  503. It never treats "storage down" as "not connected", and never hands out
+  a token it couldn't check.
+- **Signs in to vendors** with `client_secret_post`, `client_secret_basic`,
+  or `private_key_jwt` (RFC 7523), set per vendor in the registry.
+
+## Quickstart
+
+You need Docker and Python 3.12. The [Quickstart guide](docs/quickstart.md)
+walks through signing in and using GitHub tools from Claude Code. Setup and
+tests:
 
 ```sh
 git clone <this-repo> vendor-token-broker && cd vendor-token-broker
@@ -51,14 +61,15 @@ python3.12 -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements-dev.lock
 .venv/bin/pip install --no-deps -e .
 
-# Bring up the acceptance stack: OpenBao (+ scoped-token init), Redis,
-# a hostile mock vendor AS, a hub-issuer stub, and the broker.
-docker compose -f tests/stack/docker-compose.yml up -d --build --wait
+# Everything for the gateway: Keycloak, the gateway, a broker, a GitHub
+# stand-in, plus the broker test stack (OpenBao, Redis, test vendor, hub stub).
+docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
 
 .venv/bin/pytest tests/unit tests/integration -m "not external and not multi and not gateway"
+.venv/bin/pytest tests/integration -m "gateway and not external"
 ```
 
-Multi-replica proof (two redis-coordinated replicas behind round-robin nginx):
+Two brokers sharing work through Redis, behind a load balancer:
 
 ```sh
 docker compose -f tests/stack/docker-compose.yml --profile multi up -d --build --wait
@@ -69,16 +80,22 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 ## Dependencies
 
 Installs are hash-pinned: `requirements.lock` (runtime + redis, used by the
-Docker image) and `requirements-dev.lock` (adds the dev tools, used by CI).
-Both are generated from `pyproject.toml` and work on every platform. After
+broker image), `requirements-gateway.lock` (the gateway image), and
+`requirements-dev.lock` (adds the dev tools and the gateway, used by CI).
+All three are generated from `pyproject.toml` and work on every platform. After
 changing a dependency in `pyproject.toml`, regenerate them:
 
 ```sh
 uv pip compile pyproject.toml --extra redis --universal --python-version 3.12 \
   --generate-hashes -o requirements.lock
-uv pip compile pyproject.toml --extra redis --extra dev --universal --python-version 3.12 \
-  --generate-hashes -o requirements-dev.lock
+uv pip compile pyproject.toml --extra redis --extra dev --extra gateway --universal \
+  --python-version 3.12 --generate-hashes -o requirements-dev.lock
+uv pip compile pyproject.toml --extra gateway --universal --python-version 3.12 \
+  --generate-hashes -o requirements-gateway.lock
 ```
+
+The gateway image uses `requirements-gateway.lock`, so FastMCP never enters
+the broker image.
 
 ## Running against your own stack
 
@@ -115,14 +132,13 @@ asserts all of it on every CI run.
 
 Published site: **https://chief-builder.github.io/vendor-token-broker-docs/**
 
-- [Overview](docs/overview.md) and [quickstart](docs/quickstart.md)
-- [MCP gateway](docs/mcp-gateway.md) (GitHub's MCP server via the broker) and
-  [integrate with MCP](docs/mcp-integration.md)
-- [API reference](docs/api.md)
-- [Deploy and operate](docs/operations.md)
-- [Security and MCP alignment](docs/security.md)
+- [Overview](docs/overview.md) and [Quickstart](docs/quickstart.md)
+- [MCP gateway](docs/mcp-gateway.md)
+- [Connect your own MCP server](docs/mcp-integration.md) and the
+  [broker API](docs/api.md#resolve-a-token)
+- [Deploy and operate](docs/operations.md) and [Security](docs/security.md)
 - [Design](docs/design.md), [token lifecycle](docs/token-lifecycle.md),
-  [manual verification](docs/smoke-tests.md), and [Redis ADR](docs/adr/0001-redis-coordination.md)
+  [smoke tests](docs/smoke-tests.md), and the [Redis decision](docs/adr/0001-redis-coordination.md)
 
 Build with `.venv/bin/python tools/build-pages.py`; verify with
 `.venv/bin/python tools/build-pages.py --check`. See

@@ -1,12 +1,19 @@
 # Manual smoke tests — illustrated walkthrough
 
-A hands-on walkthrough of selected broker security and lifecycle properties, run
-against the self-contained test stack with nothing but `curl` and a
-browser. Outputs below illustrate expected responses; identifiers and timestamps
-vary. See the [verification record](security.md#verification-record) for dated suite results. The same properties are enforced continuously by the
-automated suite (`tests/unit`, `tests/integration`).
+This page walks you through key security and lifecycle checks by hand. You
+run them against the self-contained test stack, using only `curl` and a
+browser.
 
-**Conventions used throughout** (wrap-proof for narrow terminals):
+- The outputs below show what to expect. Ids and timestamps will differ.
+- For dated suite results, see the
+  [verification record](security.md#verification-record).
+- The automated suite (`tests/unit`, `tests/integration`) checks the same
+  properties on every run.
+- These tests exercise the broker directly. For the MCP gateway that sits
+  in front of it, see [the MCP gateway page](mcp-gateway.md).
+
+**Conventions used on this page.** The commands are written to fit narrow
+terminals:
 
 ```sh
 echo '{"vendor":"mockhub"}' > /tmp/req.json    # resolve request body
@@ -17,23 +24,26 @@ echo '{"vendor":"mockhub"}' > /tmp/req.json    # resolve request body
 
 ## The stack under test
 
+The test stack runs in Docker Compose. Your terminal and browser play the
+part of the trusted gateway and the user.
+
 ```mermaid
 flowchart LR
     subgraph host["Your machine"]
-        T["Terminal / Browser<br/>(plays the trusted gateway + user)"]
+        T["Terminal / Browser<br/>(acts as the trusted gateway + user)"]
     end
     subgraph compose["docker compose — tests/stack"]
         B["vtb-broker :8300<br/>the service under test"]
-        H["vtb-hub-stub :8320<br/>fake workforce IdP<br/>JWKS + /_test/token mint"]
+        H["vtb-hub-stub :8320<br/>fake company sign-in (IdP)<br/>JWKS + /_test/token mint"]
         M["vtb-mock-vendor :8310<br/>hostile vendor AS<br/>60s tokens, rotating RTs"]
-        V["vtb-openbao :8210<br/>KV-v2 custody"]
+        V["vtb-openbao :8210<br/>KV-v2 token storage"]
         R["vtb-redis<br/>coordination (COORD_BACKEND=redis)"]
-        I["vtb-openbao-init<br/>one-shot provisioner"]
+        I["vtb-openbao-init<br/>one-time setup job"]
     end
     T -- "resolve / consent" --> B
     T -- "mint test JWTs" --> H
-    B -- "validate hub JWT (JWKS)" --> H
-    B -- "OAuth legs" --> M
+    B -- "check hub JWT (JWKS)" --> H
+    B -- "OAuth steps" --> M
     B -- "read/write grants (CAS)" --> V
     B -.-> R
     I -- "mounts + ACL policy +<br/>scoped token (never root)" --> V
@@ -50,15 +60,28 @@ flowchart LR
     class T,H neutral
 ```
 
-The mock vendor is deliberately hostile in the ways that matter: 60-second
-access tokens (every resolve lands inside the refresh buffer), rotating
-refresh tokens where replaying a consumed one **revokes the whole family**
-(GitHub-class), PKCE verified for real, RFC 8414 metadata + RFC 9207 `iss`
-on redirects, RFC 7009 revocation.
+Terms used on this page:
+
+- **Hub** — your company's sign-in service (identity provider). Here, a
+  stub plays it. A **hub JWT** is the signed token it issues for a user.
+- **Custody** — where the broker stores vendor tokens (OpenBao KV-v2).
+- **Grant** — one user's stored vendor tokens for one vendor.
+
+The mock vendor is hostile on purpose, in the ways that matter:
+
+- Access tokens last 60 seconds, so every resolve lands inside the refresh
+  buffer.
+- Refresh tokens rotate. Sending a used one again **revokes the whole
+  family** (GitHub-class).
+- It checks PKCE for real.
+- It publishes RFC 8414 metadata and adds the RFC 9207 `iss` to redirects.
+- It supports RFC 7009 revocation.
 
 ---
 
 ## Test 1 — stack up, scoped custody token
+
+Start the stack and check that the broker does not use a root token.
 
 ```sh
 docker compose -f tests/stack/docker-compose.yml up -d --build --wait
@@ -66,7 +89,7 @@ curl -s http://localhost:8300/healthz        # -> {"ok":true,"custody":"ok"}
 docker logs vtb-openbao-init
 ```
 
-Observed provisioner receipt:
+The setup job prints:
 
 ```
 ==> Waiting for OpenBao at http://openbao:8200...
@@ -75,16 +98,18 @@ Observed provisioner receipt:
 ==> OpenBao initialized (scoped broker token ready)
 ```
 
-**What this proves:** the broker runs with a policy-scoped custody token
-(read/write on `vendor-tokens/*`, read-only on `vendor-clients/*`) — never
-root. Vendor client credentials (including the `private_key_jwt` signing
-key) live in custody, not in the registry or environment.
+**What this proves:**
+
+- The broker uses a custody token limited by policy, never root. It can
+  read and write `vendor-tokens/*` and only read `vendor-clients/*`.
+- Vendor client credentials live in custody, not in the registry or the
+  environment. This includes the `private_key_jwt` signing key.
 
 ---
 
 ## Test 2 — hub-JWT validation at the door, consent challenge
 
-Mint a workforce JWT from the hub-stub, then ask the broker to resolve:
+Get a hub JWT from the hub stub, then ask the broker to resolve a token:
 
 ```sh
 curl -s -X POST localhost:8320/_test/token -d '{"sub":"wf-smoke"}' -o /tmp/mint.json
@@ -93,7 +118,7 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
      -H "Authorization: Bearer $(cat /tmp/tok)"
 ```
 
-Observed:
+Expected:
 
 ```json
 {"type":"urn:vendor-token-broker:needs-consent","title":"needs-consent",
@@ -114,25 +139,32 @@ sequenceDiagram
         participant V as OpenBao
     end
     C->>B: POST /v1/tokens/resolve (hub JWT)
-    Note over B: re-validate JWT: signature (JWKS),<br/>alg ∈ {PS256, ES256}, issuer,<br/>exactly one tier audience,<br/>mcp_contract, exp/iat/sub/jti
+    Note over B: check JWT again: signature (JWKS),<br/>alg ∈ {PS256, ES256}, issuer,<br/>exactly one tier audience,<br/>mcp_contract, exp/iat/sub/jti
     B->>V: read vendor-tokens/mockhub/sub-b64.{encoded subject}
     V-->>B: not found
     B-->>C: 404 needs-consent + authorize_uri(txn)
-    Note over C: a gateway would forward this as the<br/>custom consent prompt (see the MCP integration guide)
+    Note over C: a gateway would pass this on as the<br/>custom consent prompt (see the MCP integration guide)
 ```
 
-**What this proves:** a valid hub JWT is accepted but *authorization is
-per-user*: no grant → no token, only a one-time consent transaction
-(`txn`, usable to start consent for 5 minutes; consent state defaults to 10 minutes).
+**What this proves:** the broker accepts a valid hub JWT, but access is
+*per user*. With no grant, the user gets no token. Instead the broker
+returns a one-time consent link (`txn`).
+
+- The link can start consent for 5 minutes.
+- Consent state lasts 10 minutes by default.
 
 ---
 
 ## Test 3 — the consent dance (terminal and real browser)
 
-Follow the `authorize_uri`. In a terminal, with a cookie jar (the flow is
-bound to the browser that starts it, so cookies must persist across the
-redirects): `curl -sL -c /tmp/jar -b /tmp/jar "<authorize_uri>"`. In a real
-browser (what an actual user experiences):
+Follow the `authorize_uri`. You can do this in a terminal or a real
+browser.
+
+**In a terminal**, use a cookie jar. The flow is tied to the browser that
+starts it, so cookies must carry across the redirects:
+`curl -sL -c /tmp/jar -b /tmp/jar "<authorize_uri>"`.
+
+**In a real browser** (what a real user sees):
 
 ```sh
 curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
@@ -140,9 +172,9 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 open "$(sed 's/.*"authorize_uri":"\([^"]*\)".*/\1/' /tmp/challenge.json)"
 ```
 
-Observed (v1.1, captured with `curl -sL -D -`; codes, states, nonces and
-the cookie value elided): the browser travels broker → hub login → broker →
-vendor → broker:
+The browser goes broker → hub login → broker → vendor → broker. Output from
+v1.1, captured with `curl -sL -D -` (codes, states, nonces and the cookie
+value are hidden):
 
 ```
 307  location: http://localhost:8320/authorize?client_id=vtb-broker&response_type=code
@@ -157,11 +189,11 @@ vendor → broker:
 200  <h1>Connected — return to your client.</h1>
 ```
 
-The hub stub signs the browser in automatically as the `login_hint`; a real
-hub shows its own sign-in page (or reuses an existing session).
+The hub stub signs the browser in automatically as the `login_hint` user.
+A real hub shows its own sign-in page, or reuses an existing session.
 
-with the page **"Connected — return to your client."** The broker log
-shows the matching audit pair:
+The flow ends on the page **"Connected — return to your client."** The
+broker log shows the matching audit pair:
 
 ```json
 {"audit": "broker.consent.start",    "sub": "wf-smoke", "vendor": "mockhub"}
@@ -199,14 +231,14 @@ sequenceDiagram
     UA->>M: GET /authorize (auto-consent as mock-4217)
     M-->>UA: 307 → broker callback (code, state, iss)
     UA->>B: GET /v1/callback/mockhub?code&state&iss
-    Note over B: validate state (exists, unconsumed,<br/>vendor match) → validate RFC 9207 iss<br/>→ binding cookie = this browser<br/>→ consume state (single-use)<br/>→ THEN redeem code
+    Note over B: check state (exists, unused,<br/>vendor match) → check RFC 9207 iss<br/>→ binding cookie = this browser<br/>→ use up state (single use)<br/>→ THEN redeem code
     B->>M: POST /token (code + PKCE verifier + client auth)
     M-->>B: access token (60s) + rotating refresh token
     B->>V: write entry state=ACTIVE gen=1
     B-->>UA: "Connected — return to your client."
 ```
 
-Then the retry resolves cleanly:
+Now the retry succeeds:
 
 ```sh
 curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
@@ -220,34 +252,38 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 
 **What this proves:**
 
-- The PKCE verifier is sent only in server-side token requests; browser
-  `state` values are opaque handles;
-  the vendor `code` is redeemed server-side only.
-- Consent is bound to the **user** (the hub login must be the link's `sub`)
-  and to the **browser** (the binding cookie). A link forwarded to or stolen
-  from someone else is refused before the vendor is involved
-  (`reason: login_sub_mismatch`), and a leg finished in another browser is
-  refused before any code is redeemed (`reason: browser_mismatch`). Both
-  are `security_event: true` audit lines.
-- The authorize link is single use: opening it again returns 400
+- The PKCE verifier appears only in server-side token requests. The
+  browser sees `state` values only as opaque handles. The broker redeems
+  the vendor `code` on the server only.
+- Consent is tied to the **user** and to the **browser**:
+  - The hub login must match the link's `sub`. A link forwarded to someone
+    else, or stolen, is refused before the vendor is involved
+    (`reason: login_sub_mismatch`).
+  - The binding cookie must match. A step finished in another browser is
+    refused before any code is redeemed (`reason: browser_mismatch`).
+  - Both refusals write `security_event: true` audit lines.
+- The authorize link works once. Opening it again returns 400
   `invalid-transaction`.
-- The RFC 9207 `iss` in the callback URL is string-compared against the
-  issuer recorded at transaction creation *before* the code is redeemed
-  (mix-up defense). An AS that advertises `iss` support but omits it is
-  rejected the same way.
-- **Replay demo:** reloading the "Connected" page returns
-  *"Invalid or expired authorization state."* — the state was consumed;
-  the replay raises a `security_event: true` audit line
+- The broker compares the `iss` in the callback URL, as an exact string,
+  with the issuer it recorded when the link was made. It does this
+  *before* redeeming the code (this stops mix-up attacks). If the vendor
+  says it supports `iss` but leaves it out, the broker rejects the
+  callback the same way.
+- **Replay demo:** reload the "Connected" page. You get
+  *"Invalid or expired authorization state."* The state was already used.
+  The replay writes a `security_event: true` audit line
   (`reason: state_invalid_or_replayed`).
-- The simulated trusted gateway now holds a **vendor** token — the hub JWT never transits to
-  the vendor.
+- The stand-in gateway (your terminal) now holds a **vendor** token. The
+  hub JWT never goes to the vendor.
+
+Standards: RFC 9207.
 
 ---
 
 ## Test 4 — single-flight refresh and the generation counter
 
 The mock's 60-second tokens force a refresh on every resolve. The Test 3
-retry already refreshed gen 1→2; resolve once more, then read the audit
+retry already refreshed gen 1→2. Resolve once more, then read the audit
 trail:
 
 ```sh
@@ -256,7 +292,7 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 docker logs --since 5m vtb-broker 2>&1 | grep broker.refresh | tail -3
 ```
 
-Observed:
+Expected:
 
 ```json
 {"audit": "broker.refresh", "sub": "wf-smoke", "vendor": "mockhub", "generation_from": 1, "generation_to": 2}
@@ -284,32 +320,35 @@ sequenceDiagram
     and
         C2->>B: resolve
     end
-    Note over B: per-{vendor,sub} single-flight lock<br/>C1 wins, C2 parks — no second refresh
+    Note over B: one lock per {vendor,sub}<br/>C1 wins, C2 waits, no second refresh
     B->>M: refresh_token grant (RT gen N)
     M-->>B: new AT + rotated RT
     B->>V: CAS write gen N→N+1 (fails if version moved)
     B-->>C1: 200 AT(gen N+1)
-    B-->>C2: 200 AT(gen N+1) — same token, zero extra vendor calls
+    B-->>C2: 200 AT(gen N+1), same token, zero extra vendor calls
 ```
 
-**What this proves:** every refresh advances the monotonic
-`refresh_generation`, and the KV-v2 compare-and-swap on that version is
-the correctness backstop: two racing refreshes can never both persist, so
-a losing writer cannot overwrite a newer stored version. A crash after
-the vendor consumes a refresh token can still burn the family and require
-re-consent. (The automated suite
-drives 20 parallel resolves and asserts *exactly one* vendor refresh and
-*zero* RT replays — including across two replicas behind a load balancer.)
-Note also what the audit lines contain: ids, states, generations — never
-token material.
+**What this proves:**
+
+- Every refresh raises `refresh_generation` by one. It never goes down.
+- The KV-v2 compare-and-swap (CAS) on that version keeps data correct. Two
+  racing refreshes can never both be saved. A writer that loses the race
+  cannot overwrite a newer stored version.
+- Limit: if the broker crashes after the vendor accepts a refresh token,
+  the family can still be burned. The user must then consent again.
+- The automated suite sends 20 resolves at once. It checks for *exactly
+  one* vendor refresh and *zero* RT replays, including across two replicas
+  behind a load balancer.
+- The audit lines hold ids, states and generations only, never token
+  material.
 
 ---
 
 ## Test 5 — forged-algorithm token rejected at the door
 
-The hub-stub mints an **RS256** token signed with the *same trusted RSA
-key* that's in its JWKS — cryptographically valid, key resolvable, wrong
-algorithm:
+The hub stub can make an **RS256** token signed with the *same trusted RSA
+key* that is in its JWKS. The signature is valid and the key can be found.
+Only the algorithm is wrong:
 
 ```sh
 curl -s -X POST localhost:8320/_test/token -d '{"sub":"wf-smoke","kind":"rs256"}' -o /tmp/mint2.json
@@ -318,7 +357,7 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
      -H "Authorization: Bearer $(cat /tmp/badtok)"
 ```
 
-Observed:
+Expected:
 
 ```json
 {"type":"urn:vendor-token-broker:invalid-hub-token","title":"invalid-hub-token",
@@ -340,18 +379,20 @@ flowchart LR
     G -- yes --> OK["resolve proceeds"]
 ```
 
-The same 401 lands for every bad variant the stub can mint —
-`wrong_issuer`, `external_tier`, `two_tiers` (cross-tier token),
-`expired`, `no_jti`, `wrong_contract`, `no_contract` — and, as we saw
-live, a *genuinely expired* previously-good token:
+You get the same 401 for every bad token the stub can make:
+`wrong_issuer`, `external_tier`, `two_tiers` (a token for two tiers),
+`expired`, `no_jti`, `wrong_contract`, `no_contract`. A good token that
+has *really expired* also gets it, with
 `"detail":"Signature has expired"`.
 
-**What this proves:** the broker never trusts the gateway; it re-validates
-every inbound hub JWT itself, with algorithms pinned.
+**What this proves:** the broker does not trust the gateway. It checks
+every incoming hub JWT itself, and accepts only the allowed algorithms.
 
 ---
 
 ## Test 6 — the no-issuance wall
+
+The broker has no endpoints for issuing tokens. Probe the usual paths:
 
 ```sh
 for p in /token /oauth/token /keys /v1/tokens/issue \
@@ -360,7 +401,7 @@ for p in /token /oauth/token /keys /v1/tokens/issue \
 done
 ```
 
-Observed:
+Expected:
 
 ```
 /token -> 404
@@ -371,18 +412,22 @@ Observed:
 /.well-known/openid-configuration -> 404
 ```
 
-**What this proves:** the broker is a custodian, not an issuer. Its whole
-API is seven routes — `/healthz`, `/v1/tokens/resolve`,
-`/v1/authorize/{vendor}`, `/v1/callback/{vendor}`,
-`/v1/grants/{vendor}/{sub}`, `/v1/grants`, `/v1/admin/vendors/{vendor}` —
-no access-token issuance or JWKS endpoint. The broker can hold vendor
-client-authentication keys and sign `private_key_jwt` assertions.
-(`tests/unit/test_routes.py` audits the actual route table on every
-push.)
+**What this proves:** the broker stores tokens. It does not issue them.
+
+- Its whole API is seven routes: `/healthz`, `/v1/tokens/resolve`,
+  `/v1/authorize/{vendor}`, `/v1/callback/{vendor}`,
+  `/v1/grants/{vendor}/{sub}`, `/v1/grants`, `/v1/admin/vendors/{vendor}`.
+- It has no access-token issuance endpoint and no JWKS endpoint.
+- It can hold vendor client-authentication keys and sign
+  `private_key_jwt` assertions.
+- `tests/unit/test_routes.py` checks the actual route table on every push.
 
 ---
 
 ## Test 7 — self-service revocation, vendor-first
+
+A user deletes their own grant. The broker revokes at the vendor first,
+then deletes the stored entry.
 
 ```sh
 curl -s localhost:8310/_test/state | grep -o '"revoke":[0-9]*'   # "revoke":0
@@ -411,15 +456,18 @@ sequenceDiagram
     U->>B: DELETE /v1/grants/mockhub/wf-smoke (hub JWT)
     Note over B: sub in path MUST match JWT sub<br/>(anyone else → 403 forbidden)
     B->>M: POST /revoke (RFC 7009, refresh token)
-    M-->>B: 200 — family revoked at the vendor
+    M-->>B: 200, family revoked at the vendor
     B->>V: delete vendor-tokens/mockhub/sub-b64.{encoded subject}
     B-->>U: {"revoked": true}
-    Note over B,M: if the vendor were down: entry parks<br/>REVOKE_PENDING (502), unusable for resolve,<br/>sweeper retries until the vendor recovers
+    Note over B,M: if the vendor were down: entry waits as<br/>REVOKE_PENDING (502), cannot be resolved,<br/>sweeper retries until the vendor recovers
 ```
 
-**What this proves:** this mock supports vendor-first revocation; vendors without
-revocation support are deleted locally only. Grants are strictly
-self-service; the lifecycle returns cleanly to `needs-consent`.
+**What this proves:**
+
+- This mock supports revoking at the vendor first. For vendors without
+  revocation support, the broker deletes the entry locally only.
+- Users can delete only their own grants.
+- The lifecycle returns cleanly to `needs-consent`.
 
 ---
 
@@ -443,17 +491,19 @@ stateDiagram-v2
     class STALE,REVOKE_PENDING dead
 ```
 
+For every path in detail, see [the token lifecycle](token-lifecycle.md).
+
 ## Scorecard
 
 | # | Property | Verified by |
 |---|---|---|
-| 1 | Scoped custody token, never root | provisioner receipt |
-| 2 | Hub-JWT re-validation + per-user consent challenge | 404 `needs-consent` |
-| 3 | PKCE + single-use sub-bound state + RFC 9207 iss | browser dance → "Connected"; reload → rejected replay |
+| 1 | Scoped custody token, never root | setup job output |
+| 2 | Hub-JWT re-check + per-user consent challenge | 404 `needs-consent` |
+| 3 | PKCE + single-use state tied to `sub` + RFC 9207 iss | browser flow → "Connected"; reload → replay rejected |
 | 4 | Single-flight refresh, generation CAS, id-only audit | gen 1→2→3 in `broker.refresh` |
-| 5 | Algorithm pinning / contract shape at the door | RS256 & expired → 401 `invalid-hub-token` |
-| 6 | No-issuance surface | six issuer paths → 404 |
-| 7 | Vendor-first revocation, self-service only | RFC 7009 counter 0→1, entry gone |
+| 5 | Only allowed algorithms / contract shape at the door | RS256 & expired → 401 `invalid-hub-token` |
+| 6 | No token-issuing endpoints | six issuer paths → 404 |
+| 7 | Revoke at vendor first, users delete only their own | RFC 7009 counter 0→1, entry gone |
 
 Tear down with:
 

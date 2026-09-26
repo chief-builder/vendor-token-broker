@@ -1,24 +1,102 @@
-# Run locally
+# Quickstart
 
-Complete one mock-vendor connection, resolve its token, then disconnect it. Requires Docker Compose, Python 3.12, and a checkout of this repository. Run commands from the repository root.
+Try the whole thing on your own machine: sign in, connect a GitHub account, and call GitHub tools from Claude Code. Everything runs in Docker. You don't need a GitHub account for the first part: a stand-in plays GitHub.
 
-This development stack uses local HTTP, a mock identity provider, test credentials, and in-memory OpenBao storage. Follow [Deploy and operate](operations.md) for production provisioning.
+You need Docker Compose, Python 3.12, and a copy of this repository. Run every command from the repository's top folder.
 
-## Start the stack
+This setup is for trying things out. It uses plain HTTP, test passwords, and storage that is wiped when the containers stop. For a real deployment, see [Deploy and operate](operations.md).
+
+## Install
 
 ```sh
 python3.12 -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements-dev.lock
 .venv/bin/pip install --no-deps -e .
+```
+
+## Run the MCP gateway
+
+### 1. Start everything
+
+```sh
+docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
+.venv/bin/pytest tests/integration -m "gateway and not external" -q
+```
+
+This starts:
+
+| Service | Address | What it is |
+|---|---|---|
+| Keycloak | `http://localhost:8180` | The sign-in service. Test users: `alice` / `alice` and `bob` / `bob` |
+| MCP gateway | `http://localhost:8500/mcp` | What your MCP client connects to |
+| Token broker | `http://localhost:8600` | Keeps each user's GitHub token |
+| GitHub stand-in | `http://localhost:8330` | Pretends to be GitHub's MCP server |
+
+The tests should all pass. They sign in, connect accounts, and call tools, the same way you are about to.
+
+### 2. Try the demo client
+
+```sh
+.venv/bin/python tools/mcp-demo-client.py get_me
+```
+
+1. A browser tab opens on Keycloak. Sign in as `alice`.
+2. The first time, the gateway asks you to connect your account, and a second tab opens. Finish there. With the stand-in, this happens by itself.
+3. The client prints the list of tools and the result of `get_me`.
+
+The demo client signs in as the pre-registered app `mcp-demo-cli` and listens for the sign-in result on port 33418.
+
+### 3. Try Claude Code
+
+Add the gateway to Claude Code:
+
+```sh
+claude mcp add --transport http vtb-gateway http://localhost:8500/mcp --callback-port 33419
+```
+
+Then, in a new Claude Code session:
+
+1. Run `/mcp`, choose `vtb-gateway`, then **Authenticate**.
+2. Keycloak opens. Sign in as `alice` and click **Yes** on the "Grant Access" screen. (Claude Code registers itself with Keycloak the first time.)
+3. Ask Claude to use a `vtb-gateway` tool, for example: *"Use vtb-gateway get_me."*
+4. If your account isn't connected yet, Claude Code asks to open a link. Accept, finish in the browser, and the answer comes back.
+
+If sign-in later fails with an error that names an old address, run `claude mcp remove vtb-gateway`, add it again, and sign in once.
+
+### 4. Switch to real GitHub
+
+1. Create a GitHub App at <https://github.com/settings/apps/new>:
+   - Callback URLs: `http://localhost:8300/v1/callback/github` and `http://localhost:8600/v1/callback/github`
+   - **Expire user authorization tokens**: on
+   - Webhook: off
+   - Repository permissions, all **read-only**: Contents, Issues, Pull requests, Metadata
+
+   Then generate a client secret, and install the App on the repositories you want to use.
+2. Put `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `tests/stack/.env` (git ignores this file). Run the `up` command from step 1 again, so the broker gets them.
+3. Point the gateway at GitHub, and give people two minutes to finish connecting:
+
+   ```sh
+   GATEWAY_VENDOR=github GATEWAY_UPSTREAM_URL=https://api.githubcopilot.com/mcp/ \
+     GATEWAY_CONSENT_WAIT_S=120 \
+     docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --no-deps --wait mcp-gateway
+   ```
+
+4. Use the demo client or Claude Code as before. `get_me` now returns your own GitHub account. To check the same thing automatically, run `GATEWAY_VENDOR=github .venv/bin/pytest tests/integration/test_external_github_mcp.py -m external`.
+
+To go back to the stand-in, run the `up` command for `mcp-gateway` again without those three variables.
+
+## Look under the hood: the broker on its own
+
+The gateway gets tokens from the broker. You can talk to the broker directly, the way a gateway does. Step 1 also started a second broker on port 8300, with a simple sign-in stub instead of Keycloak. This section uses that one. If you skipped step 1, start it with:
+
+```sh
 docker compose -f tests/stack/docker-compose.yml up -d --build --wait
 curl -fsS http://localhost:8300/healthz
 ```
 
-Expected response: `{"ok":true,"custody":"ok"}`. The stack supplies the broker, OpenBao, Redis, a mock vendor, and a hub stub. No real vendor account is needed.
+Expected: `{"ok":true,"custody":"ok"}`.
 
-## Connect a mock vendor
-
-The script below plays the **trusted gateway**, so it receives the vendor token internally. It prints only statuses and scope names. A production MCP client must not receive that token.
+The script below pretends to be the gateway, so it receives a token. It prints only status codes and scope names. A real MCP client must never see that token.
 
 ```sh
 .venv/bin/python - <<'PY'
@@ -64,9 +142,15 @@ print("Resolve after disconnect:", again.status_code, again.json()["title"])
 PY
 ```
 
-Expected: `404 needs-consent`, successful consent, `200` resolve, `{"revoked": true}`, then `404 needs-consent` again. The mock widens scopes on refresh, so the resolved scope list may include both `issues:read` and `issues:write`; see [scope policy](api.md#scope-policy).
+What you should see:
 
-For the browser walkthrough and attack probes, continue to [manual verification](smoke-tests.md).
+1. `404 needs-consent`: not connected yet.
+2. The account connects.
+3. `200`: the broker hands over a token.
+4. `{"revoked": true}`: disconnected.
+5. `404 needs-consent` again.
+
+The test vendor widens scopes when it refreshes, so step 3 may list both `issues:read` and `issues:write` (see [scope policy](api.md#scope-policy)). For a guided tour with a browser, including attack attempts, see [Smoke tests](smoke-tests.md).
 
 ## Run the automated checks
 
@@ -75,7 +159,7 @@ For the browser walkthrough and attack probes, continue to [manual verification]
 .venv/bin/pytest tests/integration -m "not external and not multi and not gateway" -q
 ```
 
-Switch the standalone broker to Redis to exercise the same contract:
+To run the same checks with Redis doing the coordination:
 
 ```sh
 COORD_BACKEND=redis docker compose -f tests/stack/docker-compose.yml \
@@ -83,7 +167,7 @@ COORD_BACKEND=redis docker compose -f tests/stack/docker-compose.yml \
 .venv/bin/pytest tests/integration -m "not external and not multi and not gateway" -q
 ```
 
-For multi-replica testing, stop the standalone broker and allow its sweep lease to expire (up to 120 seconds at the default interval) before starting the test. Do not flush a shared Redis instance.
+To test two brokers sharing the work, first stop the single broker. Then wait until its sweep lease has run out (up to 120 seconds with default settings). Don't flush a Redis that others share.
 
 ```sh
 docker compose -f tests/stack/docker-compose.yml stop broker
@@ -96,53 +180,12 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
   .venv/bin/pytest tests/integration/test_multi_replica.py -q
 ```
 
-The replicas use a 10-second sweep lease. A remaining TTL greater than 10000 ms indicates the previous default-interval lease is still present. The test fixture restarts the standalone broker on completion. Stop the replicas before rerunning the standalone tests so sweepers do not interfere.
+The two brokers use a 10-second sweep lease. If `PTTL` shows more than 10000 ms, the old broker's lease is still there, so wait. When the test finishes, it restarts the single broker. Stop the two brokers before you run the single-broker tests again, so their background sweeps don't interfere.
 
-## Run the MCP gateway
-
-Start the `gateway` profile: Keycloak as the hub, a broker that trusts it, the [MCP gateway](mcp-gateway.md), and a GitHub stand-in. Keycloak is at `http://localhost:8180` (users `alice`/`alice` and `bob`/`bob`).
-
-```sh
-docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
-.venv/bin/pytest tests/integration -m "gateway and not external" -q
-```
-
-### Demo MCP client
-
-```sh
-.venv/bin/python tools/mcp-demo-client.py get_me
-```
-
-A browser opens on Keycloak: sign in as `alice`. If the gateway asks to connect the vendor, a second tab opens the connection flow; finish it there and the client continues on its own. The client uses the pre-registered public client `mcp-demo-cli` and OAuth callback port 33418.
-
-### Claude Code
-
-```sh
-claude mcp add --transport http vtb-gateway http://localhost:8500/mcp --callback-port 33419
-```
-
-In a new Claude Code session, run `/mcp`, choose `vtb-gateway`, then **Authenticate**. Claude Code registers itself with Keycloak; sign in as `alice` and approve the consent screen. Then ask it to use a `vtb-gateway` tool such as `get_me`. If GitHub is not connected, Claude Code asks to open a URL; accept, finish in the browser, and the call completes. If authentication later fails with an error naming an old address, run `claude mcp remove vtb-gateway`, add it again, and sign in once.
-
-### Real GitHub
-
-1. Create a GitHub App at <https://github.com/settings/apps/new>: callback URLs `http://localhost:8300/v1/callback/github` and `http://localhost:8600/v1/callback/github`, **Expire user authorization tokens** on, webhook off, repository permissions Contents, Issues, Pull requests, and Metadata **read-only**. Generate a client secret and install the App on the repositories you want to reach.
-2. Put `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `tests/stack/.env` (gitignored), then run the `up` command above again so custody is provisioned with them.
-3. Point the gateway at GitHub's MCP server, with enough time for a person to finish the connection:
-
-   ```sh
-   GATEWAY_VENDOR=github GATEWAY_UPSTREAM_URL=https://api.githubcopilot.com/mcp/ \
-     GATEWAY_CONSENT_WAIT_S=120 \
-     docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --no-deps --wait mcp-gateway
-   ```
-
-4. Use the demo client or Claude Code as above; `get_me` returns your GitHub account. `GATEWAY_VENDOR=github .venv/bin/pytest tests/integration/test_external_github_mcp.py -m external` checks the same path.
-
-Recreate the gateway without those variables to return to the stand-in.
-
-## Stop the development stack
+## Stop everything
 
 ```sh
 docker compose -f tests/stack/docker-compose.yml --profile multi --profile gateway down
 ```
 
-OpenBao development storage is lost when its container stops. Run the setup again to reprovision it.
+This wipes the test storage. Next time, run the setup again and reconnect accounts.
