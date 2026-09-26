@@ -57,10 +57,34 @@ working unchanged: every wire change below is additive.
 - Timing knobs must be ≥ 1 (`SWEEP_INTERVAL_S` and `CACHE_TTL_S` may be 0)
 - Operators: use a periodic custody token; set `max_versions=2` on
   `vendor-tokens`; upgrade all replicas together (custody key migration)
+- `HUB_LOGIN_HINT` (`sub` default, `none` for real IdPs, which pre-fill the
+  hint as a username) and `HUB_DISCOVERY_URL` (fetch hub discovery from an
+  internal address; the document must still name `HUB_ISSUER`)
+
+### MCP gateway (new, separate service)
+- `src/mcp_gateway/`: an MCP server to clients and an MCP client to
+  GitHub's MCP server, built on FastMCP 4.0.10 with its own image
+  (`Dockerfile.gateway`) and hash-checked `requirements-gateway.lock`; the
+  broker image and route table are unchanged
+- MCP authorization at the gateway: protected-resource metadata, 401
+  challenges naming the required scope, audience/issuer/algorithm/scope
+  checks, and a `gateway.auth` audit line for every refused token
+- Identity handoff by RFC 8693 token exchange at the hub: the MCP token is
+  never forwarded to the broker or GitHub
+- Consent inside the tool call: URL-mode elicitation on 2025-11-25 and
+  2026-07-28 (multi-round-trip) clients, a link in the error otherwise;
+  waits on the grant list, not resolve
+- Read-only tool allowlist with pinned schemas (`github_tools.json`,
+  refreshed by `tools/refresh-github-tool-snapshot.py`) reconciled with
+  the live schemas on the first connected call
+- `gateway` Compose profile: Keycloak 26.7.4 as a real hub, a broker that
+  trusts it, the gateway, and a GitHub MCP stand-in; `tools/mcp-demo-client.py`
+- Verified end to end with Claude Code 2.1.283 against GitHub's MCP server
 
 ### Tests and supply chain
-- 319 unit tests (offline harness over the real app) and 69 integration
-  tests (61 per coordination backend, 7 multi-replica, 1 external)
+- 375 unit tests (offline harness over the real app) and 100 integration
+  tests (61 per coordination backend, 7 multi-replica, 29 gateway profile,
+  3 external)
 - Hash-pinned `requirements.lock` / `requirements-dev.lock`; base image
   pinned by digest; GitHub Actions pinned by commit SHA
 

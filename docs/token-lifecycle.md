@@ -457,7 +457,7 @@ sequenceDiagram
         C->>B: resolve (uncached sub)
         B--xK: read fails (3s bounded timeout)
         B-->>C: 503 vault-unavailable (retriable)
-        Note over B: only grace: entries already in the<br/>≤ 60s per-replica cache keep serving
+        Note over B: only grace: entries already in the<br/>per-replica cache (CACHE_TTL_S) keep serving
     end
 
     rect rgba(59,130,246,0.10)

@@ -5,7 +5,8 @@ vendor tokens per user for an egress gateway, runs the consent dance,
 refreshes single-flight, revokes vendor-first. Extracted from the
 `mcp-healthcare-reference` lab (@ `ab699f3`). Normative docs:
 `docs/design.md` (behavior), `docs/operations.md` (config, wire contract,
-runbook), `docs/adr/0001-redis-coordination.md`.
+runbook), `docs/adr/0001-redis-coordination.md`, `docs/mcp-gateway.md`
+(the MCP gateway).
 
 ## Hard invariants — never break these
 

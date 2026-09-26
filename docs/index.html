@@ -69,6 +69,7 @@
   <a href="#overview">Overview</a>
 <a href="#quickstart">Quickstart</a>
 <a href="#mcp">Integrate with MCP</a>
+<a href="#gateway">MCP Gateway</a>
 <a href="#api">API Reference</a>
 <a href="#operations">Deploy and Operate</a>
 <a href="#security">Security and MCP Alignment</a>
@@ -82,7 +83,7 @@
 <section id="overview">
 <div class="section-head"><h1>Overview</h1><p class="blurb">What the broker does and where it fits in an MCP deployment.</p><p class="src">source: <code>docs/overview.md</code></p></div>
 <p>Store each user's vendor credentials once. Resolve a usable token when a trusted gateway needs to call that vendor, refresh it when needed, and revoke the connection when the user disconnects.</p>
-<p>The broker is an internal OAuth client and credential custodian. It exposes a REST API for the gateway; the surrounding application provides the MCP server.</p>
+<p>The broker is an internal OAuth client and credential custodian. It exposes a REST API for the gateway. A separate <a href="#gateway">MCP gateway</a> in this repository connects MCP clients such as Claude Code to GitHub's MCP server through it.</p>
 <h2 id="start-here">Start here</h2>
 <table>
 <thead>
@@ -97,7 +98,11 @@
 <td><a href="#quickstart">Quickstart</a></td>
 </tr>
 <tr>
-<td>Connect an MCP application</td>
+<td>Use GitHub tools from Claude Code or another MCP client</td>
+<td><a href="#gateway">MCP gateway</a></td>
+</tr>
+<tr>
+<td>Connect your own MCP server or gateway</td>
 <td><a href="#mcp">Integrate with MCP</a></td>
 </tr>
 <tr>
@@ -128,7 +133,7 @@
     B &lt;--&gt;|&quot;read / write credentials&quot;| K[&quot;OpenBao or Vault&quot;]
 </pre>
 <p>The MCP server validates access to its own resource. The gateway supplies a separately valid internal hub JWT to the broker. The broker validates that JWT and returns the user's vendor token to the trusted gateway. The gateway must strip internal credentials before calling the vendor and keep vendor tokens out of MCP results.</p>
-<p>This repository implements the broker. The MCP server, gateway, and their identity handoff are deployment responsibilities. See the <a href="#three-authorization-boundaries">three authorization boundaries</a>.</p>
+<p>This repository implements the broker and, for GitHub's MCP server, the MCP server and gateway roles in one service: the <a href="#gateway">MCP gateway</a>, which also performs the identity handoff by token exchange at the hub. Other MCP servers integrate through the same broker API. See the <a href="#three-authorization-boundaries">three authorization boundaries</a>.</p>
 <h2 id="a-users-connection">A user's connection</h2>
 <ol>
 <li>A tool needs a vendor operation. The gateway asks the broker for a token.</li>
@@ -138,8 +143,8 @@
 <li>The user can disconnect. The broker attempts vendor revocation before deleting the stored connection; unsupported revocation is reported explicitly.</li>
 </ol>
 <h2 id="what-is-available">What is available</h2>
-<p>Software <strong>1.1.0</strong> is marked <strong>unreleased</strong> in the repository changelog. The implementation includes browser-bound consent, three vendor client-authentication methods, in-memory or Redis coordination, and versioned credential storage.</p>
-<p>The documentation was reviewed against MCP <strong>2026-07-28</strong> on <strong>2026-09-25</strong>. <a href="#security">Security and MCP alignment</a> records which controls are implemented, partial, externally owned, or planned. There is no blanket MCP conformance claim.</p>
+<p>Software <strong>1.1.0</strong> is marked <strong>unreleased</strong> in the repository changelog. The implementation includes browser-bound consent, three vendor client-authentication methods, in-memory or Redis coordination, versioned credential storage, and an MCP gateway for GitHub's MCP server tested with Keycloak and Claude Code.</p>
+<p>The documentation was reviewed against MCP <strong>2026-07-28</strong> on <strong>2026-09-26</strong>. <a href="#security">Security and MCP alignment</a> records which controls are implemented, partial, externally owned, or planned. There is no blanket MCP conformance claim.</p>
 <h2 id="terms-used-in-these-guides">Terms used in these guides</h2>
 <table>
 <thead>
@@ -265,15 +270,42 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
   .venv/bin/pytest tests/integration/test_multi_replica.py -q
 </code></pre>
 <p>The replicas use a 10-second sweep lease. A remaining TTL greater than 10000 ms indicates the previous default-interval lease is still present. The test fixture restarts the standalone broker on completion. Stop the replicas before rerunning the standalone tests so sweepers do not interfere.</p>
+<h2 id="run-the-mcp-gateway">Run the MCP gateway</h2>
+<p>Start the <code>gateway</code> profile: Keycloak as the hub, a broker that trusts it, the <a href="#gateway">MCP gateway</a>, and a GitHub stand-in. Keycloak is at <code>http://localhost:8180</code> (users <code>alice</code>/<code>alice</code> and <code>bob</code>/<code>bob</code>).</p>
+<pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
+.venv/bin/pytest tests/integration -m &quot;gateway and not external&quot; -q
+</code></pre>
+<h3 id="demo-mcp-client">Demo MCP client</h3>
+<pre><code class="language-sh">.venv/bin/python tools/mcp-demo-client.py get_me
+</code></pre>
+<p>A browser opens on Keycloak: sign in as <code>alice</code>. If the gateway asks to connect the vendor, a second tab opens the connection flow; finish it there and the client continues on its own. The client uses the pre-registered public client <code>mcp-demo-cli</code> and OAuth callback port 33418.</p>
+<h3 id="claude-code">Claude Code</h3>
+<pre><code class="language-sh">claude mcp add --transport http vtb-gateway http://localhost:8500/mcp --callback-port 33419
+</code></pre>
+<p>In a new Claude Code session, run <code>/mcp</code>, choose <code>vtb-gateway</code>, then <strong>Authenticate</strong>. Claude Code registers itself with Keycloak; sign in as <code>alice</code> and approve the consent screen. Then ask it to use a <code>vtb-gateway</code> tool such as <code>get_me</code>. If GitHub is not connected, Claude Code asks to open a URL; accept, finish in the browser, and the call completes. If authentication later fails with an error naming an old address, run <code>claude mcp remove vtb-gateway</code>, add it again, and sign in once.</p>
+<h3 id="real-github">Real GitHub</h3>
+<ol>
+<li>Create a GitHub App at <a href="https://github.com/settings/apps/new">https://github.com/settings/apps/new</a>: callback URLs <code>http://localhost:8300/v1/callback/github</code> and <code>http://localhost:8600/v1/callback/github</code>, <strong>Expire user authorization tokens</strong> on, webhook off, repository permissions Contents, Issues, Pull requests, and Metadata <strong>read-only</strong>. Generate a client secret and install the App on the repositories you want to reach.</li>
+<li>Put <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code> in <code>tests/stack/.env</code> (gitignored), then run the <code>up</code> command above again so custody is provisioned with them.</li>
+<li>Point the gateway at GitHub's MCP server, with enough time for a person to finish the connection:</li>
+</ol>
+<p><code>sh
+   GATEWAY_VENDOR=github GATEWAY_UPSTREAM_URL=https://api.githubcopilot.com/mcp/ \
+     GATEWAY_CONSENT_WAIT_S=120 \
+     docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --no-deps --wait mcp-gateway</code></p>
+<ol>
+<li>Use the demo client or Claude Code as above; <code>get_me</code> returns your GitHub account. <code>GATEWAY_VENDOR=github .venv/bin/pytest tests/integration/test_external_github_mcp.py -m external</code> checks the same path.</li>
+</ol>
+<p>Recreate the gateway without those variables to return to the stand-in.</p>
 <h2 id="stop-the-development-stack">Stop the development stack</h2>
-<pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml --profile multi down
+<pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml --profile multi --profile gateway down
 </code></pre>
 <p>OpenBao development storage is lost when its container stops. Run the setup again to reprovision it.</p>
 </section>
 <hr class='sep'/>
 <section id="mcp">
 <div class="section-head"><h1>Integrate with MCP</h1><p class="blurb">Separate MCP authorization, the internal broker contract, and vendor consent.</p><p class="src">source: <code>docs/mcp-integration.md</code></p></div>
-<p><strong>Baseline: MCP 2026-07-28 · reviewed 2026-09-25.</strong> The broker implements an internal REST contract. You supply the MCP server and trusted gateway integration described here.</p>
+<p><strong>Baseline: MCP 2026-07-28 · reviewed 2026-09-26.</strong> The broker implements an internal REST contract. This repository also ships an <a href="#gateway">MCP gateway</a> for GitHub's MCP server that implements the MCP side described here; use this page to integrate the broker with your own MCP server or gateway instead.</p>
 <h2 id="three-authorization-boundaries">Three authorization boundaries</h2>
 <table>
 <thead>
@@ -287,7 +319,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <tr>
 <td>MCP client → MCP server</td>
 <td>Access token issued for that MCP resource; validated by the MCP server</td>
-<td>Your MCP client, server, and authorization server</td>
+<td>Your MCP client and authorization server; the shipped gateway validates it</td>
 </tr>
 <tr>
 <td>Gateway → broker</td>
@@ -301,8 +333,8 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 </tr>
 </tbody>
 </table>
-<p>The hub JWT's <code>mcp_contract</code> claim, <code>mcp://tier/*</code> audiences, and algorithm policy are project conventions. They are not MCP protocol versions or standard MCP claim names. Do not blindly forward an MCP-server token to the broker: arrange an internal credential valid for the broker's configured issuer, audience, and contract. That identity handoff is outside this repository.</p>
-<p>At the MCP boundary, implement protected-resource metadata, authorization-server discovery, resource indicators, intended-audience validation, and appropriate HTTP authorization challenges. The broker does not expose those MCP endpoints. <a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization">MCP authorization requirements</a></p>
+<p>The hub JWT's <code>mcp_contract</code> claim, <code>mcp://tier/*</code> audiences, and algorithm policy are project conventions. They are not MCP protocol versions or standard MCP claim names. Do not blindly forward an MCP-server token to the broker: arrange an internal credential valid for the broker's configured issuer, audience, and contract. The shipped gateway does this with <a href="#identity-handoff-what-the-hub-must-do">RFC 8693 token exchange at the hub</a>.</p>
+<p>At the MCP boundary, implement protected-resource metadata, authorization-server discovery, resource indicators, intended-audience validation, and appropriate HTTP authorization challenges. The broker does not expose those MCP endpoints; the shipped gateway does. <a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization">MCP authorization requirements</a></p>
 <h2 id="calling-the-broker">Calling the broker</h2>
 <ol>
 <li>Validate and authorize the MCP tool operation in your server.</li>
@@ -313,9 +345,9 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 </ol>
 <p>The broker returns tokens to any caller satisfying its internal authentication contract. Network isolation and gateway workload authentication are therefore deployment requirements, not properties the REST response can enforce.</p>
 <h2 id="connecting-a-vendor-during-a-tool-call">Connecting a vendor during a tool call</h2>
-<p><strong>Proposed adapter behavior; not shipped in this repository.</strong> A missing vendor connection is distinct from a client's authorization to call the MCP server.</p>
+<p><strong>The shipped gateway implements this; see <a href="#connecting-github-during-a-tool-call">its consent behavior</a>.</strong> The guidance below applies to any adapter. A missing vendor connection is distinct from a client's authorization to call the MCP server.</p>
 <p>For MCP 2026-07-28, an adapter can put URL-mode <code>elicitation/create</code> in an <code>InputRequiredResult</code> when the client advertises <code>elicitation.url</code>. Point its URL at the broker's <code>authorize_uri</code>; the MCP bearer token stays unchanged. The client asks permission before navigation. Use the negotiated protocol revision's SDK to build the full envelope. <a href="https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation">URL-mode elicitation</a></p>
-<p>The nested request has this shape (illustrative; the URL comes from resolve):</p>
+<p>The nested request has this shape (illustrative; the URL comes from resolve). Clients on 2025-11-25 receive the same request directly as <code>elicitation/create</code> during the call:</p>
 <pre><code class="language-json">{
   &quot;method&quot;: &quot;elicitation/create&quot;,
   &quot;params&quot;: {
@@ -360,13 +392,297 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 </tr>
 </tbody>
 </table>
-<p>After a browser flow, resolve again with the same authenticated user and required scopes. User acceptance alone does not prove the connection succeeded. A suggested adapter policy is at most one consent retry per operation before returning an actionable error. Stop on decline or cancellation. If URL elicitation is unsupported, return a clear tool error and a supported manual connection route in your application; do not ask for vendor tokens in chat or form fields.</p>
-<p>Test the adapter separately for cancellation, unsupported capabilities, expired connection URLs, scope expansion, identity handoff, token redaction, and retry limits. Broker integration tests do not exercise an MCP client.</p>
+<p>After a browser flow, confirm the connection before resolving again with the same authenticated user and required scopes. User acceptance alone does not prove the connection succeeded, and each unsuccessful resolve mints a new connection link, so poll the <a href="#api">grant list</a> rather than resolve while waiting. A suggested adapter policy is at most one consent retry per operation before returning an actionable error. Stop on decline or cancellation. If URL elicitation is unsupported, return a clear tool error and a supported manual connection route in your application; do not ask for vendor tokens in chat or form fields.</p>
+<p>Test the adapter separately for cancellation, unsupported capabilities, expired connection URLs, scope expansion, identity handoff, token redaction, and retry limits. The gateway's end-to-end tests (<code>tests/integration/test_mcp_gateway.py</code>) exercise these with a real MCP client.</p>
+<p>Do not rely on <code>notifications/tools/list_changed</code> to reveal tools after a connection: from 2026-07-28 it may only be sent on <code>subscriptions/listen</code>. List tools from the start, as the <a href="#tools">gateway's pinned tool list</a> does.</p>
 <h2 id="existing-gateway-compatibility">Existing gateway compatibility</h2>
 <p>The internal broker API remains unchanged. The source lab's Kong plugin used custom client-facing <code>401 authorization_required</code> and 401 step-up responses for broker 404/409 consent results. That is a legacy adapter convention, not a demonstrated current MCP wire flow. The plugin is not included here. See <a href="#legacy-gateway-mapping">the legacy mapping</a> when preserving an existing deployment.</p>
 <h2 id="protocol-revision-and-enterprise-authorization">Protocol revision and enterprise authorization</h2>
 <p>Use the MCP implementation's negotiated revision for capabilities and message envelopes. The 2026-07-28 release introduces per-request protocol capabilities, Multi Round-Trip Requests, and routing headers, and deprecates Dynamic Client Registration in favor of Client ID Metadata Documents. These are integration-layer responsibilities. <a href="https://blog.modelcontextprotocol.io/posts/2026-07-28/">Release notes</a></p>
 <p>Enterprise-Managed Authorization is an optional extension involving the client, enterprise IdP, and resource authorization server. This broker does not implement ID-JAG exchange. Its <code>ema_status</code> registry field tracks migration readiness only; changing it does not disable consent or drain tokens. Evaluate whether a replacement also supplies the downstream vendor access your tools need. <a href="https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization">Enterprise-Managed Authorization</a></p>
+</section>
+<hr class='sep'/>
+<section id="gateway">
+<div class="section-head"><h1>MCP Gateway</h1><p class="blurb">Claude Code and other MCP clients to GitHub&#x27;s MCP server, through the broker.</p><p class="src">source: <code>docs/mcp-gateway.md</code></p></div>
+<p><strong>Shipped in this repository · reviewed 2026-09-26 against MCP 2026-07-28, FastMCP 4.0.10, Keycloak 26.7.4, Claude Code 2.1.283.</strong></p>
+<p>The MCP gateway (<code>src/mcp_gateway/</code>) is a separate service from the broker. To MCP clients it is an MCP server protected by your identity provider. Toward GitHub it is an MCP client of GitHub's MCP server (<code>https://api.githubcopilot.com/mcp/</code>). For every tool call it gets that user's GitHub token from the broker, uses it for one upstream call, and discards it.</p>
+<p>The broker is unchanged by the gateway: it still serves exactly seven routes and never issues tokens.</p>
+<h2 id="how-a-tool-call-works">How a tool call works</h2>
+<pre class="mermaid">flowchart LR
+    C[&quot;MCP client&lt;br/&gt;(Claude Code, demo CLI)&quot;] --&gt;|&quot;MCP token (aud = gateway)&quot;| G[&quot;MCP gateway&quot;]
+    G --&gt;|&quot;RFC 8693 exchange&quot;| H[&quot;Hub (Keycloak)&quot;]
+    G --&gt;|&quot;hub JWT + resolve&quot;| B[&quot;Vendor Token Broker&quot;]
+    G --&gt;|&quot;GitHub token, fresh session per call&quot;| M[&quot;GitHub MCP server&quot;]
+    C -.-&gt;|&quot;sign in (auth code + PKCE)&quot;| H
+</pre>
+<pre class="mermaid">sequenceDiagram
+    autonumber
+    participant C as MCP client
+    participant G as Gateway
+    participant H as Hub
+    participant B as Broker
+    participant M as GitHub MCP
+
+    C-&gt;&gt;G: tools/call get_me (Bearer MCP token)
+    Note over G: verify signature, issuer, audience = gateway, scope mcp-gateway
+    G-&gt;&gt;H: token exchange (subject = MCP token, scope hub-tier)
+    H--&gt;&gt;G: hub JWT (same sub, aud mcp://tier/internal)
+    G-&gt;&gt;B: resolve github (hub JWT)
+    alt connected
+        B--&gt;&gt;G: 200 GitHub token
+        G-&gt;&gt;M: new session, tools/call get_me (Bearer GitHub token)
+        M--&gt;&gt;G: result
+        G--&gt;&gt;C: result (no token material)
+    else not connected
+        B--&gt;&gt;G: 404 needs-consent + authorize_uri
+        G--&gt;&gt;C: URL elicitation (authorize_uri)
+        Note over C: user connects GitHub in the browser
+        C-&gt;&gt;G: accept
+        G-&gt;&gt;B: poll grant list until ACTIVE (bounded)
+        G-&gt;&gt;M: then the upstream call as above
+    end
+</pre>
+<ul>
+<li><strong>The MCP token never leaves the gateway–hub hop.</strong> It is exchanged, not forwarded: the broker only ever sees the hub JWT, and GitHub only ever sees the GitHub token. Both are separate credentials with separate audiences.</li>
+<li><strong>The GitHub token is used once.</strong> Each call opens a new upstream session with it and closes the session afterwards. It is never cached, logged, or returned to the client.</li>
+<li><strong>Waiting polls the grant list, not resolve.</strong> After the user accepts the prompt, the gateway polls <code>GET /v1/grants</code> (every 2 seconds, up to <code>CONSENT_WAIT_S</code>), because every unsuccessful resolve would mint a new consent link.</li>
+</ul>
+<h2 id="identity-handoff-what-the-hub-must-do">Identity handoff: what the hub must do</h2>
+<p>The gateway swaps the caller's MCP token for a hub JWT with <a href="https://www.rfc-editor.org/rfc/rfc8693">RFC 8693 token exchange</a>, as a confidential client at the hub. The hub must therefore:</p>
+<table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Why</th>
+<th>Keycloak realm setting (<code>tests/stack/keycloak/mcp-realm.json</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RFC 8693 token exchange for the gateway client</td>
+<td>Handoff without forwarding the MCP token</td>
+<td><code>standard.token.exchange.enabled</code> on <code>mcp-gateway</code></td>
+</tr>
+<tr>
+<td>Sign with PS256 or ES256</td>
+<td>The broker never accepts RS256 or HMAC</td>
+<td><code>defaultSignatureAlgorithm: PS256</code></td>
+</tr>
+<tr>
+<td>Exchanged token: <code>aud</code> exactly one <code>mcp://tier/*</code>, <code>mcp_contract</code> claim</td>
+<td>The broker's hub-JWT contract</td>
+<td><code>hub-tier</code> client scope (audience + hardcoded-claim mappers)</td>
+</tr>
+<tr>
+<td>MCP tokens: <code>aud</code> includes the gateway's resource URL</td>
+<td>Tokens meant for another resource are refused</td>
+<td><code>mcp-gateway</code> client scope (audience mapper)</td>
+</tr>
+<tr>
+<td>One subject namespace for MCP sign-in, exchange, and broker consent sign-in</td>
+<td>The broker refuses a consent link opened by another user (403)</td>
+<td>All three clients live in one realm</td>
+</tr>
+</tbody>
+</table>
+<p>Keycloak does not support <a href="https://www.rfc-editor.org/rfc/rfc8707">RFC 8707 resource indicators</a>: it ignores the <code>resource</code> parameter MCP clients send. The gateway therefore advertises a required scope, <code>mcp-gateway</code>, in its protected-resource metadata and 401 challenge, and that scope's mapper sets the audience. Okta and Entra sign access tokens with RS256 and Entra uses its own on-behalf-of flow instead of RFC 8693, so with those IdPs a small internal token service would have to issue the hub JWT.</p>
+<p>The local realm lets MCP clients register themselves (dynamic client registration, which stock clients such as Claude Code use), but <strong>only for localhost redirect URIs</strong>, only for the <code>mcp-gateway</code> and <code>offline_access</code> scopes, and only after a consent screen. That policy suits a developer machine, not production.</p>
+<h2 id="tools">Tools</h2>
+<p>The gateway lists <code>connect_github</code> plus an allowlist of read-only GitHub tools: <code>get_me</code>, <code>search_repositories</code>, <code>get_file_contents</code>, <code>list_issues</code>, <code>issue_read</code>, <code>list_pull_requests</code>, <code>pull_request_read</code>. Write tools such as <code>create_issue</code> are never listed.</p>
+<p>The tools are listed <strong>from startup</strong>, using a checked-in snapshot of GitHub's schemas (<code>src/mcp_gateway/github_tools.json</code>). On the first connected call after a restart, the gateway re-reads GitHub's live schemas, which stay authoritative, and logs a <code>gateway.catalog</code> event: <code>changed</code> tools are re-registered with the live schema, <code>added</code> tools (allowlisted but missing from the snapshot) are registered and announced, and <code>missing</code> tools (no longer offered by GitHub) stay listed and return GitHub's error if called.</p>
+<p>Why a snapshot: the tool list must not depend on a change notification. From MCP 2026-07-28, <code>notifications/tools/list_changed</code> may only be sent on the <code>subscriptions/listen</code> stream, which FastMCP 4.0.10 does not implement. A gateway that only revealed tools after the first connect would leave modern clients, including Claude Code, without them until they reconnect. Refresh the snapshot deliberately:</p>
+<pre><code class="language-sh">GITHUB_TOKEN=$(gh auth token) .venv/bin/python tools/refresh-github-tool-snapshot.py
+</code></pre>
+<p>It fetches with the gateway's own headers, and a unit test fails if the snapshot and the default allowlist diverge. Set <code>UPSTREAM_TOOL_SNAPSHOT=none</code> to list only <code>connect_github</code> until the first connected call.</p>
+<p>Upstream calls always carry <code>X-MCP-Readonly: true</code>, <code>X-MCP-Lockdown: true</code> (hides public issue content from users without push access), and <code>X-MCP-Toolsets</code>. GitHub content returned by tools (issue bodies, file contents) is untrusted input for the model; the gateway passes it through unchanged and never acts on it.</p>
+<h2 id="connecting-github-during-a-tool-call">Connecting GitHub during a tool call</h2>
+<p>If the user has no usable GitHub connection, any GitHub tool, or <code>connect_github</code>, asks the client to open the broker's consent link:</p>
+<table>
+<thead>
+<tr>
+<th>Client</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-28, supports URL elicitation (Claude Code)</td>
+<td>The call returns an <code>InputRequiredResult</code> with a URL request; the client asks the user, opens the link, and retries with the answer. The tool body runs again on the retry.</td>
+</tr>
+<tr>
+<td>2025-11-25, supports URL elicitation</td>
+<td>The gateway sends <code>elicitation/create</code> (mode <code>url</code>) during the call and waits for the answer.</td>
+</tr>
+<tr>
+<td>No URL elicitation</td>
+<td>The tool returns an error containing the link: open it, then retry.</td>
+</tr>
+</tbody>
+</table>
+<p>Accepting only means the user chose to open the link. The gateway then waits up to <code>CONSENT_WAIT_S</code> for the connection to appear. Declining or cancelling returns an error without waiting.</p>
+<h2 id="errors">Errors</h2>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Tool result</th>
+<th>Audit event</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Not connected, user declines</td>
+<td>Error: GitHub was not connected</td>
+<td><code>gateway.consent</code> outcome <code>decline</code>/<code>cancel</code></td>
+</tr>
+<tr>
+<td>Accepted, not finished in time</td>
+<td>Error: finish in the browser, then retry</td>
+<td><code>gateway.consent</code> outcome <code>timeout</code></td>
+</tr>
+<tr>
+<td>Broker, hub, or GitHub unreachable or 5xx</td>
+<td>Error: retry shortly (never "connect GitHub")</td>
+<td><code>gateway.call</code> outcome <code>unavailable</code> / <code>upstream-error</code></td>
+</tr>
+<tr>
+<td>Hub refuses the exchange, or broker returns 401</td>
+<td>Error: gateway configuration problem</td>
+<td><code>gateway.call</code> outcome <code>error</code></td>
+</tr>
+<tr>
+<td>Disconnect in progress (<code>revoke-pending</code>)</td>
+<td>Error naming the problem; no consent prompt</td>
+<td><code>gateway.call</code> outcome <code>deny</code></td>
+</tr>
+<tr>
+<td>GitHub rejects the token</td>
+<td>Error: reconnect GitHub and retry</td>
+<td><code>gateway.call</code> outcome <code>upstream-error</code>, reason <code>rejected</code></td>
+</tr>
+<tr>
+<td>MCP token refused</td>
+<td>HTTP 401 with <code>WWW-Authenticate: Bearer scope="mcp-gateway", resource_metadata=…</code></td>
+<td><code>gateway.auth</code> with reason <code>expired</code>, <code>audience</code>, <code>issuer</code>, <code>scope</code>, <code>algorithm</code>, <code>signature</code>, <code>malformed</code>, or <code>missing</code></td>
+</tr>
+</tbody>
+</table>
+<p>Audit events are single JSON lines carrying ids (<code>sub</code>, client id, tool name) and outcomes, never token material. A test greps every container's logs for the MCP token, the hub JWT, and the GitHub token.</p>
+<h2 id="configuration">Configuration</h2>
+<p>Required: <code>GATEWAY_PUBLIC_URL</code>, <code>HUB_ISSUER</code>, <code>HUB_JWKS_URI</code>, <code>HUB_TOKEN_ENDPOINT</code>, <code>GATEWAY_CLIENT_ID</code>, <code>GATEWAY_CLIENT_SECRET</code>, <code>BROKER_URL</code>. Startup fails listing every missing name.</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GATEWAY_PUBLIC_URL</code></td>
+<td>—</td>
+<td>The gateway's public base URL; the protected resource is <code>{GATEWAY_PUBLIC_URL}/mcp</code> and MCP tokens must carry it in <code>aud</code></td>
+</tr>
+<tr>
+<td><code>HUB_ISSUER</code></td>
+<td>—</td>
+<td>The hub's public issuer (checked in MCP tokens, advertised to clients)</td>
+</tr>
+<tr>
+<td><code>HUB_JWKS_URI</code>, <code>HUB_TOKEN_ENDPOINT</code></td>
+<td>—</td>
+<td>The hub's signing keys and token endpoint; may be internal addresses</td>
+</tr>
+<tr>
+<td><code>GATEWAY_CLIENT_ID</code>, <code>GATEWAY_CLIENT_SECRET</code></td>
+<td>—</td>
+<td>The gateway's confidential client at the hub (token exchange)</td>
+</tr>
+<tr>
+<td><code>BROKER_URL</code></td>
+<td>—</td>
+<td>The broker's internal URL</td>
+</tr>
+<tr>
+<td><code>HUB_ALGORITHM</code></td>
+<td><code>PS256</code></td>
+<td>MCP token signature algorithm; RS256 and HMAC are refused</td>
+</tr>
+<tr>
+<td><code>GATEWAY_SCOPE</code></td>
+<td><code>mcp-gateway</code></td>
+<td>Scope MCP tokens must carry; advertised to clients</td>
+</tr>
+<tr>
+<td><code>HUB_EXCHANGE_SCOPE</code></td>
+<td><code>hub-tier</code></td>
+<td>Scope requested in the exchange; must yield the broker's contract</td>
+</tr>
+<tr>
+<td><code>VENDOR</code></td>
+<td><code>github</code></td>
+<td>Broker vendor id to resolve</td>
+</tr>
+<tr>
+<td><code>MIN_TTL_S</code></td>
+<td><code>120</code></td>
+<td>Minimum remaining token lifetime asked of the broker</td>
+</tr>
+<tr>
+<td><code>UPSTREAM_MCP_URL</code></td>
+<td><code>https://api.githubcopilot.com/mcp/</code></td>
+<td>The vendor's MCP server</td>
+</tr>
+<tr>
+<td><code>UPSTREAM_TOOLS</code></td>
+<td>the seven read-only tools above</td>
+<td>Comma-separated allowlist</td>
+</tr>
+<tr>
+<td><code>UPSTREAM_TOOLSETS</code></td>
+<td><code>repos,issues,pull_requests,context</code></td>
+<td>Sent as <code>X-MCP-Toolsets</code></td>
+</tr>
+<tr>
+<td><code>UPSTREAM_READONLY</code>, <code>UPSTREAM_LOCKDOWN</code></td>
+<td><code>true</code></td>
+<td>Sent as <code>X-MCP-Readonly</code> / <code>X-MCP-Lockdown</code></td>
+</tr>
+<tr>
+<td><code>UPSTREAM_TOOL_SNAPSHOT</code></td>
+<td>bundled snapshot</td>
+<td>Path to another snapshot file, or <code>none</code></td>
+</tr>
+<tr>
+<td><code>CONSENT_WAIT_S</code></td>
+<td><code>120</code></td>
+<td>How long to wait for a browser connection after the user accepts</td>
+</tr>
+<tr>
+<td><code>HTTP_TIMEOUT_S</code></td>
+<td><code>15</code></td>
+<td>Timeout for hub, broker, and upstream calls</td>
+</tr>
+</tbody>
+</table>
+<p>The gateway is built from <code>Dockerfile.gateway</code> with its own hash-checked <code>requirements-gateway.lock</code>; FastMCP never enters the broker image.</p>
+<h2 id="run-it-locally">Run it locally</h2>
+<p>The <code>gateway</code> Compose profile adds Keycloak (<code>localhost:8180</code>), a broker that trusts it (<code>localhost:8600</code>, with its own OpenBao), the gateway (<code>localhost:8500</code>), and a GitHub stand-in (<code>localhost:8330</code>) that accepts only live mock-vendor tokens:</p>
+<pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
+.venv/bin/pytest tests/integration -m &quot;gateway and not external&quot; -q
+</code></pre>
+<p>Test users are <code>alice</code> and <code>bob</code>, each with their username as password. See the <a href="#run-the-mcp-gateway">quickstart</a> for the demo client, Claude Code, and real GitHub.</p>
+<h2 id="known-limitations">Known limitations</h2>
+<ul>
+<li><strong>No <code>subscriptions/listen</code>.</strong> The pinned tool list avoids needing it. If the allowlist gains a tool that is not in the snapshot, 2026-07-28 clients only see it after reconnecting.</li>
+<li><strong>Dependency surface.</strong> FastMCP 4.0.10 brings about 50 transitive packages (hash-pinned in <code>requirements-gateway.lock</code>). Review lock updates as you would any supply-chain change.</li>
+<li><strong>One exchange and one upstream session per call.</strong> Simple and stateless, at the cost of latency; there is no session pooling yet.</li>
+<li><strong>Read-only.</strong> Write tools are excluded by the allowlist and by <code>X-MCP-Readonly</code>.</li>
+<li><strong>One vendor per gateway.</strong> <code>VENDOR</code>, <code>UPSTREAM_MCP_URL</code>, and the allowlist configure a single upstream.</li>
+<li><strong>Signing-key cache.</strong> FastMCP's verifier caches the hub's JWKS for an hour. New keys are fetched on first use, but a key the hub removes (for example after a compromise) stays trusted by the gateway until the cache expires. Restart the gateway when you revoke a hub signing key. (The broker does not have this gap: it never caches individual keys.)</li>
+<li><strong>Client behavior seen with Claude Code 2.1.283.</strong> After the hub's address changed, Claude Code kept using the old token endpoint; after a failed token refresh, its next tool call arrived without usable credentials (logged as <code>gateway.auth</code>). Removing and re-adding the server, then signing in once, recovered in both cases. It also registered itself even when a pre-registered client id was configured.</li>
+</ul>
 </section>
 <hr class='sep'/>
 <section id="api">
@@ -858,6 +1174,8 @@ answer needs-consent for them until it is replaced.</p>
 <p>The current STALE entry keeps no token material (both tokens are blanked);
 older retained KV versions may still contain credentials.
 <code>REVOKE_PENDING</code> entries keep theirs until the vendor revocation succeeds.</p>
+<h2 id="mcp-gateway">MCP gateway</h2>
+<p>The gateway is a separate deployment (<code>Dockerfile.gateway</code>, <code>requirements-gateway.lock</code>) with its own configuration, hub requirements, audit events, and limitations: see <a href="#configuration">MCP gateway</a>. When the broker reaches the hub by an internal address that differs from the public issuer (as in the Keycloak profile), set <code>HUB_DISCOVERY_URL</code>, and set <code>HUB_LOGIN_HINT=none</code> for a real IdP.</p>
 <h2 id="multi-replica-deployment">Multi-replica deployment</h2>
 <p>Run ≥2 replicas only with <code>COORD_BACKEND=redis</code> (see
 <code>deploy/docker-compose.multi.yml</code> for the shape: shared OpenBao + Redis,
@@ -874,8 +1192,8 @@ describes isolation between standalone and multi-replica runs.</p>
 <hr class='sep'/>
 <section id="security">
 <div class="section-head"><h1>Security and MCP Alignment</h1><p class="blurb">Evidence, ownership, limitations, and the current MCP baseline.</p><p class="src">source: <code>docs/security.md</code></p></div>
-<p><strong>Reviewed 2026-09-25 · software 1.1.0 (unreleased) · MCP 2026-07-28.</strong></p>
-<p>The broker supplies credential custody and vendor OAuth flows inside a larger MCP deployment. Passing broker tests is not a claim that the complete deployment conforms to MCP. <a href="https://modelcontextprotocol.io/specification/2026-07-28">The current specification</a> defines the protocol baseline.</p>
+<p><strong>Reviewed 2026-09-26 · software 1.1.0 (unreleased) · MCP 2026-07-28.</strong></p>
+<p>The broker supplies credential custody and vendor OAuth flows inside a larger MCP deployment; the shipped <a href="#gateway">MCP gateway</a> implements the MCP boundary for GitHub's MCP server. Passing these tests is not a claim that a complete deployment conforms to MCP. <a href="https://modelcontextprotocol.io/specification/2026-07-28">The current specification</a> defines the protocol baseline.</p>
 <h2 id="control-ownership-and-evidence">Control ownership and evidence</h2>
 <p>“Implemented” means present in this broker; “partial” identifies limits; “external” requires another component; “planned” is not available here. Source/test paths below refer to the private repository available to maintainers.</p>
 <table>
@@ -929,28 +1247,43 @@ describes isolation between standalone and multi-replica runs.</p>
 </tr>
 <tr>
 <td>Protected-resource metadata and MCP discovery</td>
-<td>External / MCP server and client</td>
-<td>No MCP endpoint implementation here</td>
+<td>Implemented / gateway</td>
+<td><code>mcp_gateway/server.py</code> (<code>build_auth</code>); <code>tests/unit/test_gateway_auth.py</code>, <code>tests/integration/test_mcp_gateway.py</code>; verified with Claude Code 2.1.283</td>
 </tr>
 <tr>
-<td>Resource indicators and resource-specific token audience</td>
-<td>External / MCP client, server, AS</td>
-<td>Internal tier-audience checks do not establish MCP resource binding</td>
+<td>Resource-specific token audience</td>
+<td>Partial / gateway + hub</td>
+<td>The gateway requires <code>aud</code> = its resource URL, pinned algorithm, issuer, and scope (tested). Keycloak ignores RFC 8707 <code>resource</code>, so the audience comes from the required <code>mcp-gateway</code> scope</td>
 </tr>
 <tr>
-<td>MCP authorization challenges and registration</td>
-<td>External / MCP stack</td>
-<td>Broker status codes are an internal contract</td>
+<td>MCP authorization challenges</td>
+<td>Implemented / gateway</td>
+<td>401 <code>WWW-Authenticate</code> with <code>resource_metadata</code> and <code>scope</code>; every refusal audited as <code>gateway.auth</code> with its reason</td>
+</tr>
+<tr>
+<td>MCP client registration</td>
+<td>External / hub</td>
+<td>The development realm allows localhost-only dynamic registration with consent (tested); production policy belongs to the IdP</td>
+</tr>
+<tr>
+<td>Identity handoff without token passthrough</td>
+<td>Implemented / gateway + hub</td>
+<td>RFC 8693 exchange; the broker rejects a raw MCP token (<code>tests/integration/test_keycloak_hub.py</code>)</td>
 </tr>
 <tr>
 <td>Vendor consent via URL elicitation</td>
-<td>Planned adapter / MCP server</td>
-<td><a href="#mcp">Integration design</a>; not exercised by broker tests</td>
+<td>Implemented / gateway</td>
+<td>Both protocol eras and the no-capability fallback; <code>tests/unit/test_gateway.py</code>, <code>tests/integration/test_mcp_gateway.py</code>; verified with Claude Code 2.1.283</td>
 </tr>
 <tr>
-<td>Token stripping and token-free MCP results</td>
-<td>External / gateway and MCP server</td>
-<td>Must be tested in the deployment; resolve deliberately returns a token to its trusted caller</td>
+<td>Token-free MCP results and logs</td>
+<td>Implemented for the shipped gateway</td>
+<td>Leak test greps every container for the MCP token, hub JWT, and GitHub token. Custom gateways must test their own; resolve deliberately returns a token to its trusted caller</td>
+</tr>
+<tr>
+<td>Read-only tool allowlist</td>
+<td>Implemented / gateway</td>
+<td>Allowlist plus <code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code> on every upstream call (tested against the stand-in)</td>
 </tr>
 <tr>
 <td>Issuer-bound vendor client credentials</td>
@@ -975,11 +1308,13 @@ describes isolation between standalone and multi-replica runs.</p>
 <h3 id="revocation-historical-storage-and-recovery">Revocation, historical storage, and recovery</h3>
 <p>Unsupported vendor revocation removes the local connection only. If custody fails after code redemption, revocation of the newly acquired grant is best-effort. <code>max_versions=2</code> retains up to two credential versions; scrubbing the current STALE entry does not erase every retained historical version.</p>
 <p>CAS prevents a losing refresh write from overwriting a newer stored version. It cannot undo a refresh already consumed at the vendor. A replica failure at that point can burn a rotating-token family and require re-consent. Cache invalidation is best-effort, bounded by <code>CACHE_TTL_S</code> (default 60 seconds).</p>
+<h3 id="mcp-gateway">MCP gateway</h3>
+<p>The gateway depends on FastMCP 4.0.10 and about 50 hash-pinned transitive packages; its JWKS cache can keep trusting a removed hub signing key for up to an hour; it cannot send tool-list changes to 2026-07-28 clients (no <code>subscriptions/listen</code>), which the pinned tool list works around; and the local realm's self-registration policy is for development only. Details: <a href="#known-limitations">gateway limitations</a>.</p>
 <h3 id="deployment-controls">Deployment controls</h3>
 <p>Use private ingress and gateway workload authentication, TLS, controlled custody policies, and audit logging configured in the custody backend. Those controls are not supplied by the development Compose stack. The broker can sign <code>private_key_jwt</code> client-authentication assertions, but does not issue access tokens. Treat vendor client signing keys as credential material.</p>
 <p>Route <code>broker.stale.mass</code> to monitoring if an on-call notification is required: emitting <code>page: true</code> does not itself contact an alert service. Availability and latency values in the design are targets, not measured guarantees.</p>
 <h2 id="verification-record">Verification record</h2>
-<p>Review baseline: application commit <code>99bd39f</code>. Checks on 2026-09-25:</p>
+<p>Review baseline: application commit <code>a4c7a4b</code>. Checks on 2026-09-26:</p>
 <table>
 <thead>
 <tr>
@@ -990,33 +1325,33 @@ describes isolation between standalone and multi-replica runs.</p>
 <tbody>
 <tr>
 <td>Unit suite</td>
-<td>321 passed</td>
+<td>375 passed</td>
 </tr>
 <tr>
 <td>Docker integration / memory</td>
 <td>61 passed</td>
 </tr>
 <tr>
-<td>Docker integration / Redis</td>
-<td>61 passed</td>
+<td>Gateway profile (Keycloak hub, broker-kc, gateway, GitHub stand-in)</td>
+<td>29 passed</td>
 </tr>
 <tr>
-<td>Multi-replica (local, isolated)</td>
-<td>7 passed</td>
+<td>CI run 36267909800 (lint, unit, image builds, integration memory and Redis, gateway, multi-replica)</td>
+<td>All jobs passed</td>
 </tr>
 <tr>
-<td>Multi-replica (CI)</td>
-<td>First run: 20-parallel single-flight test saw 2 refreshes; rerun of the failed job passed</td>
+<td>Real GitHub through the gateway (<code>test_external_github_mcp.py</code>)</td>
+<td>2 passed with a configured GitHub App</td>
 </tr>
 <tr>
-<td>Real GitHub</td>
-<td>Skipped; App credentials not configured</td>
+<td>Claude Code 2.1.283 against the gateway and GitHub's MCP server</td>
+<td>Sign-in with dynamic registration, in-client GitHub connection prompt, and <code>get_me</code> all worked</td>
 </tr>
 </tbody>
 </table>
-<p>The CI failure is a test-timing race, not a single-flight defect: mock tokens (60 seconds) sit inside <code>REFRESH_BUFFER_S</code> (300), so a resolve whose first read lands after the first refresh completes legitimately refreshes again.</p>
+<p>Earlier CI runs at <code>ba03ed4</code> and <code>2607389</code> each failed one 20-parallel single-flight test once; rerunning the failed job passed. The CI failure is a test-timing race, not a single-flight defect: mock tokens (60 seconds) sit inside <code>REFRESH_BUFFER_S</code> (300), so a resolve whose first read lands after the first refresh completes legitimately refreshes again.</p>
 <p>At the earlier <code>2317b07</code> review, the first multi-replica failure was consistent with a retained 120-second sweep lease from the preceding standalone Redis broker exceeding the test's 60-second deadline. Its remaining TTL was not captured at failure, so this explanation is not definitive. Host/container clocks aligned. Documented <a href="#run-the-automated-checks">test isolation</a> avoids that handoff ambiguity.</p>
-<p>These checks use the mock vendor and do not establish real-provider interoperability, MCP client compatibility, production load capacity, or penetration-test results. <a href="#smoke-tests">Manual verification</a> explains the individual probes.</p>
+<p>Most checks use the mock vendor and the GitHub stand-in. The real-GitHub and Claude Code checks show interoperability for that configuration only; none of this establishes production load capacity or penetration-test results. <a href="#smoke-tests">Manual verification</a> explains the individual probes.</p>
 <h2 id="enterprise-migration">Enterprise migration</h2>
 <p>EMA is optional and requires compatible clients, IdPs, and resource authorization servers. Evaluate downstream vendor access before retiring a broker integration. Keep readiness evidence per vendor, with a review date. An <code>ema_status</code> change alone has no runtime effect. <a href="https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization">Enterprise-Managed Authorization</a></p>
 </section>
@@ -1907,7 +2242,7 @@ stampede).</p>
         C-&gt;&gt;B: resolve (uncached sub)
         B--xK: read fails (3s bounded timeout)
         B--&gt;&gt;C: 503 vault-unavailable (retriable)
-        Note over B: only grace: entries already in the&lt;br/&gt;≤ 60s per-replica cache keep serving
+        Note over B: only grace: entries already in the&lt;br/&gt;per-replica cache (CACHE_TTL_S) keep serving
     end
 
     rect rgba(59,130,246,0.10)
@@ -2063,7 +2398,7 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
     B-&gt;&gt;V: read vendor-tokens/mockhub/sub-b64.{encoded subject}
     V--&gt;&gt;B: not found
     B--&gt;&gt;C: 404 needs-consent + authorize_uri(txn)
-    Note over C: a gateway would forward this as the&lt;br/&gt;custom consent prompt; see the MCP integration guide
+    Note over C: a gateway would forward this as the&lt;br/&gt;custom consent prompt (see the MCP integration guide)
 </pre>
 <p><strong>What this proves:</strong> a valid hub JWT is accepted but <em>authorization is
 per-user</em>: no grant → no token, only a one-time consent transaction

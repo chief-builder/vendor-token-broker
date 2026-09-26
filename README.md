@@ -29,10 +29,17 @@ assertions (`private_key_jwt`) may be signed with keys from custody.
   `STALE`, require the user to reconnect, and can trigger an organization-wide
   mass-STALE alert. Deletion revokes the credential at the vendor first
   (RFC 7009) before removing it locally. If the custody backend is unavailable,
-  the broker uses only its ≤60-second cache grace and then fails closed with 503
+  the broker uses only its in-memory cache grace (`CACHE_TTL_S`, default 60 s)
+  and then fails closed with 503
   rather than treating the grant as missing or supplying an unverified token.
 - **Client auth to vendors**: `client_secret_post`, `client_secret_basic`,
   or `private_key_jwt` (RFC 7523), per registry entry.
+- **MCP gateway** (`src/mcp_gateway/`, a separate service): MCP clients such
+  as Claude Code sign in at the hub and call GitHub's MCP server through it.
+  It exchanges the MCP token for a hub JWT (RFC 8693), resolves the user's
+  GitHub token here, and forwards read-only allowlisted tools; a missing
+  connection becomes an in-client prompt to connect GitHub
+  ([docs](docs/mcp-gateway.md)).
 
 ## Quickstart (self-contained, no external dependencies)
 
@@ -109,7 +116,8 @@ asserts all of it on every CI run.
 Published site: **https://chief-builder.github.io/vendor-token-broker-docs/**
 
 - [Overview](docs/overview.md) and [quickstart](docs/quickstart.md)
-- [Integrate with MCP](docs/mcp-integration.md)
+- [MCP gateway](docs/mcp-gateway.md) (GitHub's MCP server via the broker) and
+  [integrate with MCP](docs/mcp-integration.md)
 - [API reference](docs/api.md)
 - [Deploy and operate](docs/operations.md)
 - [Security and MCP alignment](docs/security.md)

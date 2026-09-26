@@ -30,6 +30,8 @@ SECTIONS = [
     ("overview", "Overview", "overview.md", "What the broker does and where it fits in an MCP deployment."),
     ("quickstart", "Quickstart", "quickstart.md", "Run one complete local consent, resolve, and disconnect flow."),
     ("mcp", "Integrate with MCP", "mcp-integration.md", "Separate MCP authorization, the internal broker contract, and vendor consent."),
+    ("gateway", "MCP Gateway", "mcp-gateway.md",
+     "Claude Code and other MCP clients to GitHub's MCP server, through the broker."),
     ("api", "API Reference", "api.md", "The internal REST contract, stable errors, and caller actions."),
     ("operations", "Deploy and Operate", "operations.md", "Provision custody, configure replicas, and respond to failures."),
     ("security", "Security and MCP Alignment", "security.md", "Evidence, ownership, limitations, and the current MCP baseline."),

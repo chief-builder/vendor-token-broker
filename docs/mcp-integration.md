@@ -1,18 +1,18 @@
 # Integrate with MCP
 
-**Baseline: MCP 2026-07-28 · reviewed 2026-09-25.** The broker implements an internal REST contract. You supply the MCP server and trusted gateway integration described here.
+**Baseline: MCP 2026-07-28 · reviewed 2026-09-26.** The broker implements an internal REST contract. This repository also ships an [MCP gateway](mcp-gateway.md) for GitHub's MCP server that implements the MCP side described here; use this page to integrate the broker with your own MCP server or gateway instead.
 
 ## Three authorization boundaries
 
 | Boundary | Credential and validator | Owner |
 |---|---|---|
-| MCP client → MCP server | Access token issued for that MCP resource; validated by the MCP server | Your MCP client, server, and authorization server |
+| MCP client → MCP server | Access token issued for that MCP resource; validated by the MCP server | Your MCP client and authorization server; the shipped gateway validates it |
 | Gateway → broker | Internal hub JWT, revalidated by `HubValidator` | Your identity handoff and this broker |
 | Gateway → vendor API | Vendor access token obtained through broker consent | Gateway, broker, vendor |
 
-The hub JWT's `mcp_contract` claim, `mcp://tier/*` audiences, and algorithm policy are project conventions. They are not MCP protocol versions or standard MCP claim names. Do not blindly forward an MCP-server token to the broker: arrange an internal credential valid for the broker's configured issuer, audience, and contract. That identity handoff is outside this repository.
+The hub JWT's `mcp_contract` claim, `mcp://tier/*` audiences, and algorithm policy are project conventions. They are not MCP protocol versions or standard MCP claim names. Do not blindly forward an MCP-server token to the broker: arrange an internal credential valid for the broker's configured issuer, audience, and contract. The shipped gateway does this with [RFC 8693 token exchange at the hub](mcp-gateway.md#identity-handoff-what-the-hub-must-do).
 
-At the MCP boundary, implement protected-resource metadata, authorization-server discovery, resource indicators, intended-audience validation, and appropriate HTTP authorization challenges. The broker does not expose those MCP endpoints. [MCP authorization requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
+At the MCP boundary, implement protected-resource metadata, authorization-server discovery, resource indicators, intended-audience validation, and appropriate HTTP authorization challenges. The broker does not expose those MCP endpoints; the shipped gateway does. [MCP authorization requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
 
 ## Calling the broker
 
@@ -26,11 +26,11 @@ The broker returns tokens to any caller satisfying its internal authentication c
 
 ## Connecting a vendor during a tool call
 
-**Proposed adapter behavior; not shipped in this repository.** A missing vendor connection is distinct from a client's authorization to call the MCP server.
+**The shipped gateway implements this; see [its consent behavior](mcp-gateway.md#connecting-github-during-a-tool-call).** The guidance below applies to any adapter. A missing vendor connection is distinct from a client's authorization to call the MCP server.
 
 For MCP 2026-07-28, an adapter can put URL-mode `elicitation/create` in an `InputRequiredResult` when the client advertises `elicitation.url`. Point its URL at the broker's `authorize_uri`; the MCP bearer token stays unchanged. The client asks permission before navigation. Use the negotiated protocol revision's SDK to build the full envelope. [URL-mode elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation)
 
-The nested request has this shape (illustrative; the URL comes from resolve):
+The nested request has this shape (illustrative; the URL comes from resolve). Clients on 2025-11-25 receive the same request directly as `elicitation/create` during the call:
 
 ```json
 {
@@ -54,9 +54,11 @@ Adapter decisions:
 | 503 | Apply bounded retry/backoff; do not interpret an outage as missing consent |
 | 401 `invalid-hub-token` | Repair internal authentication; do not assume the MCP client's own token expired |
 
-After a browser flow, resolve again with the same authenticated user and required scopes. User acceptance alone does not prove the connection succeeded. A suggested adapter policy is at most one consent retry per operation before returning an actionable error. Stop on decline or cancellation. If URL elicitation is unsupported, return a clear tool error and a supported manual connection route in your application; do not ask for vendor tokens in chat or form fields.
+After a browser flow, confirm the connection before resolving again with the same authenticated user and required scopes. User acceptance alone does not prove the connection succeeded, and each unsuccessful resolve mints a new connection link, so poll the [grant list](api.md) rather than resolve while waiting. A suggested adapter policy is at most one consent retry per operation before returning an actionable error. Stop on decline or cancellation. If URL elicitation is unsupported, return a clear tool error and a supported manual connection route in your application; do not ask for vendor tokens in chat or form fields.
 
-Test the adapter separately for cancellation, unsupported capabilities, expired connection URLs, scope expansion, identity handoff, token redaction, and retry limits. Broker integration tests do not exercise an MCP client.
+Test the adapter separately for cancellation, unsupported capabilities, expired connection URLs, scope expansion, identity handoff, token redaction, and retry limits. The gateway's end-to-end tests (`tests/integration/test_mcp_gateway.py`) exercise these with a real MCP client.
+
+Do not rely on `notifications/tools/list_changed` to reveal tools after a connection: from 2026-07-28 it may only be sent on `subscriptions/listen`. List tools from the start, as the [gateway's pinned tool list](mcp-gateway.md#tools) does.
 
 ## Existing gateway compatibility
 

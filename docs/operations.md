@@ -194,6 +194,10 @@ The current STALE entry keeps no token material (both tokens are blanked);
 older retained KV versions may still contain credentials.
 `REVOKE_PENDING` entries keep theirs until the vendor revocation succeeds.
 
+## MCP gateway
+
+The gateway is a separate deployment (`Dockerfile.gateway`, `requirements-gateway.lock`) with its own configuration, hub requirements, audit events, and limitations: see [MCP gateway](mcp-gateway.md#configuration). When the broker reaches the hub by an internal address that differs from the public issuer (as in the Keycloak profile), set `HUB_DISCOVERY_URL`, and set `HUB_LOGIN_HINT=none` for a real IdP.
+
 ## Multi-replica deployment
 
 Run ≥2 replicas only with `COORD_BACKEND=redis` (see

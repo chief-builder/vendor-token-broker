@@ -1,8 +1,8 @@
 # Security and MCP alignment
 
-**Reviewed 2026-09-25 · software 1.1.0 (unreleased) · MCP 2026-07-28.**
+**Reviewed 2026-09-26 · software 1.1.0 (unreleased) · MCP 2026-07-28.**
 
-The broker supplies credential custody and vendor OAuth flows inside a larger MCP deployment. Passing broker tests is not a claim that the complete deployment conforms to MCP. [The current specification](https://modelcontextprotocol.io/specification/2026-07-28) defines the protocol baseline.
+The broker supplies credential custody and vendor OAuth flows inside a larger MCP deployment; the shipped [MCP gateway](mcp-gateway.md) implements the MCP boundary for GitHub's MCP server. Passing these tests is not a claim that a complete deployment conforms to MCP. [The current specification](https://modelcontextprotocol.io/specification/2026-07-28) defines the protocol baseline.
 
 ## Control ownership and evidence
 
@@ -18,11 +18,14 @@ The broker supplies credential custody and vendor OAuth flows inside a larger MC
 | Revocation | Implemented with exceptions / broker + vendor | `main.py`, `vendors.py`, `sweeper.py`; `tests/integration/test_grants.py` |
 | No access-token issuance endpoint | Implemented / broker | `tests/unit/test_routes.py` audits seven routes; client assertions may still be signed |
 | Sensitive values absent from tested logs | Implemented test coverage / broker | `tests/integration/test_security.py` checks sampled hub/vendor tokens, client secret, and assertion key; not an exhaustive proof for arbitrary provider errors |
-| Protected-resource metadata and MCP discovery | External / MCP server and client | No MCP endpoint implementation here |
-| Resource indicators and resource-specific token audience | External / MCP client, server, AS | Internal tier-audience checks do not establish MCP resource binding |
-| MCP authorization challenges and registration | External / MCP stack | Broker status codes are an internal contract |
-| Vendor consent via URL elicitation | Planned adapter / MCP server | [Integration design](mcp-integration.md); not exercised by broker tests |
-| Token stripping and token-free MCP results | External / gateway and MCP server | Must be tested in the deployment; resolve deliberately returns a token to its trusted caller |
+| Protected-resource metadata and MCP discovery | Implemented / gateway | `mcp_gateway/server.py` (`build_auth`); `tests/unit/test_gateway_auth.py`, `tests/integration/test_mcp_gateway.py`; verified with Claude Code 2.1.283 |
+| Resource-specific token audience | Partial / gateway + hub | The gateway requires `aud` = its resource URL, pinned algorithm, issuer, and scope (tested). Keycloak ignores RFC 8707 `resource`, so the audience comes from the required `mcp-gateway` scope |
+| MCP authorization challenges | Implemented / gateway | 401 `WWW-Authenticate` with `resource_metadata` and `scope`; every refusal audited as `gateway.auth` with its reason |
+| MCP client registration | External / hub | The development realm allows localhost-only dynamic registration with consent (tested); production policy belongs to the IdP |
+| Identity handoff without token passthrough | Implemented / gateway + hub | RFC 8693 exchange; the broker rejects a raw MCP token (`tests/integration/test_keycloak_hub.py`) |
+| Vendor consent via URL elicitation | Implemented / gateway | Both protocol eras and the no-capability fallback; `tests/unit/test_gateway.py`, `tests/integration/test_mcp_gateway.py`; verified with Claude Code 2.1.283 |
+| Token-free MCP results and logs | Implemented for the shipped gateway | Leak test greps every container for the MCP token, hub JWT, and GitHub token. Custom gateways must test their own; resolve deliberately returns a token to its trusted caller |
+| Read-only tool allowlist | Implemented / gateway | Allowlist plus `X-MCP-Readonly` and `X-MCP-Lockdown` on every upstream call (tested against the stand-in) |
 | Issuer-bound vendor client credentials | Partial / configuration control | Custody keys use vendor ID; issuer changes do not automatically invalidate credentials |
 | Enterprise-Managed Authorization / ID-JAG | Planned / cooperating identity systems | `ema_status` tracks readiness; no exchange or automated drain implementation |
 
@@ -48,6 +51,10 @@ Unsupported vendor revocation removes the local connection only. If custody fail
 
 CAS prevents a losing refresh write from overwriting a newer stored version. It cannot undo a refresh already consumed at the vendor. A replica failure at that point can burn a rotating-token family and require re-consent. Cache invalidation is best-effort, bounded by `CACHE_TTL_S` (default 60 seconds).
 
+### MCP gateway
+
+The gateway depends on FastMCP 4.0.10 and about 50 hash-pinned transitive packages; its JWKS cache can keep trusting a removed hub signing key for up to an hour; it cannot send tool-list changes to 2026-07-28 clients (no `subscriptions/listen`), which the pinned tool list works around; and the local realm's self-registration policy is for development only. Details: [gateway limitations](mcp-gateway.md#known-limitations).
+
 ### Deployment controls
 
 Use private ingress and gateway workload authentication, TLS, controlled custody policies, and audit logging configured in the custody backend. Those controls are not supplied by the development Compose stack. The broker can sign `private_key_jwt` client-authentication assertions, but does not issue access tokens. Treat vendor client signing keys as credential material.
@@ -56,22 +63,22 @@ Route `broker.stale.mass` to monitoring if an on-call notification is required: 
 
 ## Verification record
 
-Review baseline: application commit `99bd39f`. Checks on 2026-09-25:
+Review baseline: application commit `a4c7a4b`. Checks on 2026-09-26:
 
 | Check | Result |
 |---|---|
-| Unit suite | 321 passed |
+| Unit suite | 375 passed |
 | Docker integration / memory | 61 passed |
-| Docker integration / Redis | 61 passed |
-| Multi-replica (local, isolated) | 7 passed |
-| Multi-replica (CI) | First run: 20-parallel single-flight test saw 2 refreshes; rerun of the failed job passed |
-| Real GitHub | Skipped; App credentials not configured |
+| Gateway profile (Keycloak hub, broker-kc, gateway, GitHub stand-in) | 29 passed |
+| CI run 36267909800 (lint, unit, image builds, integration memory and Redis, gateway, multi-replica) | All jobs passed |
+| Real GitHub through the gateway (`test_external_github_mcp.py`) | 2 passed with a configured GitHub App |
+| Claude Code 2.1.283 against the gateway and GitHub's MCP server | Sign-in with dynamic registration, in-client GitHub connection prompt, and `get_me` all worked |
 
-The CI failure is a test-timing race, not a single-flight defect: mock tokens (60 seconds) sit inside `REFRESH_BUFFER_S` (300), so a resolve whose first read lands after the first refresh completes legitimately refreshes again.
+Earlier CI runs at `ba03ed4` and `2607389` each failed one 20-parallel single-flight test once; rerunning the failed job passed. The CI failure is a test-timing race, not a single-flight defect: mock tokens (60 seconds) sit inside `REFRESH_BUFFER_S` (300), so a resolve whose first read lands after the first refresh completes legitimately refreshes again.
 
 At the earlier `2317b07` review, the first multi-replica failure was consistent with a retained 120-second sweep lease from the preceding standalone Redis broker exceeding the test's 60-second deadline. Its remaining TTL was not captured at failure, so this explanation is not definitive. Host/container clocks aligned. Documented [test isolation](quickstart.md#run-the-automated-checks) avoids that handoff ambiguity.
 
-These checks use the mock vendor and do not establish real-provider interoperability, MCP client compatibility, production load capacity, or penetration-test results. [Manual verification](smoke-tests.md) explains the individual probes.
+Most checks use the mock vendor and the GitHub stand-in. The real-GitHub and Claude Code checks show interoperability for that configuration only; none of this establishes production load capacity or penetration-test results. [Manual verification](smoke-tests.md) explains the individual probes.
 
 ## Enterprise migration
 

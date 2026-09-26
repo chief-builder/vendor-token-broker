@@ -98,10 +98,51 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 
 The replicas use a 10-second sweep lease. A remaining TTL greater than 10000 ms indicates the previous default-interval lease is still present. The test fixture restarts the standalone broker on completion. Stop the replicas before rerunning the standalone tests so sweepers do not interfere.
 
+## Run the MCP gateway
+
+Start the `gateway` profile: Keycloak as the hub, a broker that trusts it, the [MCP gateway](mcp-gateway.md), and a GitHub stand-in. Keycloak is at `http://localhost:8180` (users `alice`/`alice` and `bob`/`bob`).
+
+```sh
+docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
+.venv/bin/pytest tests/integration -m "gateway and not external" -q
+```
+
+### Demo MCP client
+
+```sh
+.venv/bin/python tools/mcp-demo-client.py get_me
+```
+
+A browser opens on Keycloak: sign in as `alice`. If the gateway asks to connect the vendor, a second tab opens the connection flow; finish it there and the client continues on its own. The client uses the pre-registered public client `mcp-demo-cli` and OAuth callback port 33418.
+
+### Claude Code
+
+```sh
+claude mcp add --transport http vtb-gateway http://localhost:8500/mcp --callback-port 33419
+```
+
+In a new Claude Code session, run `/mcp`, choose `vtb-gateway`, then **Authenticate**. Claude Code registers itself with Keycloak; sign in as `alice` and approve the consent screen. Then ask it to use a `vtb-gateway` tool such as `get_me`. If GitHub is not connected, Claude Code asks to open a URL; accept, finish in the browser, and the call completes. If authentication later fails with an error naming an old address, run `claude mcp remove vtb-gateway`, add it again, and sign in once.
+
+### Real GitHub
+
+1. Create a GitHub App at <https://github.com/settings/apps/new>: callback URLs `http://localhost:8300/v1/callback/github` and `http://localhost:8600/v1/callback/github`, **Expire user authorization tokens** on, webhook off, repository permissions Contents, Issues, Pull requests, and Metadata **read-only**. Generate a client secret and install the App on the repositories you want to reach.
+2. Put `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `tests/stack/.env` (gitignored), then run the `up` command above again so custody is provisioned with them.
+3. Point the gateway at GitHub's MCP server, with enough time for a person to finish the connection:
+
+   ```sh
+   GATEWAY_VENDOR=github GATEWAY_UPSTREAM_URL=https://api.githubcopilot.com/mcp/ \
+     GATEWAY_CONSENT_WAIT_S=120 \
+     docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --no-deps --wait mcp-gateway
+   ```
+
+4. Use the demo client or Claude Code as above; `get_me` returns your GitHub account. `GATEWAY_VENDOR=github .venv/bin/pytest tests/integration/test_external_github_mcp.py -m external` checks the same path.
+
+Recreate the gateway without those variables to return to the stand-in.
+
 ## Stop the development stack
 
 ```sh
-docker compose -f tests/stack/docker-compose.yml --profile multi down
+docker compose -f tests/stack/docker-compose.yml --profile multi --profile gateway down
 ```
 
 OpenBao development storage is lost when its container stops. Run the setup again to reprovision it.

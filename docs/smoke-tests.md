@@ -118,7 +118,7 @@ sequenceDiagram
     B->>V: read vendor-tokens/mockhub/sub-b64.{encoded subject}
     V-->>B: not found
     B-->>C: 404 needs-consent + authorize_uri(txn)
-    Note over C: a gateway would forward this as the<br/>custom consent prompt; see the MCP integration guide
+    Note over C: a gateway would forward this as the<br/>custom consent prompt (see the MCP integration guide)
 ```
 
 **What this proves:** a valid hub JWT is accepted but *authorization is
