@@ -72,7 +72,7 @@ For the browser walkthrough and attack probes, continue to [manual verification]
 
 ```sh
 .venv/bin/pytest tests/unit -q
-.venv/bin/pytest tests/integration -m "not external and not multi" -q
+.venv/bin/pytest tests/integration -m "not external and not multi and not gateway" -q
 ```
 
 Switch the standalone broker to Redis to exercise the same contract:
@@ -80,7 +80,7 @@ Switch the standalone broker to Redis to exercise the same contract:
 ```sh
 COORD_BACKEND=redis docker compose -f tests/stack/docker-compose.yml \
   up -d --no-deps --wait broker
-.venv/bin/pytest tests/integration -m "not external and not multi" -q
+.venv/bin/pytest tests/integration -m "not external and not multi and not gateway" -q
 ```
 
 For multi-replica testing, stop the standalone broker and allow its sweep lease to expire (up to 120 seconds at the default interval) before starting the test. Do not flush a shared Redis instance.

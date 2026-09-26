@@ -40,16 +40,20 @@ ruff check src tests
 pytest tests/unit -q                             # offline, no containers
 
 docker compose -f tests/stack/docker-compose.yml up -d --build --wait
-pytest tests/integration -m "not external and not multi" -q
+pytest tests/integration -m "not external and not multi and not gateway" -q
 
 # multi-replica proof (2 replicas + nginx LB + redis)
 docker compose -f tests/stack/docker-compose.yml --profile multi up -d --build --wait
 BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
   pytest tests/integration/test_multi_replica.py -q
+
+# Keycloak as the real hub (MCP gateway work): keycloak + broker-kc (:8600)
+docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
+pytest tests/integration -m gateway -q
 ```
 
 CI (`.github/workflows/ci.yml`): lint+schema / unit / docker-build /
-integration(memory, redis) / multi. The integration job is a matrix over
+integration(memory, redis) / gateway / multi. The integration job is a matrix over
 `COORD_BACKEND`; each leg brings the stack up with that env var.
 
 ## Layout
@@ -83,6 +87,12 @@ integration(memory, redis) / multi. The integration job is a matrix over
   imports collide when both suites are collected together.
 - Integration asserts read audit events from `docker logs` of `vtb-broker`
   (or replicas via `BROKER_CONTAINERS`); container names matter.
+- Gateway profile: Keycloak's issuer is `http://keycloak.localhost:8180` for
+  browsers and containers alike (host resolves *.localhost to 127.0.0.1;
+  containers get a network alias). Keycloak sets Secure cookies over http,
+  so test browsers must send Secure cookies to *.localhost like real
+  browsers do (`keycloak_stack.browser_session`). broker-kc has its own
+  OpenBao so its sweeper never shares custody with `broker`.
 - Use `docker pause` (not stop) to simulate OpenBao/mock outages — dev-mode
   OpenBao state is in-memory and a restart wipes provisioning.
 - App factory pattern: `uvicorn --factory token_broker.main:create_app`.

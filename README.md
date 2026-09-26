@@ -48,7 +48,7 @@ python3.12 -m venv .venv
 # a hostile mock vendor AS, a hub-issuer stub, and the broker.
 docker compose -f tests/stack/docker-compose.yml up -d --build --wait
 
-.venv/bin/pytest tests/unit tests/integration -m "not external and not multi"
+.venv/bin/pytest tests/unit tests/integration -m "not external and not multi and not gateway"
 ```
 
 Multi-replica proof (two redis-coordinated replicas behind round-robin nginx):

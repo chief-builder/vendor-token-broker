@@ -247,12 +247,12 @@ PY
 <p>For the browser walkthrough and attack probes, continue to <a href="#smoke-tests">manual verification</a>.</p>
 <h2 id="run-the-automated-checks">Run the automated checks</h2>
 <pre><code class="language-sh">.venv/bin/pytest tests/unit -q
-.venv/bin/pytest tests/integration -m &quot;not external and not multi&quot; -q
+.venv/bin/pytest tests/integration -m &quot;not external and not multi and not gateway&quot; -q
 </code></pre>
 <p>Switch the standalone broker to Redis to exercise the same contract:</p>
 <pre><code class="language-sh">COORD_BACKEND=redis docker compose -f tests/stack/docker-compose.yml \
   up -d --no-deps --wait broker
-.venv/bin/pytest tests/integration -m &quot;not external and not multi&quot; -q
+.venv/bin/pytest tests/integration -m &quot;not external and not multi and not gateway&quot; -q
 </code></pre>
 <p>For multi-replica testing, stop the standalone broker and allow its sweep lease to expire (up to 120 seconds at the default interval) before starting the test. Do not flush a shared Redis instance.</p>
 <pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml stop broker

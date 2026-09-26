@@ -37,6 +37,7 @@ asyncio_mode = "auto"
 markers = [
     "multi: requires the multi-replica compose profile (nginx + broker-a/b + redis)",
     "external: requires real external vendor credentials (skipped unless configured)",
+    "gateway: requires the gateway compose profile (Keycloak hub + broker-kc)",
 ]
 
 [tool.ruff]
