@@ -120,5 +120,31 @@
     "refresh_rotation": true,
     "ema_status": "none",
     "_notes": "Same test AS, but its metadata advertises no revocation_endpoint. Exists so the delete-without-vendor-revocation path runs headless (local delete, audited outcome: unsupported)."
+  },
+  "mockhub-atlassian": {
+    "vendor_id": "mockhub-atlassian",
+    "auth_metadata_url": "http://mock-vendor:8310/.well-known/oauth-authorization-server/mcp",
+    "resource": "http://mock-mcp:8330/atlassian/mcp",
+    "token_endpoint_auth_method": "client_secret_post",
+    "scope_ceiling": [
+      "issues:read",
+      "issues:write"
+    ],
+    "refresh_rotation": true,
+    "ema_status": "none",
+    "_notes": "Test AS playing Atlassian's own MCP sign-in: tokens are bound to the resource, and the mock-mcp stand-in at /atlassian/mcp refuses tokens issued for anything else. Exists so the RFC 8707 resource path runs headless."
+  },
+  "mockhub-cloudflare": {
+    "vendor_id": "mockhub-cloudflare",
+    "auth_metadata_url": "http://mock-vendor:8310/.well-known/oauth-authorization-server/mcp",
+    "resource": "http://mock-mcp:8330/cloudflare/mcp",
+    "token_endpoint_auth_method": "client_secret_post",
+    "scope_ceiling": [
+      "issues:read",
+      "issues:write"
+    ],
+    "refresh_rotation": true,
+    "ema_status": "none",
+    "_notes": "Test AS playing Cloudflare's own MCP sign-in: tokens are bound to the resource, and the mock-mcp stand-in at /cloudflare/mcp refuses tokens issued for anything else. Exists so the RFC 8707 resource path runs headless."
   }
 }

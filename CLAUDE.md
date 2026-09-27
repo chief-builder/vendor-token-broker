@@ -83,14 +83,20 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   Refresh with `UPSTREAM_TOKEN=... .venv/bin/python tools/refresh-tool-snapshot.py <name>`
 - `tests/stack/` — self-contained compose: OpenBao (+ init writing a
   scoped token, never root), redis, mock-vendor (hostile: 60s tokens,
-  rotating RTs, replay burns the family), hub-stub (JWKS, good and bad
+  rotating RTs, replay burns the family; its `.../mcp` metadata variant plays
+  an MCP server's own sign-in: DCR at `/register`, tokens bound to the
+  `resource`, `invalid_target` if a code exchange or refresh omits it,
+  `/introspect` for the stand-ins), hub-stub (JWKS, good and bad
   hub JWTs via `POST /_test/token`, OIDC login for the consent leg)
   — plus, in the `gateway` profile, Keycloak (real hub), broker-kc (:8600,
-  own OpenBao), mock-mcp (:8330, stand-ins at /github/mcp and /linear/mcp
-  accepting only live mock-vendor tokens; `/_test/state` records per-call
+  own OpenBao), mock-mcp (:8330, stand-ins at /github/mcp, /linear/mcp,
+  /atlassian/mcp and /cloudflare/mcp accepting only live mock-vendor tokens,
+  the last two only tokens issued for them; `/_test/state` records per-call
   upstream, auth scheme, headers and token fingerprints) and mcp-gateway
   (:8500, stand-in upstreams file `tests/stack/gateway/stand-in-upstreams.json`:
-  github -> vendor mockhub, linear -> vendor mockhub-jwt)
+  github -> vendor mockhub, linear -> vendor mockhub-jwt, atlassian ->
+  mockhub-atlassian, cloudflare -> mockhub-cloudflare; the last two have no
+  snapshot yet, so their tools are listed only after someone connects)
 - `registry.example.json` + `schemas/vendor-registry.schema.json` —
   registry changes are reviewed changes; `scope_ceiling` is a security
   boundary (for Atlassian and Cloudflare it is the only thing keeping the

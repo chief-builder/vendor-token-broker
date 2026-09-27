@@ -2,7 +2,9 @@
 with a Keycloak-issued MCP token calls the gateway, which exchanges it at
 Keycloak, resolves the user's vendor token at broker-kc, and forwards to the
 vendor stand-ins (mock-mcp: /github/mcp for vendor mockhub, /linear/mcp for
-vendor mockhub-jwt; both accept only live mock-vendor tokens).
+vendor mockhub-jwt, /atlassian/mcp and /cloudflare/mcp for vendors
+mockhub-atlassian and mockhub-cloudflare, whose tokens are bound to their
+server; all accept only live mock-vendor tokens).
 When the user isn't connected, the client's elicitation handler plays the
 user: it opens the consent link and signs in at Keycloak."""
 import asyncio
@@ -38,7 +40,14 @@ LINEAR = {"linear_" + t for t in (
     "list_issues", "get_issue", "list_comments", "list_projects", "get_project", "list_cycles",
     "list_teams", "get_team", "list_issue_statuses", "list_users", "get_user",
     "list_documents", "get_document")}
-ALL_TOOLS = GITHUB | LINEAR | {"connect_github", "connect_linear"}
+ATLASSIAN = {"atlassian_" + t for t in (
+    "getJiraIssue", "searchJiraIssuesUsingJql", "getConfluenceContent", "searchConfluence",
+    "executeRead", "discover", "atlassianUserInfo", "getAccessibleAtlassianResources")}
+# Atlassian and Cloudflare have no snapshot yet: their tools are listed once
+# someone connects (the catalog load), so only their connect tools are here.
+ALL_TOOLS = GITHUB | LINEAR | {"connect_github", "connect_linear", "connect_atlassian",
+                               "connect_cloudflare"}
+OWN_SIGN_IN = ("mockhub-atlassian", "mockhub-cloudflare")
 STAND_IN = "/config/stand-in-upstreams.json"
 
 
@@ -65,7 +74,7 @@ def fresh_gateway():
     subprocess.run(["docker", "restart", "vtb-mcp-gateway"], check=True, capture_output=True)
     _wait_healthy("http://localhost:8500/.well-known/oauth-protected-resource/mcp")
     for user in ("alice", "bob"):
-        for vendor in ("mockhub", "mockhub-jwt"):
+        for vendor in ("mockhub", "mockhub-jwt", *OWN_SIGN_IN):
             revoke_kc(hub_jwt(user), vendor)
     requests.post(f"{MOCK_MCP}/_test/reset", timeout=5)
 
@@ -194,6 +203,50 @@ async def test_each_upstream_gets_its_own_token_and_policy():
     assert github["token_fp"] != linear["token_fp"]                  # different vendors
 
 
+# ------------------------------------------ servers with their own sign-in
+
+async def test_atlassian_tools_are_listed_once_connected():
+    user = User("alice")
+    async with gateway_client("alice", user) as c:
+        r = await c.call_tool("connect_atlassian", {}, raise_on_error=False)
+        names = {t.name for t in await c.list_tools()}
+    assert not r.is_error, r.content[0].text
+    assert "Atlassian is connected; 8 Atlassian tools" in r.content[0].text
+    assert [p.url.split("?")[0] for p in user.prompts] == \
+        [f"{BROKER_KC}/v1/authorize/mockhub-atlassian"]
+    assert ATLASSIAN <= names and "atlassian_executeWrite" not in names
+
+
+async def test_atlassian_calls_keep_working_across_refreshes():
+    """Every call refreshes (60s mock tokens); a refresh that didn't repeat
+    the resource would get invalid_target, and a token not issued for the
+    Atlassian stand-in would get 401."""
+    before = mock_state()["counters"]
+    for key in ("LAB-1", "LAB-2"):
+        r = await _call("alice", "atlassian_getJiraIssue",
+                        {"cloudId": "c1", "issueIdOrKey": key},
+                        user=User("alice", action="decline"))
+        assert not r.is_error, r.content[0].text
+        assert _last_call("atlassian")["args"]["issueIdOrKey"] == key
+    after = mock_state()["counters"]
+    assert after["invalid_target"] == before["invalid_target"]
+    assert after["token_refresh"] >= before["token_refresh"] + 2
+
+
+async def test_tokens_only_work_at_the_server_they_were_issued_for():
+    await _call("alice", "connect_cloudflare", user=User("alice"))
+    hub = hub_jwt("alice")
+    tokens = {v: resolve_kc(hub, v).json()["access_token"]
+              for v in ("mockhub", *OWN_SIGN_IN)}
+    for path, vendor in [("/atlassian/mcp", "mockhub-atlassian"),
+                         ("/cloudflare/mcp", "mockhub-cloudflare")]:
+        for holder, token in tokens.items():
+            r = httpx.post(f"{MOCK_MCP}{path}", json=INIT, headers={
+                "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"})
+            assert (r.status_code == 200) == (holder == vendor), (path, holder, r.status_code)
+
+
 # ---------------------------------------------------------- consent outcomes
 
 async def test_declining_leaves_github_disconnected():
@@ -265,7 +318,8 @@ INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
     "clientInfo": {"name": "t", "version": "0"}}}
 
 
-@pytest.mark.parametrize("path", ["/github/mcp", "/linear/mcp"])
+@pytest.mark.parametrize("path", ["/github/mcp", "/linear/mcp", "/atlassian/mcp",
+                                  "/cloudflare/mcp"])
 @pytest.mark.parametrize("auth", [None, "Basic dXNlcjpwYXNz", "Bearer not-a-live-token"])
 def test_stand_ins_refuse_calls_without_a_live_vendor_token(path, auth):
     """The stand-ins behave like the real servers: no live token, 401."""

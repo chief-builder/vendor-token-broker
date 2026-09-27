@@ -23,6 +23,22 @@
                 "list_cycles", "list_teams", "get_team", "list_issue_statuses",
                 "list_users", "get_user", "list_documents", "get_document"],
       "snapshot": "linear.json"
+    },
+    {
+      "name": "atlassian",
+      "display_name": "Atlassian",
+      "vendor": "mockhub-atlassian",
+      "url": "http://mock-mcp:8330/atlassian/mcp",
+      "tools": ["getJiraIssue", "searchJiraIssuesUsingJql", "getConfluenceContent",
+                "searchConfluence", "executeRead", "discover", "atlassianUserInfo",
+                "getAccessibleAtlassianResources"]
+    },
+    {
+      "name": "cloudflare",
+      "display_name": "Cloudflare",
+      "vendor": "mockhub-cloudflare",
+      "url": "http://mock-mcp:8330/cloudflare/mcp",
+      "tools": ["search", "docs", "execute"]
     }
   ]
 }

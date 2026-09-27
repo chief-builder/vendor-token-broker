@@ -8,7 +8,12 @@ Deliberately hostile in the ways that matter to the broker design:
 - PKCE S256 verified for real, so a broker that loses the verifier fails;
 - RFC 8414 metadata and RFC 9207 iss on the redirect, so the broker's
   discovery and mix-up defense run against a real implementation;
-- RFC 7009 revocation endpoint.
+- RFC 7009 revocation endpoint;
+- an MCP-authorization-server variant (metadata at .../mcp) with RFC 7591
+  dynamic registration. Codes, refresh-token families and access tokens are
+  bound to the RFC 8707 `resource` sent on authorize; a code exchange or
+  refresh that doesn't repeat it gets invalid_target, and /introspect tells
+  the MCP stand-ins which server a token was issued for.
 
 /_test/* endpoints expose call counters and a revoke-family switch for the
 acceptance suite. Nothing here persists — restart resets the vendor.
@@ -51,11 +56,14 @@ refresh_tokens: dict[str, dict] = {}   # rt -> {family, gen, consumed}
 access_tokens: dict[str, dict] = {}    # at -> {family, exp, scopes}
 counters = {"authorize": 0, "token_code": 0, "token_refresh": 0,
             "rt_replay": 0, "revoke": 0, "mcp_calls": 0, "mcp_unauthorized": 0,
-            "client_assertions": 0, "bad_assertions": 0}
+            "client_assertions": 0, "bad_assertions": 0, "invalid_target": 0}
 issues: list[dict] = []
+registered: dict[str, dict] = {}       # client_id -> RFC 7591 registration (kept on reset)
 
 
 def _client_ok(client_id: str | None, client_secret: str | None) -> bool:
+    if client_id in registered:
+        return client_secret == registered[client_id]["client_secret"]
     return client_id == CLIENT_ID and client_secret == CLIENT_SECRET
 
 
@@ -106,7 +114,7 @@ def _mint(family_id: str, scopes: str) -> dict:
     fam["active_rt"] = rt
     refresh_tokens[rt] = {"family": family_id, "gen": fam["gen"], "consumed": False}
     access_tokens[at] = {"family": family_id, "exp": time.time() + AT_TTL,
-                         "scopes": scopes}
+                         "scopes": scopes, "resource": fam["resource"]}
     return {"access_token": at, "token_type": "bearer", "expires_in": AT_TTL,
             "refresh_token": rt, "scope": scopes}
 
@@ -123,6 +131,27 @@ async def metadata_without_revocation():
     meta = _metadata()
     del meta["revocation_endpoint"]
     return meta
+
+
+@app.get("/.well-known/oauth-authorization-server/mcp")
+async def metadata_mcp():
+    """RFC 8414 path-suffix variant playing an MCP server's own authorization
+    server (Atlassian, Cloudflare): offers dynamic registration. The
+    registration endpoint is host-facing, where an admin runs the script."""
+    return {**_metadata(), "registration_endpoint": f"{PUBLIC_URL}/register"}
+
+
+@app.post("/register")
+async def register(request: Request):
+    """RFC 7591: a confidential client_secret_post client."""
+    body = await request.json()
+    if not body.get("redirect_uris"):
+        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+    reg = {**body, "client_id": f"mock-dcr-{secrets.token_urlsafe(8)}",
+           "client_secret": secrets.token_urlsafe(24), "client_id_issued_at": int(time.time()),
+           "client_secret_expires_at": 0, "token_endpoint_auth_method": "client_secret_post"}
+    registered[reg["client_id"]] = reg
+    return JSONResponse(reg, status_code=201)
 
 
 def _metadata() -> dict:
@@ -142,14 +171,16 @@ def _metadata() -> dict:
 @app.get("/authorize")
 async def authorize(client_id: str, redirect_uri: str, state: str,
                     code_challenge: str, response_type: str = "code",
-                    code_challenge_method: str = "S256", scope: str = ""):
+                    code_challenge_method: str = "S256", scope: str = "",
+                    resource: str | None = None):
     counters["authorize"] += 1
-    if client_id not in (CLIENT_ID, JWT_CLIENT_ID) or response_type != "code" \
+    if client_id not in (CLIENT_ID, JWT_CLIENT_ID, *registered) or response_type != "code" \
             or code_challenge_method != "S256":
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     code = f"mock-code-{secrets.token_urlsafe(16)}"
     codes[code] = {"challenge": code_challenge, "redirect_uri": redirect_uri,
-                   "scope": scope, "created_at": time.time(), "used": False}
+                   "scope": scope, "resource": resource, "created_at": time.time(),
+                   "used": False}
     # Auto-consent as the fixed mock user; RFC 9207 iss on the response.
     return RedirectResponse(
         f"{redirect_uri}?{urlencode({'code': code, 'state': state, 'iss': ISSUER})}")
@@ -171,9 +202,13 @@ async def token(request: Request):
         if base64.urlsafe_b64encode(digest).rstrip(b"=").decode() != rec["challenge"]:
             return JSONResponse({"error": "invalid_grant",
                                  "error_description": "pkce"}, status_code=400)
+        if form.get("resource") != rec["resource"]:
+            counters["invalid_target"] += 1
+            return JSONResponse({"error": "invalid_target"}, status_code=400)
         rec["used"] = True
         family_id = f"fam-{secrets.token_urlsafe(8)}"
-        families[family_id] = {"gen": 0, "active_rt": None, "revoked": False}
+        families[family_id] = {"gen": 0, "active_rt": None, "revoked": False,
+                               "resource": rec["resource"]}
         return _mint(family_id, rec["scope"])
 
     if form.get("grant_type") == "refresh_token":
@@ -190,6 +225,9 @@ async def token(request: Request):
             fam["revoked"] = True
             return JSONResponse({"error": "invalid_grant",
                                  "error_description": "replay"}, status_code=400)
+        if form.get("resource") != fam["resource"]:
+            counters["invalid_target"] += 1
+            return JSONResponse({"error": "invalid_target"}, status_code=400)
         return _mint(rt["family"], "issues:read issues:write")
 
     return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
@@ -217,6 +255,17 @@ def _bearer(request: Request) -> dict | None:
     if at is None or at["exp"] < time.time() or families[at["family"]]["revoked"]:
         return None
     return at
+
+
+@app.post("/introspect")
+async def introspect(request: Request):
+    """RFC 7662-style, for the MCP stand-ins: is the token live, and which
+    server (`aud`, the RFC 8707 resource) was it issued for?"""
+    token = (await request.form()).get("token", "")
+    at = access_tokens.get(token)
+    if at is None or at["exp"] < time.time() or families[at["family"]]["revoked"]:
+        return {"active": False}
+    return {"active": True, "aud": at["resource"]}
 
 
 @app.get("/user")
@@ -250,7 +299,9 @@ async def mcp(request: Request):
 
 @app.get("/_test/state")
 async def test_state():
-    return {"counters": counters, "families": families, "issue_count": len(issues)}
+    return {"counters": counters, "families": families, "issue_count": len(issues),
+            "registered": [{k: v for k, v in r.items() if k != "client_secret"}
+                           for r in registered.values()]}
 
 
 @app.post("/_test/revoke_family")
