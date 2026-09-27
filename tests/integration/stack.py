@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import time
+from contextlib import contextmanager
 
 import pytest
 import requests
@@ -115,6 +116,19 @@ def mock_state() -> dict:
 
 def mock_reset() -> None:
     requests.post(f"{MOCK}/_test/reset", timeout=10)
+
+
+@contextmanager
+def vendor_token_ttl(seconds: int):
+    """Tokens the mock vendor mints meanwhile live `seconds` (normally 60,
+    which is inside REFRESH_BUFFER_S, so every resolve refreshes)."""
+    requests.post(f"{MOCK}/_test/at_ttl", json={"seconds": seconds},
+                  timeout=10).raise_for_status()
+    try:
+        yield
+    finally:
+        requests.post(f"{MOCK}/_test/at_ttl", json={"seconds": 60},
+                      timeout=10).raise_for_status()
 
 
 def container_audit_events(container: str, since: str = "5m") -> list[dict]:

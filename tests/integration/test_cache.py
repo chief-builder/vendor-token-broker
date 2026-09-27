@@ -8,7 +8,16 @@ import time
 
 import pytest
 import requests
-from stack import BROKER, MOCK, broker_audit, do_consent, mint, mock_state, resolve, revoke_grant
+from stack import (
+    BROKER,
+    broker_audit,
+    do_consent,
+    mint,
+    mock_state,
+    resolve,
+    revoke_grant,
+    vendor_token_ttl,
+)
 
 from token_broker.custody import encode_sub
 
@@ -19,9 +28,8 @@ CACHE_TTL_S = 10
 
 @pytest.fixture(autouse=True, scope="module")
 def _long_lived_tokens():
-    requests.post(f"{MOCK}/_test/at_ttl", json={"seconds": 3600}, timeout=10).raise_for_status()
-    yield
-    requests.post(f"{MOCK}/_test/at_ttl", json={"seconds": 60}, timeout=10).raise_for_status()
+    with vendor_token_ttl(3600):
+        yield
 
 
 def test_resolves_are_served_from_the_cache_without_refreshing():

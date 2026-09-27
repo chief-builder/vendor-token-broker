@@ -119,6 +119,9 @@ working unchanged: every wire change below is additive.
   a re-consent while it was revoking (the new vendor token was then never
   revoked). It now holds the entry lock, deletes only the version it
   revoked, and consent writes under the same lock
+- Tests: the 20-parallel single-flight tests switch the mock vendor to
+  long-lived tokens for the burst, so they no longer see a legitimate
+  second refresh (an occasional CI failure)
 
 ### Tests and supply chain
 - 393 unit tests (offline harness over the real app) and 108 integration

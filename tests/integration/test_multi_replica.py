@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests
-from stack import MOCK_CONTAINER, container_audit_events, mint, mock_state
+from stack import MOCK_CONTAINER, container_audit_events, mint, mock_state, vendor_token_ttl
 
 from token_broker.custody import encode_sub
 
@@ -108,13 +108,15 @@ def _unpause(container: str) -> None:
 # ── headline: single-flight across replicas through the LB ──────────────────
 
 def test_lb_twenty_parallel_one_refresh_zero_replays():
+    """As in test_refresh.py: the consent's 60 s token forces one refresh,
+    which mints a long-lived token, so a late starter is served rather than
+    legitimately refreshing a second time."""
     tok = mint("wf-multi-flight")
     revoke_at(LB, tok)
     do_consent_at(LB, tok)
-    time.sleep(1)
     before = mock_state()["counters"]
 
-    with ThreadPoolExecutor(max_workers=20) as pool:
+    with vendor_token_ttl(3600), ThreadPoolExecutor(max_workers=20) as pool:
         results = list(pool.map(lambda _: resolve_at(LB, tok), range(20)))
 
     assert all(r.status_code == 200 for r in results), \

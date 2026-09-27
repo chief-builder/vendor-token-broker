@@ -4,7 +4,6 @@ STALE lifecycle including the mass-STALE page, and scope enforcement.
 
 Ported from the lab's phase5 gate 3 + §8 tests and phase7 P2/P5.
 """
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -18,6 +17,7 @@ from stack import (
     mock_state,
     resolve,
     revoke_grant,
+    vendor_token_ttl,
 )
 
 
@@ -29,13 +29,19 @@ def _fresh_vendor(alice):
     yield
 
 
-def test_twenty_parallel_resolves_one_vendor_refresh(alice):
-    do_consent(alice)
-    time.sleep(1)  # let the consent's token age past any in-flight work
+def test_twenty_parallel_resolves_one_vendor_refresh():
+    """The consent's 60 s token is inside the refresh buffer, so the burst
+    must refresh. The refresh mints a long-lived token: a resolve that
+    starts after the winner finished is then served, not refreshed again
+    (with 60 s tokens that second refresh would be correct behavior). Its
+    own subject, so the long-lived token doesn't leak into other tests."""
+    tok = mint("wf-twenty-parallel")
+    revoke_grant(tok)
+    do_consent(tok)
     before = mock_state()["counters"]
 
-    with ThreadPoolExecutor(max_workers=20) as pool:
-        results = list(pool.map(lambda _: resolve(alice), range(20)))
+    with vendor_token_ttl(3600), ThreadPoolExecutor(max_workers=20) as pool:
+        results = list(pool.map(lambda _: resolve(tok), range(20)))
 
     assert all(r.status_code == 200 for r in results), \
         [r.status_code for r in results]
@@ -51,10 +57,12 @@ def test_twenty_parallel_resolves_one_vendor_refresh(alice):
     assert refreshes, "expected a broker.refresh audit event"
     last = refreshes[-1]
     assert last["generation_to"] == last["generation_from"] + 1
+    revoke_grant(tok)
 
 
 def test_generation_advances_on_next_refresh(alice):
     from stack import sub_of
+    do_consent(alice)                    # its closing resolve refreshes (60 s tokens)
     mine = [e for e in broker_audit("broker.refresh") if e.get("sub") == sub_of(alice)]
     gen_before = mine[-1]["generation_to"]
     r = resolve(alice)

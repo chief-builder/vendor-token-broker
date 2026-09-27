@@ -131,13 +131,11 @@ Review baseline: application commit `811965f` (the gateway serving GitHub, Linea
 
 The real-service checks ran against the gateway before `disconnect_<service>` existed. Disconnect is covered by the unit suite and the gateway profile, against the stand-ins.
 
-### Known flaky test
+### How the single-flight tests stay exact
 
-The 20-parallel single-flight test in the multi-replica suite occasionally sees 2 refreshes instead of 1. Rerunning it passes.
+The 20-parallel single-flight tests (single replica and through the load balancer) expect exactly one vendor refresh. Mock tokens normally last 60 seconds, inside `REFRESH_BUFFER_S` (300), so a request that starts after the first refresh finished would correctly refresh again. For the burst, the tests switch the mock vendor to 1-hour tokens: the consent's 60-second token forces the one refresh, and every later request is served the new token.
 
-This is a timing race in the test, not a single-flight bug. Mock tokens last 60 seconds, which is inside `REFRESH_BUFFER_S` (300). So a resolve whose first read lands after the first refresh finishes correctly refreshes again.
-
-A multi-replica run right after a standalone Redis broker can also fail, most likely because that broker keeps its 120-second sweep lease, longer than the test's 60-second deadline. The documented [test isolation](quickstart.md#run-the-automated-checks) avoids this handoff problem.
+A multi-replica run right after a standalone Redis broker can fail if that broker still holds its 120-second sweep lease, longer than the test's 60-second deadline. The documented [test isolation](quickstart.md#run-the-automated-checks) avoids this.
 
 ### What these checks do not show
 
