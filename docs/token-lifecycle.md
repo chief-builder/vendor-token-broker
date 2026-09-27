@@ -302,8 +302,9 @@ sequenceDiagram
     loop each entry, up to SWEEP_MAX_ENTRIES per pass (round-robin cursor)
         S->>K: read entry
         alt state REVOKE_PENDING
-            S->>V: retry revoke (no lock, no CAS)
-            Note over S: success or unsupported: delete entry,<br/>audit broker.revoke {path: sweep-retry}.<br/>Vendor still down: try next pass
+            S->>B: try_lock (no waiting, skip if held)
+            S->>V: re-read under lock, retry revoke
+            Note over S: success or unsupported: delete only if<br/>the version is unchanged, audit broker.revoke<br/>{path: sweep-retry}. Vendor still down: next pass
         else REFRESHING abandoned (≥ REFRESHING_TTL_S) or ACTIVE and 300 < remaining ≤ 900
             S->>B: try_lock (no waiting, a resolve may hold it)
             B->>K: re-read under lock
@@ -553,12 +554,14 @@ sequenceDiagram
     participant K as Custody
 
     loop each sweep pass until the vendor recovers
+        Note over S: take the entry lock without waiting,<br/>skip this pass if it is held
         S->>K: read entry, state REVOKE_PENDING
-        S->>V: retry revoke (no lock, no CAS)
+        S->>V: retry revoke
     end
     V-->>S: 200
+    S->>K: re-read, version unchanged?
     S->>K: delete entry
-    Note over S: audit broker.revoke {path: sweep-retry}
+    Note over S: audit broker.revoke {path: sweep-retry}.<br/>If a new grant landed meanwhile,<br/>the sweeper leaves it alone
 ```
 
 If the user connects again while the entry is `REVOKE_PENDING`, the

@@ -48,17 +48,7 @@ async def sweep_entry(b, vendor: str, sub: str) -> None:
         return
     entry, ver = found
     if entry["state"] == "REVOKE_PENDING":
-        outcome = "revoked"
-        try:
-            await b.vendors.revoke(vendor, entry)
-        except vendors_mod.RevocationUnsupported:
-            outcome = "unsupported"   # nothing to retry: local delete only
-        except vendors_mod.VendorUnavailable:
-            return  # still down; retry next pass
-        await b.custody.delete(vendor, sub)
-        await b.invalidate(vendor, sub)
-        audit("broker.revoke", sub=sub, vendor=vendor, outcome=outcome,
-              path="sweep-retry")
+        await retry_revoke(b, vendor, sub)
         return
     takeover = refresh_mod.abandoned(entry, b.cfg.refreshing_ttl_s)
     if entry["state"] != "ACTIVE" and not takeover:
@@ -80,6 +70,36 @@ async def sweep_entry(b, vendor: str, sub: str) -> None:
             return
         await refresh_mod.attempt_refresh(b, vendor, sub, entry, ver,
                                           path="proactive")
+    finally:
+        await b.coord.release_refresh_lock(vendor, sub, lock_token)
+
+
+async def retry_revoke(b, vendor: str, sub: str) -> None:
+    """Retry a parked revocation. Custody has no conditional delete, so hold
+    the entry's lock (re-consent writes under it too) and delete only the
+    version that was revoked: a grant written meanwhile is not ours."""
+    lock_token = await b.coord.try_refresh_lock(vendor, sub)
+    if lock_token is None:
+        return  # a consent or refresh is writing this entry; retry next pass
+    try:
+        found = await b.custody.read(vendor, sub)
+        if found is None or found[0]["state"] != "REVOKE_PENDING":
+            return
+        entry, ver = found
+        outcome = "revoked"
+        try:
+            await b.vendors.revoke(vendor, entry)
+        except vendors_mod.RevocationUnsupported:
+            outcome = "unsupported"   # nothing to retry: local delete only
+        except vendors_mod.VendorUnavailable:
+            return  # still down; retry next pass
+        current = await b.custody.read(vendor, sub)
+        if current is None or current[1] != ver:
+            return  # replaced or removed while revoking
+        await b.custody.delete(vendor, sub)
+        await b.invalidate(vendor, sub)
+        audit("broker.revoke", sub=sub, vendor=vendor, outcome=outcome,
+              path="sweep-retry")
     finally:
         await b.coord.release_refresh_lock(vendor, sub, lock_token)
 

@@ -3180,7 +3180,10 @@ browser. (Full sequence diagram: <code>token-lifecycle.md</code> §1. Route deta
 <li>The browser returns to <code>/v1/callback/{vendor}?code&amp;state&amp;iss</code>.</li>
 <li>The broker checks state, iss, and binding, uses up the state, and
    redeems the code on the server (with <code>resource</code> when set).</li>
-<li>The broker writes the entry as <code>ACTIVE gen=1</code>.</li>
+<li>The broker writes the entry as <code>ACTIVE gen=1</code>, holding the entry's
+   refresh lock for that write. If the lock doesn't free within
+   <code>LOCK_TIMEOUT_S</code>, it writes anyway: the code is spent, and losing the
+   new grant would be worse.</li>
 <li>The browser shows a "connected" page.</li>
 <li>The caller retries, and resolve returns 200.</li>
 </ol>
@@ -3422,12 +3425,16 @@ consecutive passes.</p>
   entries, starting where the previous pass stopped. A vendor whose
   listing fails (custody down) is skipped for that pass. Entries the
   budget skips are still refreshed lazily by resolve.</li>
-<li><strong>REVOKE_PENDING retry.</strong> The sweeper calls the vendor revoke with the
-  pair it read. It does not take the refresh lock and does not CAS: on
-  success, or when the vendor has no revocation endpoint, it deletes the
-  entry and drops it from every cache, and audits <code>broker.revoke</code> with
-  <code>path: sweep-retry</code>. If the vendor is still down, it leaves the entry
-  for the next pass.</li>
+<li><strong>REVOKE_PENDING retry.</strong> The sweeper takes the entry's refresh lock
+  without waiting and skips the entry if someone holds it. Under the lock
+  it re-reads the entry and calls the vendor revoke with that pair. On
+  success, or when the vendor has no revocation endpoint, it re-reads once
+  more and deletes the entry only if its version is unchanged, then drops
+  it from every cache and audits <code>broker.revoke</code> with <code>path: sweep-retry</code>.
+  Custody has no conditional delete, so this check plus the lock (which
+  consent also holds while it writes) keeps the sweeper from deleting a
+  grant written meanwhile. If the vendor is still down, it leaves the
+  entry for the next pass.</li>
 <li><strong>Refresh band.</strong> An ACTIVE entry with <code>REFRESH_BUFFER_S &lt; remaining ≤
   PROACTIVE_REFRESH_S</code>, or a REFRESHING marker older than
   <code>REFRESHING_TTL_S</code>, is refreshed under the lock. The sweeper takes the
@@ -4006,8 +4013,9 @@ them.</p>
     loop each entry, up to SWEEP_MAX_ENTRIES per pass (round-robin cursor)
         S-&gt;&gt;K: read entry
         alt state REVOKE_PENDING
-            S-&gt;&gt;V: retry revoke (no lock, no CAS)
-            Note over S: success or unsupported: delete entry,&lt;br/&gt;audit broker.revoke {path: sweep-retry}.&lt;br/&gt;Vendor still down: try next pass
+            S-&gt;&gt;B: try_lock (no waiting, skip if held)
+            S-&gt;&gt;V: re-read under lock, retry revoke
+            Note over S: success or unsupported: delete only if&lt;br/&gt;the version is unchanged, audit broker.revoke&lt;br/&gt;{path: sweep-retry}. Vendor still down: next pass
         else REFRESHING abandoned (≥ REFRESHING_TTL_S) or ACTIVE and 300 &lt; remaining ≤ 900
             S-&gt;&gt;B: try_lock (no waiting, a resolve may hold it)
             B-&gt;&gt;K: re-read under lock
@@ -4239,12 +4247,14 @@ from custody.</p>
     participant K as Custody
 
     loop each sweep pass until the vendor recovers
+        Note over S: take the entry lock without waiting,&lt;br/&gt;skip this pass if it is held
         S-&gt;&gt;K: read entry, state REVOKE_PENDING
-        S-&gt;&gt;V: retry revoke (no lock, no CAS)
+        S-&gt;&gt;V: retry revoke
     end
     V--&gt;&gt;S: 200
+    S-&gt;&gt;K: re-read, version unchanged?
     S-&gt;&gt;K: delete entry
-    Note over S: audit broker.revoke {path: sweep-retry}
+    Note over S: audit broker.revoke {path: sweep-retry}.&lt;br/&gt;If a new grant landed meanwhile,&lt;br/&gt;the sweeper leaves it alone
 </pre>
 <p>If the user connects again while the entry is <code>REVOKE_PENDING</code>, the
 consent callback revokes and removes it first (<code>path: reconsent</code>). If the

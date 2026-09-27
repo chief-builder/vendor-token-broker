@@ -3,6 +3,7 @@ REVOKE_PENDING retry, REFRESHING takeover, lock contention, error isolation,
 and consent-record cleanup on the memory backend."""
 import time
 
+import pytest
 from broker_harness import VENDOR, Harness, audit_events
 
 from token_broker import sweeper
@@ -54,6 +55,31 @@ async def test_revoke_pending_stays_parked_while_vendor_down():
     h.vendors.revoke_error = vendors_mod.VendorUnavailable("revocation endpoint 503")
     await sweeper.sweep_entry(h.broker, VENDOR, "wf-user-1")
     assert h.stored()["state"] == "REVOKE_PENDING"
+
+
+@pytest.mark.parametrize("coord", ["memory", "redis"])
+async def test_revoke_pending_retry_never_deletes_a_grant_written_meanwhile(coord):
+    """A re-consent that lands while the sweeper is revoking the parked pair
+    writes a fresh grant: the sweeper must leave it alone."""
+    h = Harness(coord=coord)
+    h.put(state="REVOKE_PENDING")
+    h.vendors.on_revoke = lambda: h.put(access_token="at-new", refresh_token="rt-new",
+                                        refresh_generation=1)
+    await sweeper.sweep_entry(h.broker, VENDOR, "wf-user-1")
+    assert h.vendors.revoke_calls == 1
+    assert h.stored()["access_token"] == "at-new"
+
+
+@pytest.mark.parametrize("coord", ["memory", "redis"])
+async def test_revoke_pending_retry_waits_for_the_entry_lock(coord):
+    h = Harness(coord=coord)
+    h.put(state="REVOKE_PENDING")
+    token = await h.coord.try_refresh_lock(VENDOR, "wf-user-1")   # a consent is writing
+    await sweeper.sweep_entry(h.broker, VENDOR, "wf-user-1")
+    assert h.vendors.revoke_calls == 0 and h.stored()["state"] == "REVOKE_PENDING"
+    await h.coord.release_refresh_lock(VENDOR, "wf-user-1", token)
+    await sweeper.sweep_entry(h.broker, VENDOR, "wf-user-1")         # next pass
+    assert h.vendors.revoke_calls == 1 and h.stored() is None
 
 
 async def test_abandoned_refreshing_taken_over_fresh_one_skipped():

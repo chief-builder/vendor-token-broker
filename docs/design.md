@@ -527,7 +527,10 @@ browser. (Full sequence diagram: `token-lifecycle.md` §1. Route details:
 6. The browser returns to `/v1/callback/{vendor}?code&state&iss`.
 7. The broker checks state, iss, and binding, uses up the state, and
    redeems the code on the server (with `resource` when set).
-8. The broker writes the entry as `ACTIVE gen=1`.
+8. The broker writes the entry as `ACTIVE gen=1`, holding the entry's
+   refresh lock for that write. If the lock doesn't free within
+   `LOCK_TIMEOUT_S`, it writes anyway: the code is spent, and losing the
+   new grant would be worse.
 9. The browser shows a "connected" page.
 10. The caller retries, and resolve returns 200.
 
@@ -738,12 +741,16 @@ consecutive passes.
   entries, starting where the previous pass stopped. A vendor whose
   listing fails (custody down) is skipped for that pass. Entries the
   budget skips are still refreshed lazily by resolve.
-- **REVOKE_PENDING retry.** The sweeper calls the vendor revoke with the
-  pair it read. It does not take the refresh lock and does not CAS: on
-  success, or when the vendor has no revocation endpoint, it deletes the
-  entry and drops it from every cache, and audits `broker.revoke` with
-  `path: sweep-retry`. If the vendor is still down, it leaves the entry
-  for the next pass.
+- **REVOKE_PENDING retry.** The sweeper takes the entry's refresh lock
+  without waiting and skips the entry if someone holds it. Under the lock
+  it re-reads the entry and calls the vendor revoke with that pair. On
+  success, or when the vendor has no revocation endpoint, it re-reads once
+  more and deletes the entry only if its version is unchanged, then drops
+  it from every cache and audits `broker.revoke` with `path: sweep-retry`.
+  Custody has no conditional delete, so this check plus the lock (which
+  consent also holds while it writes) keeps the sweeper from deleting a
+  grant written meanwhile. If the vendor is still down, it leaves the
+  entry for the next pass.
 - **Refresh band.** An ACTIVE entry with `REFRESH_BUFFER_S < remaining ≤
   PROACTIVE_REFRESH_S`, or a REFRESHING marker older than
   `REFRESHING_TTL_S`, is refreshed under the lock. The sweeper takes the

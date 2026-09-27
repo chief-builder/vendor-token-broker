@@ -134,6 +134,29 @@ async def test_reconsent_over_an_active_grant_does_not_revoke_it():
     assert h.stored()["access_token"] == "at-consent"
 
 
+async def test_consent_writes_under_the_entry_lock():
+    """The sweeper's revocation retry holds this lock, so a consent can
+    never land between its version check and its delete."""
+    h = Harness()
+    state = await h.start_consent()
+    token = await h.coord.try_refresh_lock(VENDOR, "wf-user-1")
+    callback = asyncio.create_task(h.callback(state))
+    await asyncio.sleep(0.05)
+    assert not callback.done() and h.stored() is None
+    await h.coord.release_refresh_lock(VENDOR, "wf-user-1", token)
+    assert (await callback).status_code == 200
+    assert h.stored()["access_token"] == "at-consent"
+
+
+async def test_consent_still_stores_the_grant_if_the_lock_never_frees():
+    """The code is already spent: losing the new grant is worse than waiting."""
+    h = Harness(lock_timeout_s=1)
+    state = await h.start_consent()
+    await h.coord.try_refresh_lock(VENDOR, "wf-user-1")          # never released
+    assert (await h.callback(state)).status_code == 200
+    assert h.stored()["access_token"] == "at-consent"
+
+
 # ------------------------------------------------------------ L4: delete vs refresh
 
 

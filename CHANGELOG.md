@@ -115,6 +115,10 @@ working unchanged: every wire change below is additive.
 - Fix: the gateway's `HUB_ALGORITHM` uses the broker's allowlist (RS384 and
   RS512 were accepted); the unused `claude-code` client is gone from the
   Keycloak test realm
+- Fix: the sweeper's REVOKE_PENDING retry could delete a grant written by
+  a re-consent while it was revoking (the new vendor token was then never
+  revoked). It now holds the entry lock, deletes only the version it
+  revoked, and consent writes under the same lock
 
 ### Tests and supply chain
 - 393 unit tests (offline harness over the real app) and 108 integration

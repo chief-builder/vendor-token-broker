@@ -664,6 +664,13 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
         entry = entry_from_token_response(tok, 1, vendor_uid, record["scopes"],
                                           ceiling=ceiling)
         widened = refresh_mod.scope_widening(tok, ceiling)
+        # Write under the entry lock: the sweeper's revocation retry holds it
+        # between its version check and its (unconditional) custody delete.
+        # The code is spent, so a lock that never frees never loses the grant.
+        try:
+            lock_token, _ = await b.coord.wait_refresh_lock(vendor, record["sub"], None)
+        except CoordinationUnavailable:
+            lock_token = None
         try:
             await b.custody.write(vendor, record["sub"], entry, cas=None)  # re-consent: gen=1
         except CustodyUnavailable:
@@ -678,6 +685,9 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
                   reason="post_redeem_failure", new_grant_revoked=revoked,
                   security_event=False)
             return page("Credential store unavailable.", 503)
+        finally:
+            if lock_token is not None:
+                await b.coord.release_refresh_lock(vendor, record["sub"], lock_token)
         await b.invalidate(vendor, record["sub"])
         audit("broker.consent.complete", sub=record["sub"], vendor=vendor,
               vendor_user_id=vendor_uid, **({"scope_widened": widened} if widened else {}))
