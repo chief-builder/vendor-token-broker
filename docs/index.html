@@ -82,17 +82,17 @@
 <main id="content">
 <section id="overview">
 <div class="section-head"><h1>Overview</h1><p class="blurb">Let AI assistants use GitHub as each signed-in person, without handling tokens.</p><p class="src">source: <code>docs/overview.md</code></p></div>
-<p>Let Claude Code and other AI assistants use GitHub on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.</p>
+<p>Let Claude Code and other AI assistants use your development tools, such as GitHub and Linear, on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.</p>
 <p>This project has two parts:</p>
 <ul>
-<li><strong>The MCP gateway.</strong> Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to GitHub's own MCP server, using the GitHub account of the person who is signed in.</li>
-<li><strong>The token broker.</strong> It keeps each person's GitHub token safe, refreshes it when it expires, and deletes it when the person disconnects. The gateway asks it for a token on every request.</li>
+<li><strong>The MCP gateway.</strong> Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to each service's own MCP server (GitHub's and Linear's today), using the account of the person who is signed in.</li>
+<li><strong>The token broker.</strong> It keeps each person's tokens for each service safe, refreshes them when they expire, and deletes them when the person disconnects. The gateway asks it for a token on every request.</li>
 </ul>
 <p>You get:</p>
 <ul>
-<li><strong>One sign-in.</strong> People sign in with your company's sign-in service, then connect GitHub once in their browser.</li>
-<li><strong>No token handling.</strong> The assistant, the chat, and the logs never see a GitHub token.</li>
-<li><strong>Read-only GitHub tools by default</strong>, from GitHub's official MCP server.</li>
+<li><strong>One sign-in.</strong> People sign in with your company's sign-in service, then connect each service once in their browser.</li>
+<li><strong>No token handling.</strong> The assistant, the chat, and the logs never see a service token.</li>
+<li><strong>Read-only tools by default</strong>, from each service's official MCP server: 7 for GitHub and 13 for Linear. More services can be added the same way.</li>
 </ul>
 <h2 id="how-it-works">How it works</h2>
 <pre class="mermaid">flowchart LR
@@ -103,6 +103,7 @@
     B &lt;--&gt;|&quot;stored safely&quot;| K[&quot;Secret store&lt;br/&gt;(OpenBao or Vault)&quot;]
     C -.-&gt;|&quot;sign in&quot;| H[&quot;Sign-in service&lt;br/&gt;(Keycloak)&quot;]
 </pre>
+<p>Here's GitHub as the example.</p>
 <ol>
 <li>The assistant calls a GitHub tool, such as "who am I?". It sends a sign-in token that proves who the person is.</li>
 <li>The gateway checks that token. It swaps it at the sign-in service for a separate internal token, and asks the broker for that person's GitHub token.</li>
@@ -113,10 +114,10 @@
 <h2 id="the-first-time-someone-uses-it">The first time someone uses it</h2>
 <ol>
 <li>They add the gateway to Claude Code and sign in with the company sign-in service.</li>
-<li>They ask for something from GitHub. Their GitHub account isn't connected yet, so Claude Code asks to open a link.</li>
-<li>In the browser, they sign in again if needed and approve access on GitHub.</li>
+<li>They ask for something from a service, such as GitHub. That account isn't connected yet, so Claude Code asks to open a link.</li>
+<li>In the browser, they sign in again if needed and approve access on the service.</li>
 <li>The request finishes. From then on, requests just work, and the broker keeps the token fresh.</li>
-<li>They can disconnect at any time. The broker asks GitHub to cancel the token, then deletes its copy.</li>
+<li>Each service asks once. They can disconnect at any time: the broker asks the service to cancel the token, then deletes its copy.</li>
 </ol>
 <h2 id="where-to-go-next">Where to go next</h2>
 <table>
@@ -158,8 +159,8 @@
 </tbody>
 </table>
 <h2 id="status">Status</h2>
-<p>Software <strong>1.1.0</strong>, marked <strong>unreleased</strong> in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and GitHub's real MCP server.</p>
-<p>These docs were checked against MCP <strong>2026-07-28</strong> (the MCP specification version) on <strong>2026-09-26</strong>. <a href="#security">Security</a> lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.</p>
+<p>Software <strong>1.1.0</strong>, marked <strong>unreleased</strong> in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and the real GitHub and Linear MCP servers.</p>
+<p>These docs were checked against MCP <strong>2026-07-28</strong> (the MCP specification version) on <strong>2026-09-27</strong>. <a href="#security">Security</a> lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.</p>
 <h2 id="words-used-in-these-docs">Words used in these docs</h2>
 <table>
 <thead>
@@ -253,25 +254,26 @@
 <tr>
 <td>Token broker</td>
 <td><code>http://localhost:8600</code></td>
-<td>Keeps each user's GitHub token</td>
+<td>Keeps each user's GitHub and Linear tokens</td>
 </tr>
 <tr>
-<td>GitHub stand-in</td>
+<td>Stand-ins</td>
 <td><code>http://localhost:8330</code></td>
-<td>Pretends to be GitHub's MCP server</td>
+<td>Pretend to be GitHub's and Linear's MCP servers</td>
 </tr>
 </tbody>
 </table>
 <p>The tests should all pass. They sign in, connect accounts, and call tools, the same way you are about to.</p>
 <h3 id="2-try-the-demo-client">2. Try the demo client</h3>
-<pre><code class="language-sh">.venv/bin/python tools/mcp-demo-client.py get_me
+<pre><code class="language-sh">.venv/bin/python tools/mcp-demo-client.py github_get_me
+.venv/bin/python tools/mcp-demo-client.py linear_list_issues
 </code></pre>
 <ol>
 <li>A browser tab opens on Keycloak. Sign in as <code>alice</code>.</li>
-<li>The first time, the gateway asks you to connect your account, and a second tab opens. Finish there. With the stand-in, this happens by itself.</li>
-<li>The client prints the list of tools and the result of <code>get_me</code>.</li>
+<li>The first time you use a service, the gateway asks you to connect it, and a second tab opens. Finish there. With the stand-ins, this happens by itself.</li>
+<li>The client prints the list of tools and the result.</li>
 </ol>
-<p>The demo client signs in as the pre-registered app <code>mcp-demo-cli</code> and listens for the sign-in result on port 33418.</p>
+<p>Tool names start with the service: <code>github_…</code> or <code>linear_…</code>. The demo client signs in as the pre-registered app <code>mcp-demo-cli</code> and listens for the sign-in result on port 33418.</p>
 <h3 id="3-try-claude-code">3. Try Claude Code</h3>
 <p>Add the gateway to Claude Code:</p>
 <pre><code class="language-sh">claude mcp add --transport http vtb-gateway http://localhost:8500/mcp --callback-port 33419
@@ -280,29 +282,34 @@
 <ol>
 <li>Run <code>/mcp</code>, choose <code>vtb-gateway</code>, then <strong>Authenticate</strong>.</li>
 <li>Keycloak opens. Sign in as <code>alice</code> and click <strong>Yes</strong> on the "Grant Access" screen. (Claude Code registers itself with Keycloak the first time.)</li>
-<li>Ask Claude to use a <code>vtb-gateway</code> tool, for example: <em>"Use vtb-gateway get_me."</em></li>
-<li>If your account isn't connected yet, Claude Code asks to open a link. Accept, finish in the browser, and the answer comes back.</li>
+<li>Ask Claude to use the gateway, for example: <em>"Using vtb-gateway, list my Linear issues, then tell me my GitHub login."</em></li>
+<li>If a service isn't connected yet, Claude Code asks to open a link. Accept, finish in the browser, and the answer comes back. Each service asks once.</li>
 </ol>
 <p>If sign-in later fails with an error that names an old address, run <code>claude mcp remove vtb-gateway</code>, add it again, and sign in once.</p>
-<h3 id="4-switch-to-real-github">4. Switch to real GitHub</h3>
+<h3 id="4-switch-to-the-real-github-and-linear">4. Switch to the real GitHub and Linear</h3>
 <ol>
-<li>Create a GitHub App at <a href="https://github.com/settings/apps/new">https://github.com/settings/apps/new</a>:</li>
+<li><strong>GitHub:</strong> create a GitHub App at <a href="https://github.com/settings/apps/new">https://github.com/settings/apps/new</a>:</li>
 <li>Callback URLs: <code>http://localhost:8300/v1/callback/github</code> and <code>http://localhost:8600/v1/callback/github</code></li>
 <li><strong>Expire user authorization tokens</strong>: on</li>
 <li>Webhook: off</li>
 <li>Repository permissions, all <strong>read-only</strong>: Contents, Issues, Pull requests, Metadata</li>
 </ol>
 <p>Then generate a client secret, and install the App on the repositories you want to use.
-2. Put <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code> in <code>tests/stack/.env</code> (git ignores this file). Run the <code>up</code> command from step 1 again, so the broker gets them.
-3. Point the gateway at GitHub, and give people two minutes to finish connecting:</p>
+2. <strong>Linear:</strong> in Linear, go to <strong>Settings → API → OAuth applications</strong> and create an app with callback URL <code>http://localhost:8600/v1/callback/linear</code>. You need to be a workspace admin.
+3. Put the IDs and secrets in <code>tests/stack/.env</code> (git ignores this file):</p>
 <p><code>sh
-   GATEWAY_VENDOR=github GATEWAY_UPSTREAM_URL=https://api.githubcopilot.com/mcp/ \
-     GATEWAY_CONSENT_WAIT_S=120 \
+   GITHUB_CLIENT_ID=...
+   GITHUB_CLIENT_SECRET=...
+   LINEAR_CLIENT_ID=...
+   LINEAR_CLIENT_SECRET=...</code></p>
+<p>Run the <code>up</code> command from step 1 again, so the broker gets them. You can set up just one of the two services.
+4. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:</p>
+<p><code>sh
+   GATEWAY_UPSTREAMS= GATEWAY_CONSENT_WAIT_S=120 GATEWAY_HTTP_TIMEOUT_S=15 \
      docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --no-deps --wait mcp-gateway</code></p>
-<ol>
-<li>Use the demo client or Claude Code as before. <code>get_me</code> now returns your own GitHub account. To check the same thing automatically, run <code>GATEWAY_VENDOR=github .venv/bin/pytest tests/integration/test_external_github_mcp.py -m external</code>.</li>
-</ol>
-<p>To go back to the stand-in, run the <code>up</code> command for <code>mcp-gateway</code> again without those three variables.</p>
+<p>To serve only one service, add <code>GATEWAY_ENABLED_UPSTREAMS=github</code> (or <code>linear</code>).
+5. Use the demo client or Claude Code as before. <code>github_get_me</code> returns your own GitHub account, and <code>linear_list_teams</code> your Linear teams. To check both automatically, run <code>.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external</code>.</p>
+<p>To go back to the stand-ins, run the <code>up</code> command for <code>mcp-gateway</code> again without those variables.</p>
 <h2 id="look-under-the-hood-the-broker-on-its-own">Look under the hood: the broker on its own</h2>
 <p>The gateway gets tokens from the broker. You can talk to the broker directly, the way a gateway does. Step 1 also started a second broker on port 8300, with a simple sign-in stub instead of Keycloak. This section uses that one. If you skipped step 1, start it with:</p>
 <pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml up -d --build --wait
@@ -389,20 +396,48 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <hr class='sep'/>
 <section id="gateway">
 <div class="section-head"><h1>MCP Gateway</h1><p class="blurb">How the gateway works, what your sign-in service must do, and how to configure it.</p><p class="src">source: <code>docs/mcp-gateway.md</code></p></div>
-<p><strong>Checked on 2026-09-26 with MCP 2026-07-28, FastMCP 4.0.10, Keycloak 26.7.4, and Claude Code 2.1.283.</strong></p>
-<p>The MCP gateway lets AI assistants such as Claude Code use GitHub's tools as the signed-in person.</p>
+<p><strong>Checked on 2026-09-27 with MCP 2026-07-28, FastMCP 4.0.10, Keycloak 26.7.4, and Claude Code 2.1.283.</strong></p>
+<p>The MCP gateway lets AI assistants such as Claude Code use tools from several services, each as the signed-in person. Today it serves <strong>GitHub</strong> and <strong>Linear</strong>.</p>
 <ul>
-<li>To the assistant, it looks like an ordinary MCP server, protected by your company's sign-in service (the "hub").</li>
-<li>To GitHub, it looks like an MCP client of GitHub's own MCP server (<code>https://api.githubcopilot.com/mcp/</code>).</li>
-<li>On every tool call, it gets that person's GitHub token from the <a href="#api">token broker</a>, uses it once, and throws it away.</li>
+<li>To the assistant, it looks like one ordinary MCP server, protected by your company's sign-in service (the "hub").</li>
+<li>Behind it, it is an MCP client of each service's own MCP server.</li>
+<li>On every tool call, it gets that person's token for that service from the <a href="#api">token broker</a>, uses it once, and throws it away.</li>
 </ul>
 <p>The gateway is a separate service (<code>src/mcp_gateway/</code>). Adding it changed nothing in the broker: the broker still has exactly seven routes and never issues tokens of its own.</p>
+<h2 id="supported-servers">Supported servers</h2>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th>Its MCP server</th>
+<th>Tools (all read-only)</th>
+<th>Read-only by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GitHub</td>
+<td><code>https://api.githubcopilot.com/mcp/</code></td>
+<td>7: <code>github_get_me</code>, <code>github_search_repositories</code>, <code>github_get_file_contents</code>, <code>github_list_issues</code>, <code>github_issue_read</code>, <code>github_list_pull_requests</code>, <code>github_pull_request_read</code></td>
+<td><code>X-MCP-Readonly: true</code> header, plus the tool list</td>
+</tr>
+<tr>
+<td>Linear</td>
+<td><code>https://mcp.linear.app/mcp/readonly</code></td>
+<td>13: <code>linear_list_issues</code>, <code>linear_get_issue</code>, <code>linear_list_comments</code>, <code>linear_list_projects</code>, <code>linear_get_project</code>, <code>linear_list_cycles</code>, <code>linear_list_teams</code>, <code>linear_get_team</code>, <code>linear_list_issue_statuses</code>, <code>linear_list_users</code>, <code>linear_get_user</code>, <code>linear_list_documents</code>, <code>linear_get_document</code></td>
+<td>Linear's read-only URL, the <code>read</code> scope, plus the tool list</td>
+</tr>
+</tbody>
+</table>
+<p>Each service also has a <code>connect_&lt;service&gt;</code> tool (<code>connect_github</code>, <code>connect_linear</code>). Each person connects each service separately: connecting GitHub doesn't connect Linear.</p>
+<p>Servers that run their own MCP sign-in (Atlassian's Jira and Confluence, Notion) need the broker to register with them first. That is planned as a separate step.</p>
 <h2 id="what-happens-on-a-tool-call">What happens on a tool call</h2>
 <pre class="mermaid">flowchart LR
     C[&quot;AI assistant&lt;br/&gt;(Claude Code, demo client)&quot;] --&gt;|&quot;sign-in token for the gateway&quot;| G[&quot;MCP gateway&quot;]
     G --&gt;|&quot;swap for an internal token&quot;| H[&quot;Sign-in service (Keycloak)&quot;]
-    G --&gt;|&quot;internal token, ask for GitHub token&quot;| B[&quot;Token broker&quot;]
-    G --&gt;|&quot;GitHub token, new session each call&quot;| M[&quot;GitHub MCP server&quot;]
+    G --&gt;|&quot;internal token, ask for the service's token&quot;| B[&quot;Token broker&quot;]
+    G --&gt;|&quot;GitHub token&quot;| M[&quot;GitHub MCP server&quot;]
+    G --&gt;|&quot;Linear token&quot;| L[&quot;Linear MCP server&quot;]
     C -.-&gt;|&quot;sign in&quot;| H
 </pre>
 <pre class="mermaid">sequenceDiagram
@@ -411,31 +446,32 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
     participant G as Gateway
     participant H as Sign-in service
     participant B as Broker
-    participant M as GitHub MCP
+    participant M as Service MCP server
 
-    C-&gt;&gt;G: call get_me (with sign-in token)
+    C-&gt;&gt;G: call linear_list_issues (with sign-in token)
     Note over G: check the token: signature, issuer,&lt;br/&gt;meant for this gateway, has the mcp-gateway scope
     G-&gt;&gt;H: swap it for an internal token
     H--&gt;&gt;G: internal token (same person)
-    G-&gt;&gt;B: ask for this person's GitHub token
-    alt GitHub is connected
-        B--&gt;&gt;G: 200 and the GitHub token
-        G-&gt;&gt;M: new session, call get_me as this person
+    G-&gt;&gt;B: ask for this person's Linear token
+    alt Linear is connected
+        B--&gt;&gt;G: 200 and the Linear token
+        G-&gt;&gt;M: new session, call list_issues as this person
         M--&gt;&gt;G: result
         G--&gt;&gt;C: result (no tokens in it)
     else not connected yet
         B--&gt;&gt;G: 404 needs-consent and a link
         G--&gt;&gt;C: please open this link
-        Note over C: the person connects GitHub in the browser
+        Note over C: the person connects Linear in the browser
         C-&gt;&gt;G: done
-        G-&gt;&gt;B: check the person's connections until GitHub appears
-        G-&gt;&gt;M: then call GitHub as above
+        G-&gt;&gt;B: check the person's connections until Linear appears
+        G-&gt;&gt;M: then call Linear as above
     end
 </pre>
-<p>Three rules keep this safe:</p>
+<p>Four rules keep this safe:</p>
 <ul>
-<li><strong>The sign-in token only goes to the sign-in service.</strong> The gateway swaps it; it never forwards it. The broker only sees the internal token, and GitHub only sees the GitHub token. Each is a different credential meant for a different place.</li>
-<li><strong>The GitHub token is used once.</strong> Each call opens a new GitHub session with it and closes it afterwards. The token is never cached, logged, or sent to the assistant.</li>
+<li><strong>The sign-in token only goes to the sign-in service.</strong> The gateway swaps it; it never forwards it. The broker only sees the internal token. Each service only sees its own token.</li>
+<li><strong>Each service only ever gets its own token.</strong> GitHub never sees a Linear token, and Linear never sees a GitHub token.</li>
+<li><strong>Service tokens are used once.</strong> Each call opens a new session with the service and closes it afterwards. The token is never cached, logged, or sent to the assistant.</li>
 <li><strong>While waiting, the gateway checks the connection list, not the token.</strong> After the person agrees to connect, the gateway polls <code>GET /v1/grants</code> every 2 seconds, for up to <code>CONSENT_WAIT_S</code>. Asking for the token instead would create a new connection link every time.</li>
 </ul>
 <h2 id="identity-handoff-what-the-hub-must-do">Identity handoff: what the hub must do</h2>
@@ -484,28 +520,23 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <p>The test realm lets MCP clients register themselves, which is how stock clients like Claude Code sign up. It only allows this for apps that return to <code>localhost</code>, only for the <code>mcp-gateway</code> and <code>offline_access</code> scopes, and only after a consent screen. That's fine on a laptop, not in production.</p>
 <p>Standards: token exchange is RFC 8693. The <code>resource</code> parameter is RFC 8707. The audience a token is meant for is its <code>aud</code> claim.</p>
 <h2 id="tools">Tools</h2>
-<p>The assistant sees <code>connect_github</code> plus these read-only GitHub tools: <code>get_me</code>, <code>search_repositories</code>, <code>get_file_contents</code>, <code>list_issues</code>, <code>issue_read</code>, <code>list_pull_requests</code>, <code>pull_request_read</code>. Tools that change things, such as <code>create_issue</code>, are never listed.</p>
-<p><strong>All of these are listed from the moment the gateway starts.</strong> Their descriptions come from a saved copy of GitHub's tool list (<code>src/mcp_gateway/github_tools.json</code>). The first time someone with a connected account calls a tool after a restart, the gateway reads GitHub's live tool list. GitHub stays the source of truth, and the gateway writes a <code>gateway.catalog</code> log line saying what it found:</p>
+<p>Every tool is named <code>&lt;service&gt;_&lt;tool&gt;</code>, for example <code>github_get_me</code> or <code>linear_list_issues</code>. The gateway strips the prefix before calling the service. Tools that change things, such as GitHub's <code>create_issue</code> or Linear's <code>save_issue</code>, are never listed.</p>
+<p><strong>All of these are listed from the moment the gateway starts.</strong> Their descriptions come from a saved copy of each service's tool list (<code>src/mcp_gateway/snapshots/&lt;service&gt;.json</code>). The first time someone with a connected account uses a service after a restart, the gateway reads that service's live tool list. The service stays the source of truth, and the gateway writes a <code>gateway.catalog</code> log line for it:</p>
 <ul>
-<li><code>changed</code>: GitHub describes the tool differently now, so the gateway switches to GitHub's version.</li>
+<li><code>changed</code>: the service describes the tool differently now, so the gateway switches to its version.</li>
 <li><code>added</code>: allowed but missing from the saved copy, so the gateway adds it and tells clients the list changed.</li>
-<li><code>missing</code>: GitHub no longer offers it. It stays listed, and calling it returns GitHub's error.</li>
+<li><code>missing</code>: the service no longer offers it. It stays listed, and calling it returns the service's error.</li>
 </ul>
-<p>Why keep a saved copy? The newest MCP version (2026-07-28) only lets servers announce a changed tool list over a separate subscription channel, which FastMCP 4.0.10 doesn't support. Without the saved copy, Claude Code would only see <code>connect_github</code> until it reconnected.</p>
+<p>Why keep saved copies? The newest MCP version (2026-07-28) only lets servers announce a changed tool list over a separate subscription channel, which FastMCP 4.0.10 doesn't support. Without the saved copies, Claude Code would only see the <code>connect_…</code> tools until it reconnected.</p>
 <p>Protocol details: from 2026-07-28, <code>notifications/tools/list_changed</code> may only be sent on the <code>subscriptions/listen</code> stream. The gateway still sends it when it adds a tool, which only older clients act on.</p>
-<p>To update the saved copy from GitHub:</p>
-<pre><code class="language-sh">GITHUB_TOKEN=$(gh auth token) .venv/bin/python tools/refresh-github-tool-snapshot.py
+<p>To update a saved copy from the live service:</p>
+<pre><code class="language-sh">UPSTREAM_TOKEN=$(gh auth token) .venv/bin/python tools/refresh-tool-snapshot.py github
+UPSTREAM_TOKEN=&lt;Linear API key&gt; .venv/bin/python tools/refresh-tool-snapshot.py linear
 </code></pre>
-<p>A test fails if the saved copy and the default tool list ever disagree. Set <code>UPSTREAM_TOOL_SNAPSHOT=none</code> to go back to showing only <code>connect_github</code> until the first connected call.</p>
-<p>Every call to GitHub carries three settings:</p>
-<ul>
-<li><code>X-MCP-Readonly: true</code>, so GitHub only offers read tools;</li>
-<li><code>X-MCP-Lockdown: true</code>, which hides public issue content from people without push access;</li>
-<li><code>X-MCP-Toolsets</code>, which chooses the tool groups.</li>
-</ul>
-<p>Treat what GitHub returns (issue text, file contents) as untrusted input for the assistant. The gateway passes it through unchanged and never acts on it.</p>
-<h2 id="connecting-github-during-a-tool-call">Connecting GitHub during a tool call</h2>
-<p>If the person hasn't connected GitHub yet, any GitHub tool, or <code>connect_github</code>, asks the assistant to open the broker's connection link. What that looks like depends on the assistant:</p>
+<p>The script uses exactly the gateway's URL, headers, and allowlist for that service. A test fails if any saved copy and its tool list ever disagree, or if a saved tool isn't marked read-only.</p>
+<p>Treat what services return (issue text, file contents, comments) as untrusted input for the assistant. The gateway passes it through unchanged and never acts on it.</p>
+<h2 id="connecting-a-service-during-a-tool-call">Connecting a service during a tool call</h2>
+<p>If the person hasn't connected a service yet, any of its tools, or its <code>connect_…</code> tool, asks the assistant to open the broker's connection link for that service. What that looks like depends on the assistant:</p>
 <table>
 <thead>
 <tr>
@@ -531,6 +562,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <p>Protocol details: on 2026-07-28 the call returns an <code>InputRequiredResult</code> carrying a URL-mode elicitation request. On 2025-11-25 the gateway sends <code>elicitation/create</code> with mode <code>url</code> during the call. "Can open links" means the client advertised the <code>url</code> elicitation capability.</p>
 <p>Saying yes only means the person chose to open the link. The gateway then waits up to <code>CONSENT_WAIT_S</code> for the connection to appear. Saying no, or cancelling, ends the call with an error straight away.</p>
 <h2 id="errors">Errors</h2>
+<p>Messages name the service involved, for example "Connect Linear first".</p>
 <table>
 <thead>
 <tr>
@@ -542,7 +574,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <tbody>
 <tr>
 <td>Not connected, and the person said no</td>
-<td>Error: GitHub was not connected</td>
+<td>Error: the service was not connected</td>
 <td><code>gateway.consent</code> outcome <code>decline</code> or <code>cancel</code></td>
 </tr>
 <tr>
@@ -551,9 +583,9 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <td><code>gateway.consent</code> outcome <code>timeout</code></td>
 </tr>
 <tr>
-<td>Broker, sign-in service, or GitHub down (or 5xx)</td>
-<td>Error: try again shortly. Never "connect GitHub"</td>
-<td><code>gateway.call</code> outcome <code>unavailable</code> or <code>upstream-error</code></td>
+<td>Broker, sign-in service, or the service down (or 5xx), or too slow</td>
+<td>Error: try again shortly. Never "connect"</td>
+<td><code>gateway.call</code> outcome <code>unavailable</code> or <code>upstream-error</code> (with a <code>detail</code>, such as a timeout)</td>
 </tr>
 <tr>
 <td>The sign-in service refused the swap, or the broker answered 401</td>
@@ -566,8 +598,8 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <td><code>gateway.call</code> outcome <code>deny</code></td>
 </tr>
 <tr>
-<td>GitHub refused the token</td>
-<td>Error: reconnect GitHub and try again</td>
+<td>The service refused the token</td>
+<td>Error: reconnect the service and try again</td>
 <td><code>gateway.call</code> outcome <code>upstream-error</code>, reason <code>rejected</code></td>
 </tr>
 <tr>
@@ -577,7 +609,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 </tr>
 </tbody>
 </table>
-<p>Log lines are one JSON object each. They contain IDs (the person's <code>sub</code>, the app's client ID, the tool name) and outcomes, never tokens. A test searches every container's logs for the sign-in token, the internal token, and the GitHub token.</p>
+<p>Log lines are one JSON object each. They contain IDs (the service, the person's <code>sub</code>, the app's client ID, the tool name) and outcomes, never tokens. If a service's error message ever contained the token, the gateway would replace it with <code>&lt;token&gt;</code> before logging. A test searches every container's logs for the sign-in token, the internal token, and each service's token.</p>
 <h2 id="configuration">Configuration</h2>
 <p>Required settings: <code>GATEWAY_PUBLIC_URL</code>, <code>HUB_ISSUER</code>, <code>HUB_JWKS_URI</code>, <code>HUB_TOKEN_ENDPOINT</code>, <code>GATEWAY_CLIENT_ID</code>, <code>GATEWAY_CLIENT_SECRET</code>, <code>BROKER_URL</code>. If any are missing, the gateway won't start, and it lists every missing name.</p>
 <table>
@@ -615,6 +647,16 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <td>The broker's internal address</td>
 </tr>
 <tr>
+<td><code>GATEWAY_UPSTREAMS</code></td>
+<td>the bundled <code>upstreams.json</code></td>
+<td>Path to a different upstreams file (see below)</td>
+</tr>
+<tr>
+<td><code>GATEWAY_ENABLED_UPSTREAMS</code></td>
+<td>all</td>
+<td>Comma-separated service names to serve, for example <code>github</code></td>
+</tr>
+<tr>
 <td><code>HUB_ALGORITHM</code></td>
 <td><code>PS256</code></td>
 <td>Signature type sign-in tokens must use. RS256 and HMAC are refused</td>
@@ -630,39 +672,9 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <td>Scope requested in the swap. It must produce what the broker expects</td>
 </tr>
 <tr>
-<td><code>VENDOR</code></td>
-<td><code>github</code></td>
-<td>Which broker vendor to ask for</td>
-</tr>
-<tr>
 <td><code>MIN_TTL_S</code></td>
 <td><code>120</code></td>
-<td>Minimum seconds of life left on the GitHub token</td>
-</tr>
-<tr>
-<td><code>UPSTREAM_MCP_URL</code></td>
-<td><code>https://api.githubcopilot.com/mcp/</code></td>
-<td>The vendor's MCP server</td>
-</tr>
-<tr>
-<td><code>UPSTREAM_TOOLS</code></td>
-<td>the seven read-only tools above</td>
-<td>Comma-separated list of allowed tools</td>
-</tr>
-<tr>
-<td><code>UPSTREAM_TOOLSETS</code></td>
-<td><code>repos,issues,pull_requests,context</code></td>
-<td>Sent as <code>X-MCP-Toolsets</code></td>
-</tr>
-<tr>
-<td><code>UPSTREAM_READONLY</code>, <code>UPSTREAM_LOCKDOWN</code></td>
-<td><code>true</code></td>
-<td>Sent as <code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code></td>
-</tr>
-<tr>
-<td><code>UPSTREAM_TOOL_SNAPSHOT</code></td>
-<td>the bundled saved copy</td>
-<td>Path to a different saved copy, or <code>none</code></td>
+<td>Minimum seconds of life left on each service token</td>
 </tr>
 <tr>
 <td><code>CONSENT_WAIT_S</code></td>
@@ -672,11 +684,70 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <tr>
 <td><code>HTTP_TIMEOUT_S</code></td>
 <td><code>15</code></td>
-<td>Time limit for each call to the sign-in service, the broker, and GitHub</td>
+<td>Time limit for each call to the sign-in service, the broker, and a service. Keep it well above the slowest tool (some Linear list calls take several seconds)</td>
 </tr>
 </tbody>
 </table>
+<h3 id="the-upstreams-file">The upstreams file</h3>
+<p><code>src/mcp_gateway/upstreams.json</code> lists the services. Each entry:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>Short lowercase name. It becomes the tool prefix and <code>connect_&lt;name&gt;</code></td>
+</tr>
+<tr>
+<td><code>display_name</code></td>
+<td>Used in messages, for example "Connect your Linear account"</td>
+</tr>
+<tr>
+<td><code>vendor</code></td>
+<td>The broker's vendor ID for this service's tokens (see the <a href="#operations">vendor registry</a>)</td>
+</tr>
+<tr>
+<td><code>url</code></td>
+<td>The service's MCP server. Use its read-only address where it has one</td>
+</tr>
+<tr>
+<td><code>tools</code></td>
+<td>The allowlist: the service's own tool names</td>
+</tr>
+<tr>
+<td><code>headers</code></td>
+<td>Extra headers on every call, such as GitHub's <code>X-MCP-Readonly</code>. <code>Authorization</code> is not allowed here</td>
+</tr>
+<tr>
+<td><code>auth_scheme</code></td>
+<td><code>Bearer</code> (default), or <code>Sentry-Bearer</code> for Sentry's MCP server</td>
+</tr>
+<tr>
+<td><code>protocol</code></td>
+<td><code>legacy</code> (default, for servers that stop at MCP 2025-11-25, like GitHub and Linear), <code>auto</code>, or <code>2026-07-28</code></td>
+</tr>
+<tr>
+<td><code>snapshot</code></td>
+<td>Saved tool list: a file name in <code>snapshots/</code>, or a path relative to the upstreams file</td>
+</tr>
+</tbody>
+</table>
+<p>The gateway checks the file at startup and refuses to start if it's wrong, for example duplicate or invalid names, an empty tool list, or an <code>Authorization</code> header.</p>
 <p>The gateway is built from <code>Dockerfile.gateway</code>. Its dependencies come from its own checked lock file, <code>requirements-gateway.lock</code>, so FastMCP never ends up in the broker's image.</p>
+<h2 id="add-another-server">Add another server</h2>
+<p>Services whose MCP server accepts an ordinary token from that service's own OAuth app work like GitHub and Linear. Sentry, GitLab, Azure DevOps, Slack, and PagerDuty are in this group.</p>
+<ol>
+<li><strong>Register an OAuth app</strong> with the service. Use callback <code>https://&lt;broker&gt;/v1/callback/&lt;vendor&gt;</code> and read-only scopes.</li>
+<li><strong>Add a broker registry entry</strong> (<code>registry.example.json</code>) with the service's OAuth endpoints, <code>scope_ceiling</code>, and <code>enabled_env</code>. Store the app's client ID and secret in custody at <code>vendor-clients/&lt;vendor&gt;</code>. See <a href="#operations">Deploy and operate</a>.</li>
+<li><strong>Add an upstreams entry</strong> with the MCP server's URL, the read-only tools you want, and any read-only headers or URL.</li>
+<li><strong>Save its tool list:</strong> <code>UPSTREAM_TOKEN=… .venv/bin/python tools/refresh-tool-snapshot.py &lt;name&gt;</code>.</li>
+<li><strong>Test it:</strong> add the service to the stand-in (<code>tests/stack/mock-mcp</code>) for CI, and to <code>tests/integration/test_external_mcp_servers.py</code> for a real-account check.</li>
+</ol>
+<p>Services that run their own MCP sign-in (Atlassian, Notion, Datadog, CircleCI) don't fit these steps yet: the broker would first need to register itself with their sign-in service.</p>
 <h2 id="run-it-locally">Run it locally</h2>
 <p>The <a href="#run-the-mcp-gateway">Quickstart</a> walks through it step by step. In short:</p>
 <pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
@@ -687,16 +758,17 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <li>Keycloak at <code>localhost:8180</code>;</li>
 <li>a broker that trusts it at <code>localhost:8600</code>, with its own OpenBao;</li>
 <li>the gateway at <code>localhost:8500</code>;</li>
-<li>a GitHub stand-in at <code>localhost:8330</code>, which only accepts live test tokens.</li>
+<li>stand-ins for GitHub and Linear at <code>localhost:8330</code> (<code>/github/mcp</code> and <code>/linear/mcp</code>), which only accept live test tokens.</li>
 </ul>
-<p>The test users are <code>alice</code> and <code>bob</code>, and each password is the same as the username.</p>
+<p>By default the gateway uses the stand-ins (<code>tests/stack/gateway/stand-in-upstreams.json</code>). To use the real services, set <code>GATEWAY_UPSTREAMS=</code> (empty). The test users are <code>alice</code> and <code>bob</code>, and each password is the same as the username.</p>
 <h2 id="known-limitations">Known limitations</h2>
 <ul>
-<li><strong>No subscription channel.</strong> The saved tool list avoids needing one. But if you allow a tool that isn't in the saved copy, clients on MCP 2026-07-28 only see it after they reconnect.</li>
+<li><strong>No subscription channel.</strong> The saved tool lists avoid needing one. But if you allow a tool that isn't in a saved copy, clients on MCP 2026-07-28 only see it after they reconnect.</li>
 <li><strong>Many dependencies.</strong> FastMCP 4.0.10 brings about 50 other packages, all pinned with checksums in <code>requirements-gateway.lock</code>. Review updates to that file like any other supply-chain change.</li>
-<li><strong>One swap and one GitHub session per call.</strong> This is simple and keeps nothing between calls, but it adds some delay. The gateway doesn't reuse connections yet.</li>
-<li><strong>Read-only.</strong> Write tools are blocked by the tool list and by <code>X-MCP-Readonly</code>.</li>
-<li><strong>One vendor per gateway.</strong> <code>VENDOR</code>, <code>UPSTREAM_MCP_URL</code>, and the tool list configure one upstream.</li>
+<li><strong>One swap and one service session per call.</strong> This is simple and keeps nothing between calls, but it adds some delay. The gateway doesn't reuse connections yet.</li>
+<li><strong>Read-only.</strong> Write tools are blocked by the tool lists, and by each service's read-only header, URL, or scope.</li>
+<li><strong>Linear account IDs aren't recorded.</strong> Linear's API only speaks GraphQL, so the broker logs Linear connections with <code>vendor_user_id</code> <code>unknown</code>. This only affects audit joins.</li>
+<li><strong>Timeouts.</strong> The test setup uses a 5-second <code>HTTP_TIMEOUT_S</code> so outage tests run quickly. Against the real services, use the default 15 seconds: some Linear calls take longer than 5.</li>
 <li><strong>Signing keys are cached for an hour.</strong> New keys from the sign-in service are picked up on first use. But a key the sign-in service removes (for example after a leak) stays trusted by the gateway until the cache runs out. Restart the gateway when you revoke a signing key. (The broker doesn't have this gap, because it never caches single keys.)</li>
 <li><strong>What we saw with Claude Code 2.1.283.</strong> After the sign-in service moved to a new address, Claude Code kept using the old token endpoint. After a failed token refresh, its next tool call arrived with no usable sign-in (logged as <code>gateway.auth</code>). In both cases, removing and re-adding the server, then signing in once, fixed it. It also registered itself even when a pre-registered app ID was set.</li>
 </ul>
@@ -707,7 +779,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <p><strong>Baseline: MCP 2026-07-28 · reviewed 2026-09-26.</strong></p>
 <p>Use this page to connect <strong>your own</strong> MCP server or gateway to the broker.</p>
 <ul>
-<li><strong>Just want GitHub?</strong> You do not need this page. The shipped <a href="#gateway">MCP gateway</a> already connects GitHub's MCP server to the broker and handles all the MCP work described here.</li>
+<li><strong>Just want GitHub or Linear?</strong> You do not need this page. The shipped <a href="#gateway">MCP gateway</a> already connects GitHub's and Linear's MCP servers to the broker and handles all the MCP work described here.</li>
 <li>The broker itself does not speak MCP. It offers an internal REST API (<a href="#api">API reference</a>). Your gateway sits between MCP clients and that API.</li>
 </ul>
 <h2 id="three-authorization-boundaries">Three authorization boundaries</h2>
@@ -766,7 +838,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 </ol>
 <p>The broker gives a token to any caller that passes its internal authentication. So you must isolate the network and authenticate the gateway workload when you deploy. The REST response cannot enforce this for you.</p>
 <h2 id="connecting-a-vendor-during-a-tool-call">Connecting a vendor during a tool call</h2>
-<p><strong>The shipped gateway already does this. See <a href="#connecting-github-during-a-tool-call">its consent behavior</a>.</strong> The guidance below applies to any adapter.</p>
+<p><strong>The shipped gateway already does this. See <a href="#connecting-a-service-during-a-tool-call">its consent behavior</a>.</strong> The guidance below applies to any adapter.</p>
 <p>A missing vendor connection is a different problem from the client's permission to call the MCP server. Handle it separately.</p>
 <p><strong>How to ask the user to connect (MCP 2026-07-28):</strong></p>
 <ul>
@@ -1229,8 +1301,10 @@ bao token create -policy=broker -period=24h -orphan -display-name=broker
 <h3 id="vendor-client-credentials">Vendor client credentials</h3>
 <p>Write each vendor's confidential client credential on the admin path:</p>
 <pre><code class="language-sh">bao kv put vendor-clients/github  client_id=… client_secret=…
+bao kv put vendor-clients/linear  client_id=… client_secret=…
 bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 </code></pre>
+<p>A vendor with <code>enabled_env</code> in the registry (GitHub: <code>GITHUB_CLIENT_ID</code>, Linear: <code>LINEAR_CLIENT_ID</code>) is only active when that variable is set on the broker.</p>
 <p>The credential must match the vendor's <code>token_endpoint_auth_method</code> in the registry:</p>
 <table>
 <thead>
@@ -1488,11 +1562,11 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <hr class='sep'/>
 <section id="security">
 <div class="section-head"><h1>Security</h1><p class="blurb">Which protections are built in, which are partial, and what we tested.</p><p class="src">source: <code>docs/security.md</code></p></div>
-<p><strong>Reviewed 2026-09-26 · software 1.1.0 (unreleased) · MCP 2026-07-28.</strong></p>
+<p><strong>Reviewed 2026-09-27 · software 1.1.0 (unreleased) · MCP 2026-07-28.</strong></p>
 <p>This page lists which security controls the broker and gateway have, where the proof lives, and what is still missing.</p>
 <ul>
 <li>The broker stores each user's vendor tokens and runs the vendor sign-in (OAuth) flows. It is one part of a larger MCP deployment.</li>
-<li>The shipped <a href="#gateway">MCP gateway</a> handles the MCP boundary for GitHub's MCP server.</li>
+<li>The shipped <a href="#gateway">MCP gateway</a> handles the MCP boundary for GitHub's and Linear's MCP servers.</li>
 <li>Passing these tests does not mean a complete deployment meets the MCP standard. <a href="https://modelcontextprotocol.io/specification/2026-07-28">The current specification</a> sets the protocol baseline.</li>
 </ul>
 <h2 id="control-ownership-and-evidence">Control ownership and evidence</h2>
@@ -1586,12 +1660,17 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Token-free MCP results and logs</td>
 <td>Implemented for the shipped gateway</td>
-<td>The leak test greps every container for the MCP token, hub JWT, and GitHub token. Custom gateways must run their own test. Resolve returns a token to its trusted caller on purpose</td>
+<td>The leak test greps every container for the MCP token, hub JWT, and each service's token (GitHub and Linear). Upstream error details are logged with the token replaced by <code>&lt;token&gt;</code>. Custom gateways must run their own test. Resolve returns a token to its trusted caller on purpose</td>
 </tr>
 <tr>
 <td>Read-only tool allowlist</td>
 <td>Implemented / gateway</td>
-<td>Allowlist, plus <code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code> on every upstream call (tested against the stand-in)</td>
+<td>Per-service allowlist, plus each service's read-only control: <code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code> for GitHub, the <code>/mcp/readonly</code> URL and <code>read</code> scope for Linear. Write tools stay hidden (tested against the stand-ins)</td>
+</tr>
+<tr>
+<td>Per-service token isolation</td>
+<td>Implemented / gateway</td>
+<td>Each service only receives its own vendor's token, and connecting one service never connects another. <code>tests/unit/test_gateway.py</code> (<code>test_each_upstream_gets_only_its_own_vendors_token</code>, <code>test_connections_are_per_upstream</code>), <code>tests/integration/test_mcp_gateway.py</code></td>
 </tr>
 <tr>
 <td>Issuer-bound vendor client credentials</td>
@@ -1652,7 +1731,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <p>The broker can sign <code>private_key_jwt</code> client-authentication assertions. It does not issue access tokens. Treat vendor client signing keys as credential material.</p>
 <p><code>broker.stale.mass</code> carries <code>page: true</code>, but that does not contact an alert service. Route the event to monitoring if you need an on-call notification. Availability and latency values in the design are targets, not measured guarantees.</p>
 <h2 id="verification-record">Verification record</h2>
-<p>Review baseline: application commit <code>a4c7a4b</code>. Checks on 2026-09-26:</p>
+<p>Review baseline: application commit <code>af0d434</code> (the gateway serving GitHub and Linear). Checks on 2026-09-27:</p>
 <table>
 <thead>
 <tr>
@@ -1663,30 +1742,31 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tbody>
 <tr>
 <td>Unit suite</td>
-<td>375 passed</td>
+<td>393 passed</td>
 </tr>
 <tr>
 <td>Docker integration / memory</td>
 <td>61 passed</td>
 </tr>
 <tr>
-<td>Gateway profile (Keycloak hub, broker-kc, gateway, GitHub stand-in)</td>
-<td>29 passed</td>
+<td>Gateway profile (Keycloak hub, broker-kc, gateway, GitHub and Linear stand-ins)</td>
+<td>37 passed, twice</td>
 </tr>
 <tr>
-<td>CI run 36267909800 (lint, unit, image builds, integration memory and Redis, gateway, multi-replica)</td>
-<td>All jobs passed</td>
+<td>Real GitHub and Linear through the gateway (<code>test_external_mcp_servers.py</code>)</td>
+<td>2 passed, with a GitHub App and a Linear OAuth app</td>
 </tr>
 <tr>
-<td>Real GitHub through the gateway (<code>test_external_github_mcp.py</code>)</td>
-<td>2 passed with a configured GitHub App</td>
+<td>Demo client (<code>tools/mcp-demo-client.py</code>) against the real services</td>
+<td><code>github_get_me</code> and <code>linear_list_teams</code> returned the tester's accounts; Linear connected through its OAuth flow</td>
 </tr>
 <tr>
-<td>Claude Code 2.1.283 against the gateway and GitHub's MCP server</td>
-<td>Sign-in with dynamic registration, in-client GitHub connection prompt, and <code>get_me</code> all worked</td>
+<td>Claude Code 2.1.283 against the gateway</td>
+<td>One request used both services: Linear teams and issues, then the GitHub login</td>
 </tr>
 </tbody>
 </table>
+<p>The previous baseline, <code>a4c7a4b</code> (GitHub only), also passed the full CI run 36267909800.</p>
 <h3 id="earlier-flaky-runs">Earlier flaky runs</h3>
 <p>Earlier CI runs at <code>ba03ed4</code> and <code>2607389</code> each failed one 20-parallel single-flight test once. Rerunning the failed job passed.</p>
 <p>This is a timing race in the test, not a single-flight bug. Mock tokens last 60 seconds, which is inside <code>REFRESH_BUFFER_S</code> (300). So a resolve whose first read lands after the first refresh finishes correctly refreshes again.</p>

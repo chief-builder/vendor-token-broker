@@ -50,8 +50,11 @@ Write each vendor's confidential client credential on the admin path:
 
 ```sh
 bao kv put vendor-clients/github  client_id=… client_secret=…
+bao kv put vendor-clients/linear  client_id=… client_secret=…
 bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 ```
+
+A vendor with `enabled_env` in the registry (GitHub: `GITHUB_CLIENT_ID`, Linear: `LINEAR_CLIENT_ID`) is only active when that variable is set on the broker.
 
 The credential must match the vendor's `token_endpoint_auth_method` in the registry:
 

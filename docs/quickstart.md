@@ -29,22 +29,23 @@ This starts:
 |---|---|---|
 | Keycloak | `http://localhost:8180` | The sign-in service. Test users: `alice` / `alice` and `bob` / `bob` |
 | MCP gateway | `http://localhost:8500/mcp` | What your MCP client connects to |
-| Token broker | `http://localhost:8600` | Keeps each user's GitHub token |
-| GitHub stand-in | `http://localhost:8330` | Pretends to be GitHub's MCP server |
+| Token broker | `http://localhost:8600` | Keeps each user's GitHub and Linear tokens |
+| Stand-ins | `http://localhost:8330` | Pretend to be GitHub's and Linear's MCP servers |
 
 The tests should all pass. They sign in, connect accounts, and call tools, the same way you are about to.
 
 ### 2. Try the demo client
 
 ```sh
-.venv/bin/python tools/mcp-demo-client.py get_me
+.venv/bin/python tools/mcp-demo-client.py github_get_me
+.venv/bin/python tools/mcp-demo-client.py linear_list_issues
 ```
 
 1. A browser tab opens on Keycloak. Sign in as `alice`.
-2. The first time, the gateway asks you to connect your account, and a second tab opens. Finish there. With the stand-in, this happens by itself.
-3. The client prints the list of tools and the result of `get_me`.
+2. The first time you use a service, the gateway asks you to connect it, and a second tab opens. Finish there. With the stand-ins, this happens by itself.
+3. The client prints the list of tools and the result.
 
-The demo client signs in as the pre-registered app `mcp-demo-cli` and listens for the sign-in result on port 33418.
+Tool names start with the service: `github_…` or `linear_…`. The demo client signs in as the pre-registered app `mcp-demo-cli` and listens for the sign-in result on port 33418.
 
 ### 3. Try Claude Code
 
@@ -58,32 +59,42 @@ Then, in a new Claude Code session:
 
 1. Run `/mcp`, choose `vtb-gateway`, then **Authenticate**.
 2. Keycloak opens. Sign in as `alice` and click **Yes** on the "Grant Access" screen. (Claude Code registers itself with Keycloak the first time.)
-3. Ask Claude to use a `vtb-gateway` tool, for example: *"Use vtb-gateway get_me."*
-4. If your account isn't connected yet, Claude Code asks to open a link. Accept, finish in the browser, and the answer comes back.
+3. Ask Claude to use the gateway, for example: *"Using vtb-gateway, list my Linear issues, then tell me my GitHub login."*
+4. If a service isn't connected yet, Claude Code asks to open a link. Accept, finish in the browser, and the answer comes back. Each service asks once.
 
 If sign-in later fails with an error that names an old address, run `claude mcp remove vtb-gateway`, add it again, and sign in once.
 
-### 4. Switch to real GitHub
+### 4. Switch to the real GitHub and Linear
 
-1. Create a GitHub App at <https://github.com/settings/apps/new>:
+1. **GitHub:** create a GitHub App at <https://github.com/settings/apps/new>:
    - Callback URLs: `http://localhost:8300/v1/callback/github` and `http://localhost:8600/v1/callback/github`
    - **Expire user authorization tokens**: on
    - Webhook: off
    - Repository permissions, all **read-only**: Contents, Issues, Pull requests, Metadata
 
    Then generate a client secret, and install the App on the repositories you want to use.
-2. Put `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `tests/stack/.env` (git ignores this file). Run the `up` command from step 1 again, so the broker gets them.
-3. Point the gateway at GitHub, and give people two minutes to finish connecting:
+2. **Linear:** in Linear, go to **Settings → API → OAuth applications** and create an app with callback URL `http://localhost:8600/v1/callback/linear`. You need to be a workspace admin.
+3. Put the IDs and secrets in `tests/stack/.env` (git ignores this file):
 
    ```sh
-   GATEWAY_VENDOR=github GATEWAY_UPSTREAM_URL=https://api.githubcopilot.com/mcp/ \
-     GATEWAY_CONSENT_WAIT_S=120 \
+   GITHUB_CLIENT_ID=...
+   GITHUB_CLIENT_SECRET=...
+   LINEAR_CLIENT_ID=...
+   LINEAR_CLIENT_SECRET=...
+   ```
+
+   Run the `up` command from step 1 again, so the broker gets them. You can set up just one of the two services.
+4. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:
+
+   ```sh
+   GATEWAY_UPSTREAMS= GATEWAY_CONSENT_WAIT_S=120 GATEWAY_HTTP_TIMEOUT_S=15 \
      docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --no-deps --wait mcp-gateway
    ```
 
-4. Use the demo client or Claude Code as before. `get_me` now returns your own GitHub account. To check the same thing automatically, run `GATEWAY_VENDOR=github .venv/bin/pytest tests/integration/test_external_github_mcp.py -m external`.
+   To serve only one service, add `GATEWAY_ENABLED_UPSTREAMS=github` (or `linear`).
+5. Use the demo client or Claude Code as before. `github_get_me` returns your own GitHub account, and `linear_list_teams` your Linear teams. To check both automatically, run `.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external`.
 
-To go back to the stand-in, run the `up` command for `mcp-gateway` again without those three variables.
+To go back to the stand-ins, run the `up` command for `mcp-gateway` again without those variables.
 
 ## Look under the hood: the broker on its own
 

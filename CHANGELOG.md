@@ -74,16 +74,27 @@ working unchanged: every wire change below is additive.
 - Consent inside the tool call: URL-mode elicitation on 2025-11-25 and
   2026-07-28 (multi-round-trip) clients, a link in the error otherwise;
   waits on the grant list, not resolve
-- Read-only tool allowlist with pinned schemas (`github_tools.json`,
-  refreshed by `tools/refresh-github-tool-snapshot.py`) reconciled with
+- Read-only tool allowlist with pinned schemas (`snapshots/<name>.json`,
+  refreshed by `tools/refresh-tool-snapshot.py <name>`) reconciled with
   the live schemas on the first connected call
 - `gateway` Compose profile: Keycloak 26.7.4 as a real hub, a broker that
   trusts it, the gateway, and a GitHub MCP stand-in; `tools/mcp-demo-client.py`
 - Verified end to end with Claude Code 2.1.283 against GitHub's MCP server
+- **Several MCP servers behind one gateway**, listed in `upstreams.json`
+  (name, broker vendor, URL, auth scheme, headers, protocol, allowlist,
+  snapshot); `GATEWAY_UPSTREAMS` and `GATEWAY_ENABLED_UPSTREAMS` select
+  them. Each has its own `connect_<name>` tool, consent, and catalog
+- **Linear**: 13 read-only tools through `https://mcp.linear.app/mcp/readonly`,
+  with a `linear` broker registry entry (enabled by `LINEAR_CLIENT_ID`)
+- **Breaking (pre-release):** tools are now prefixed (`github_get_me`,
+  `linear_list_issues`); the `VENDOR` and `UPSTREAM_*` gateway settings are
+  replaced by the upstreams file
+- Upstream errors are logged with a `detail` (token scrubbed); the test
+  stand-in is now `tests/stack/mock-mcp` serving `/github/mcp` and `/linear/mcp`
 
 ### Tests and supply chain
-- 375 unit tests (offline harness over the real app) and 100 integration
-  tests (61 per coordination backend, 7 multi-replica, 29 gateway profile,
+- 393 unit tests (offline harness over the real app) and 108 integration
+  tests (61 per coordination backend, 7 multi-replica, 37 gateway profile,
   3 external)
 - Hash-pinned `requirements.lock` / `requirements-dev.lock`; base image
   pinned by digest; GitHub Actions pinned by commit SHA

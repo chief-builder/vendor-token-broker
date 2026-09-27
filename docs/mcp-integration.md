@@ -4,7 +4,7 @@
 
 Use this page to connect **your own** MCP server or gateway to the broker.
 
-- **Just want GitHub?** You do not need this page. The shipped [MCP gateway](mcp-gateway.md) already connects GitHub's MCP server to the broker and handles all the MCP work described here.
+- **Just want GitHub or Linear?** You do not need this page. The shipped [MCP gateway](mcp-gateway.md) already connects GitHub's and Linear's MCP servers to the broker and handles all the MCP work described here.
 - The broker itself does not speak MCP. It offers an internal REST API ([API reference](api.md)). Your gateway sits between MCP clients and that API.
 
 ## Three authorization boundaries
@@ -51,7 +51,7 @@ The broker gives a token to any caller that passes its internal authentication. 
 
 ## Connecting a vendor during a tool call
 
-**The shipped gateway already does this. See [its consent behavior](mcp-gateway.md#connecting-github-during-a-tool-call).** The guidance below applies to any adapter.
+**The shipped gateway already does this. See [its consent behavior](mcp-gateway.md#connecting-a-service-during-a-tool-call).** The guidance below applies to any adapter.
 
 A missing vendor connection is a different problem from the client's permission to call the MCP server. Handle it separately.
 

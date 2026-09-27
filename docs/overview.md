@@ -1,17 +1,17 @@
 # Overview
 
-Let Claude Code and other AI assistants use GitHub on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.
+Let Claude Code and other AI assistants use your development tools, such as GitHub and Linear, on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.
 
 This project has two parts:
 
-- **The MCP gateway.** Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to GitHub's own MCP server, using the GitHub account of the person who is signed in.
-- **The token broker.** It keeps each person's GitHub token safe, refreshes it when it expires, and deletes it when the person disconnects. The gateway asks it for a token on every request.
+- **The MCP gateway.** Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to each service's own MCP server (GitHub's and Linear's today), using the account of the person who is signed in.
+- **The token broker.** It keeps each person's tokens for each service safe, refreshes them when they expire, and deletes them when the person disconnects. The gateway asks it for a token on every request.
 
 You get:
 
-- **One sign-in.** People sign in with your company's sign-in service, then connect GitHub once in their browser.
-- **No token handling.** The assistant, the chat, and the logs never see a GitHub token.
-- **Read-only GitHub tools by default**, from GitHub's official MCP server.
+- **One sign-in.** People sign in with your company's sign-in service, then connect each service once in their browser.
+- **No token handling.** The assistant, the chat, and the logs never see a service token.
+- **Read-only tools by default**, from each service's official MCP server: 7 for GitHub and 13 for Linear. More services can be added the same way.
 
 ## How it works
 
@@ -25,6 +25,8 @@ flowchart LR
     C -.->|"sign in"| H["Sign-in service<br/>(Keycloak)"]
 ```
 
+Here's GitHub as the example.
+
 1. The assistant calls a GitHub tool, such as "who am I?". It sends a sign-in token that proves who the person is.
 2. The gateway checks that token. It swaps it at the sign-in service for a separate internal token, and asks the broker for that person's GitHub token.
 3. The broker returns the GitHub token, refreshing it first if it's about to expire.
@@ -35,10 +37,10 @@ Each hop uses its own credential. The assistant's sign-in token never reaches Gi
 ## The first time someone uses it
 
 1. They add the gateway to Claude Code and sign in with the company sign-in service.
-2. They ask for something from GitHub. Their GitHub account isn't connected yet, so Claude Code asks to open a link.
-3. In the browser, they sign in again if needed and approve access on GitHub.
+2. They ask for something from a service, such as GitHub. That account isn't connected yet, so Claude Code asks to open a link.
+3. In the browser, they sign in again if needed and approve access on the service.
 4. The request finishes. From then on, requests just work, and the broker keeps the token fresh.
-5. They can disconnect at any time. The broker asks GitHub to cancel the token, then deletes its copy.
+5. Each service asks once. They can disconnect at any time: the broker asks the service to cancel the token, then deletes its copy.
 
 ## Where to go next
 
@@ -54,9 +56,9 @@ Each hop uses its own credential. The assistant's sign-in token never reaches Gi
 
 ## Status
 
-Software **1.1.0**, marked **unreleased** in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and GitHub's real MCP server.
+Software **1.1.0**, marked **unreleased** in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and the real GitHub and Linear MCP servers.
 
-These docs were checked against MCP **2026-07-28** (the MCP specification version) on **2026-09-26**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
+These docs were checked against MCP **2026-07-28** (the MCP specification version) on **2026-09-27**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
 
 ## Words used in these docs
 
