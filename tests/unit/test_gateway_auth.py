@@ -189,6 +189,8 @@ def test_bad_upstreams_files_fail_fast(tmp_path, upstreams, message):
 @pytest.mark.parametrize("env, message", [
     ({k: v for k, v in ENV.items() if k != "HUB_ISSUER"}, "HUB_ISSUER"),
     ({**ENV, "HUB_ALGORITHM": "RS256"}, "not allowed"),
+    ({**ENV, "HUB_ALGORITHM": "RS512"}, "not allowed"),
+    ({**ENV, "HUB_ALGORITHM": "HS256"}, "not allowed"),
     ({**ENV, "MIN_TTL_S": "soon"}, "invalid literal"),
     ({**ENV, "GATEWAY_ENABLED_UPSTREAMS": "github,jira"}, "unknown upstreams"),
     ({**ENV, "GATEWAY_UPSTREAMS": "/nonexistent/upstreams.json"}, "upstreams file"),

@@ -17,6 +17,10 @@ _REQUIRED = ("GATEWAY_PUBLIC_URL", "HUB_ISSUER", "HUB_JWKS_URI", "HUB_TOKEN_ENDP
 
 _NAME = re.compile(r"^[a-z][a-z0-9]{0,19}$")     # becomes the tool-name prefix
 AUTH_SCHEMES = ("Bearer", "Sentry-Bearer")       # Authorization scheme the upstream expects
+# The broker's hub contract (token_broker.config): asymmetric signatures only,
+# never RS256 (PKCS#1 v1.5), RS384/RS512, or HMAC.
+ALLOWED_HUB_ALGORITHMS = frozenset(
+    {"PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"})
 PROTOCOLS = ("legacy", "auto", "2026-07-28")      # fastmcp Client modes
 
 
@@ -121,8 +125,9 @@ class GatewayConfig:
         return f"{self.public_url.rstrip('/')}/mcp"
 
     def __post_init__(self):
-        if self.hub_algorithm in ("RS256", "HS256", "HS384", "HS512", "none"):
-            raise ConfigError(f"HUB_ALGORITHM {self.hub_algorithm} is not allowed")
+        if self.hub_algorithm not in ALLOWED_HUB_ALGORITHMS:
+            raise ConfigError(f"HUB_ALGORITHM {self.hub_algorithm} is not allowed; use one of "
+                              f"{sorted(ALLOWED_HUB_ALGORITHMS)}")
         if self.min_ttl_s < 0 or self.consent_wait_s < 0:
             raise ConfigError("MIN_TTL_S and CONSENT_WAIT_S must be >= 0")
 

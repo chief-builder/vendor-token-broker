@@ -82,7 +82,9 @@ class Broker:
                                      headers={"Authorization": f"Bearer {hub_jwt}"})
         except httpx.HTTPError as exc:
             raise Unavailable(f"broker unreachable ({type(exc).__name__})") from exc
-        if r.status_code != 200:
-            return False
+        if r.status_code == 401:
+            raise HandoffError("broker rejected the hub token (401)")
+        if r.status_code != 200:     # an outage must never look like "not connected yet"
+            raise Unavailable(f"broker answered {r.status_code} listing grants")
         return any(g.get("vendor") == vendor and g.get("state") == "ACTIVE"
                    for g in r.json().get("grants", []))

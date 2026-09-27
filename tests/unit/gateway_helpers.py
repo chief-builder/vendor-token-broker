@@ -53,6 +53,7 @@ class FakeBroker:
         self.connect_on_poll = False
         self.problem = ""
         self.error: Exception | None = None
+        self.poll_error: Exception | None = None      # raised while waiting on consent
         self.resolves: list[str] = []
         self.polls = 0
 
@@ -73,6 +74,8 @@ class FakeBroker:
 
     async def connected(self, hub_jwt: str, vendor: str) -> bool:
         self.polls += 1
+        if self.poll_error:
+            raise self.poll_error
         if self.connect_on_poll:
             self.connected_vendors.add(vendor)
         return vendor in self.connected_vendors

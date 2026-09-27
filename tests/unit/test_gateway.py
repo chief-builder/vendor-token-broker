@@ -183,6 +183,17 @@ async def test_waiting_polls_grants_not_resolve():
     assert len(broker.resolves) == 2          # first ask + the final token fetch
 
 
+@pytest.mark.parametrize("mode", ERAS)
+async def test_broker_outage_while_waiting_is_retryable_not_a_timeout(mode):
+    """An outage must never look like "finish connecting in the browser"."""
+    gw, _, broker, _ = make_gateway(connected=False)
+    broker.poll_error = Unavailable("broker answered 503 listing grants")
+    async with client(gw, mode=mode) as c:
+        r = await c.call_tool("connect_github", {}, raise_on_error=False)
+    assert r.is_error and "retry shortly" in r.content[0].text
+    assert "not connected yet" not in r.content[0].text
+
+
 @pytest.mark.parametrize("error, text", [
     (Unavailable("broker answered 503 vault-unavailable"), "retry shortly"),
     (HandoffError("broker rejected the hub token (invalid-hub-token)"),

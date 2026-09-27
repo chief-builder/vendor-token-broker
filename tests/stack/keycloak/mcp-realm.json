@@ -241,25 +241,6 @@
       ]
     },
     {
-      "clientId": "claude-code",
-      "publicClient": true,
-      "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": false,
-      "redirectUris": [
-        "http://localhost:33419/callback"
-      ],
-      "attributes": {
-        "pkce.code.challenge.method": "S256"
-      },
-      "defaultClientScopes": [
-        "basic"
-      ],
-      "optionalClientScopes": [
-        "mcp-gateway",
-        "offline_access"
-      ]
-    },
-    {
       "clientId": "mcp-gateway",
       "publicClient": false,
       "secret": "gateway-dev-secret",
