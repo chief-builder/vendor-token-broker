@@ -565,6 +565,8 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
+        if resource := b.vendors.resource(vendor):
+            params["resource"] = resource       # RFC 8707: token bound to this MCP server
         return RedirectResponse(f"{eps['authorization_endpoint']}?{urlencode(params)}",
                                 headers=BROWSER_HEADERS)
 

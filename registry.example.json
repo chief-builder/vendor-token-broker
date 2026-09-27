@@ -35,6 +35,56 @@
     },
     "_notes": "Linear OAuth app: no RFC 8414 metadata (endpoints hardcoded). 24h access tokens, rotating refresh tokens with a 30-minute grace period. RFC 7009 revocation. Read-only scope ceiling; the gateway also uses Linear's /mcp/readonly endpoint. Linear's API is GraphQL-only, so no REST user endpoint: vendor_user_id is recorded as 'unknown'."
   },
+  "atlassian": {
+    "vendor_id": "atlassian",
+    "enabled_env": "ATLASSIAN_CLIENT_ID",
+    "auth_metadata_url": "https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3/.well-known/oauth-authorization-server",
+    "resource": "https://mcp.atlassian.com/v2/mcp",
+    "token_endpoint_auth_method": "client_secret_post",
+    "scope_ceiling": [
+      "read:me",
+      "read:account",
+      "offline_access",
+      "read:jira:agent-interface",
+      "search:jira:agent-interface",
+      "read:confluence:agent-interface",
+      "search:confluence:agent-interface"
+    ],
+    "refresh_rotation": true,
+    "ema_status": "none",
+    "revocation": {
+      "type": "rfc7009"
+    },
+    "_notes": "Atlassian's MCP authorization server (Rovo MCP). The broker is a client registered once with tools/register-mcp-client.py (DCR); an org admin must allow the broker's callback origin under Rovo MCP server domain settings. Read and search scopes only (enforced by Atlassian). 8h access tokens, rotating refresh tokens. No REST user endpoint for these tokens: vendor_user_id is 'unknown'."
+  },
+  "cloudflare": {
+    "vendor_id": "cloudflare",
+    "enabled_env": "CLOUDFLARE_CLIENT_ID",
+    "auth_metadata_url": "https://mcp.cloudflare.com/.well-known/oauth-authorization-server",
+    "resource": "https://mcp.cloudflare.com/mcp",
+    "token_endpoint_auth_method": "client_secret_post",
+    "scope_ceiling": [
+      "user:read",
+      "account:read",
+      "offline_access",
+      "workers-scripts.read",
+      "workers-routes.read",
+      "workers-observability.read",
+      "workers-tail.read",
+      "workers-ci.read",
+      "workers-kv-storage.read",
+      "workers-r2.read",
+      "workers-r2-bucket-item.read",
+      "logs.read",
+      "account-logs.read"
+    ],
+    "refresh_rotation": true,
+    "ema_status": "none",
+    "revocation": {
+      "type": "rfc7009"
+    },
+    "_notes": "Cloudflare's MCP authorization server (mcp.cloudflare.com, code-mode tools search/docs/execute). Registered once with tools/register-mcp-client.py (DCR). Cloudflare grants exactly the requested scopes, so this read-only ceiling makes even `execute` read-only. 1h access tokens, rotating refresh tokens. The registration's client secret expires (about 90 days) and cannot be rotated: re-register and have users reconnect. vendor_user_id is 'unknown'."
+  },
   "mockhub": {
     "vendor_id": "mockhub",
     "auth_metadata_url": "http://mock-vendor:8310/.well-known/oauth-authorization-server",

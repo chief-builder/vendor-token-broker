@@ -170,3 +170,32 @@ async def test_metadata_outage_during_refresh_restores_active(vendor_http):
     r = await h.resolve()
     assert r.status_code == 503 and r.json()["title"] == "vendor-unavailable"
     assert h.stored()["state"] == "ACTIVE"
+
+
+# ------------------------------------------------ RFC 8707 resource indicator
+
+def _capture_token_forms(vendor_http) -> list[dict]:
+    forms: list[dict] = []
+
+    def token(request: httpx.Request) -> httpx.Response:
+        forms.append(dict(httpx.QueryParams(request.content.decode())))
+        return json_response({"access_token": "at", "refresh_token": "rt", "expires_in": 60})
+    vendor_http[TOKEN_URL] = token
+    return forms
+
+
+async def test_code_exchange_and_refresh_send_the_vendors_resource(client, vendor_http):
+    mcp = "https://mcp.example.test/mcp"
+    client._registry["mockhub"] = {**client._registry["mockhub"], "resource": mcp}
+    forms = _capture_token_forms(vendor_http)
+    await client.exchange_code("mockhub", "code", "verifier", "http://broker/cb")
+    await client.refresh("mockhub", "rt-0")
+    assert [f["grant_type"] for f in forms] == ["authorization_code", "refresh_token"]
+    assert all(f["resource"] == mcp for f in forms)
+
+
+async def test_ordinary_vendor_token_requests_have_no_resource(client, vendor_http):
+    forms = _capture_token_forms(vendor_http)
+    await client.exchange_code("mockhub", "code", "verifier", "http://broker/cb")
+    await client.refresh("mockhub", "rt-0")
+    assert len(forms) == 2 and all("resource" not in f for f in forms)

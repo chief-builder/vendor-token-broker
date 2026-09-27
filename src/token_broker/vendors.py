@@ -71,6 +71,12 @@ class VendorClient:
             return None  # vendor present in registry but not configured here
         return spec
 
+    def resource(self, vendor: str) -> str | None:
+        """RFC 8707 resource indicator for vendors whose tokens are bound to
+        an MCP server (the MCP authorization spec requires it on authorize,
+        code exchange, and refresh). None for ordinary vendor APIs."""
+        return self._registry[vendor].get("resource")
+
     async def endpoints(self, vendor: str) -> dict:
         """RFC 8414 metadata: authorization_endpoint / token_endpoint /
         revocation_endpoint / issuer, plus authorization_response_iss_parameter_supported
@@ -117,6 +123,8 @@ class VendorClient:
         eps = await self.endpoints(vendor)
         auth_form, basic = await self._auth_for(vendor, eps["token_endpoint"])
         form = {**form, **auth_form}
+        if resource := self.resource(vendor):
+            form["resource"] = resource
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as c:
                 r = await c.post(eps["token_endpoint"], data=form, auth=basic,

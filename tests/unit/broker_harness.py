@@ -72,6 +72,9 @@ class FakeVendors:
     def get_vendor(self, vendor: str):
         return self.spec if vendor == VENDOR else None
 
+    def resource(self, vendor: str) -> str | None:
+        return self.spec.get("resource")
+
     async def endpoints(self, vendor: str) -> dict:
         if self.endpoints_error is not None:
             raise self.endpoints_error
