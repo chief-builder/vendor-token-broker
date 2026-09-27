@@ -1,10 +1,10 @@
 # Integrate with MCP
 
-**Baseline: MCP 2026-07-28 · reviewed 2026-09-26.**
+**Baseline: MCP 2026-07-28 · reviewed 2026-09-27.**
 
 Use this page to connect **your own** MCP server or gateway to the broker.
 
-- **Just want GitHub or Linear?** You do not need this page. The shipped [MCP gateway](mcp-gateway.md) already connects GitHub's and Linear's MCP servers to the broker and handles all the MCP work described here.
+- **Just want GitHub, Linear, Atlassian, or Cloudflare?** You do not need this page. The shipped [MCP gateway](mcp-gateway.md) already connects their MCP servers to the broker and handles all the MCP work described here.
 - The broker itself does not speak MCP. It offers an internal REST API ([API reference](api.md)). Your gateway sits between MCP clients and that API.
 
 ## Three authorization boundaries

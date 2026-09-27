@@ -2,7 +2,7 @@
 
 **Checked on 2026-09-27 with MCP 2026-07-28, FastMCP 4.0.10, Keycloak 26.7.4, and Claude Code 2.1.283.**
 
-The MCP gateway lets AI assistants such as Claude Code use tools from several services, each as the signed-in person. Today it serves **GitHub** and **Linear**.
+The MCP gateway lets AI assistants such as Claude Code use tools from several services, each as the signed-in person. Today it serves **GitHub**, **Linear**, **Atlassian** (Jira and Confluence), and **Cloudflare**.
 
 - To the assistant, it looks like one ordinary MCP server, protected by your company's sign-in service (the "hub").
 - Behind it, it is an MCP client of each service's own MCP server.
@@ -12,14 +12,16 @@ The gateway is a separate service (`src/mcp_gateway/`). Adding it changed nothin
 
 ## Supported servers
 
-| Service | Its MCP server | Tools (all read-only) | Read-only by |
+| Service | Its MCP server | Tools | Read-only by |
 |---|---|---|---|
 | GitHub | `https://api.githubcopilot.com/mcp/` | 7: `github_get_me`, `github_search_repositories`, `github_get_file_contents`, `github_list_issues`, `github_issue_read`, `github_list_pull_requests`, `github_pull_request_read` | `X-MCP-Readonly: true` header, plus the tool list |
 | Linear | `https://mcp.linear.app/mcp/readonly` | 13: `linear_list_issues`, `linear_get_issue`, `linear_list_comments`, `linear_list_projects`, `linear_get_project`, `linear_list_cycles`, `linear_list_teams`, `linear_get_team`, `linear_list_issue_statuses`, `linear_list_users`, `linear_get_user`, `linear_list_documents`, `linear_get_document` | Linear's read-only URL, the `read` scope, plus the tool list |
+| Atlassian | `https://mcp.atlassian.com/v2/mcp` | 8: `atlassian_getJiraIssue`, `atlassian_searchJiraIssuesUsingJql`, `atlassian_getConfluenceContent`, `atlassian_searchConfluence`, `atlassian_executeRead`, `atlassian_discover`, `atlassian_atlassianUserInfo`, `atlassian_getAccessibleAtlassianResources` | Read and search scopes only, plus the tool list |
+| Cloudflare | `https://mcp.cloudflare.com/mcp` | 3: `cloudflare_search`, `cloudflare_docs`, `cloudflare_execute` | **Scopes only.** `execute` runs code against the whole Cloudflare API. What stops it writing is that the token only has 13 read scopes |
 
-Each service also has a `connect_<service>` tool (`connect_github`, `connect_linear`). Each person connects each service separately: connecting GitHub doesn't connect Linear.
+Each service also has a `connect_<service>` tool (`connect_github`, `connect_linear`, `connect_atlassian`, `connect_cloudflare`). Each person connects each service separately: connecting GitHub doesn't connect Linear.
 
-Servers that run their own MCP sign-in (Atlassian's Jira and Confluence, Notion) need the broker to register with them first. That is planned as a separate step.
+Atlassian and Cloudflare run their own sign-in for their MCP servers, so the broker is registered with each of them once. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in).
 
 ## What happens on a tool call
 
@@ -109,9 +111,14 @@ To update a saved copy from the live service:
 ```sh
 UPSTREAM_TOKEN=$(gh auth token) .venv/bin/python tools/refresh-tool-snapshot.py github
 UPSTREAM_TOKEN=<Linear API key> .venv/bin/python tools/refresh-tool-snapshot.py linear
+UPSTREAM_TOKEN=<token from the broker> .venv/bin/python tools/refresh-tool-snapshot.py atlassian
 ```
 
-The script uses exactly the gateway's URL, headers, and allowlist for that service. A test fails if any saved copy and its tool list ever disagree, or if a saved tool isn't marked read-only.
+For Atlassian and Cloudflare, the token has to come from the broker: connect the account first, then resolve it at the broker (see [Broker API](api.md)).
+
+The script uses exactly the gateway's URL, headers, and allowlist for that service. Tests fail if any saved copy and its tool list ever disagree, if a saved tool isn't marked read-only (Cloudflare is the one exception: its scopes are what keep it read-only), or if a saved copy contains an email address or a 32-character hex ID.
+
+**Check a new saved copy before you commit it.** It was fetched with someone's token, and a service may write that person's details into it. Cloudflare's `execute` description names the person's email and account ID; the committed copy replaces that line with "your Cloudflare account".
 
 Treat what services return (issue text, file contents, comments) as untrusted input for the assistant. The gateway passes it through unchanged and never acts on it.
 
@@ -195,7 +202,49 @@ Services whose MCP server accepts an ordinary token from that service's own OAut
 4. **Save its tool list:** `UPSTREAM_TOKEN=… .venv/bin/python tools/refresh-tool-snapshot.py <name>`.
 5. **Test it:** add the service to the stand-in (`tests/stack/mock-mcp`) for CI, and to `tests/integration/test_external_mcp_servers.py` for a real-account check.
 
-Services that run their own MCP sign-in (Atlassian, Notion, Datadog, CircleCI) don't fit these steps yet: the broker would first need to register itself with their sign-in service.
+Services that run their own MCP sign-in (Atlassian, Cloudflare, Notion, and many others) need two more steps; see the next section.
+
+## Servers with their own sign-in
+
+Atlassian's and Cloudflare's MCP servers don't accept a token from an ordinary OAuth app. They run their own OAuth sign-in, and the token is only valid at that one MCP server. So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:
+
+- **It registers itself once**, with dynamic client registration (RFC 7591). There is no developer console to create an app in.
+- **It names the MCP server on every request** (the RFC 8707 `resource` parameter): when the person connects, when it swaps the code for a token, and on every refresh. The registry entry's `resource` field holds that address.
+
+To add one:
+
+1. **Add a registry entry** with `auth_metadata_url` (the sign-in service's metadata), `resource` (the MCP server's URL), `scope_ceiling` (only read scopes), and `enabled_env`.
+2. **Register the broker, once:**
+
+   ```sh
+   # writes <VENDOR>_CLIENT_ID and _SECRET to the file
+   .venv/bin/python tools/register-mcp-client.py atlassian \
+       --redirect-base https://broker.example.com --env-file broker.env
+
+   # or straight into custody (needs VAULT_ADDR and an admin VAULT_TOKEN)
+   .venv/bin/python tools/register-mcp-client.py atlassian \
+       --redirect-base https://broker.example.com --vault
+   ```
+
+   It registers as `vtb-mcp-gateway`, with the callback `<redirect-base>/v1/callback/<vendor>` and the registry's scopes, and never prints the secret.
+3. **Continue with steps 3–5 above:** the upstreams entry, its saved tool list, and tests.
+
+**Register only once.** Each registration creates a new client, and every connection made with the old one stops working. The script refuses when credentials already exist, unless you pass `--force`.
+
+What each service needs:
+
+| | Atlassian | Cloudflare |
+|---|---|---|
+| Before registering | An org admin allows the broker's callback address: in Atlassian Administration, under **Rovo → MCP → Domain settings** | Nothing |
+| Scopes the broker asks for | `read:me`, `read:account`, `offline_access`, and read and search for Jira and Confluence (`…:agent-interface`) | 13: `user:read`, `account:read`, `offline_access`, and `.read` scopes for Workers scripts, routes, observability, tail, CI, KV, R2, R2 objects, and logs. Asked without a `scope`, Cloudflare granted 194 read scopes |
+| Tokens | 8 hours, refresh token rotates | 1 hour, refresh token rotates |
+| Client secret | The script warns if the registration sets an expiry date | **Expires after about 3 months.** The test registration expires on 2026-12-26. There's no way to renew it: register again, update custody, and everyone reconnects |
+
+Cloudflare's separate observability and builds MCP servers each have their own sign-in and would need their own registration. The main server covers the same read APIs through `execute`.
+
+The test stack stands in for both services: mock-vendor plays their sign-in (it refuses a code exchange or refresh that doesn't name the right server), and the stand-ins at `/atlassian/mcp` and `/cloudflare/mcp` refuse tokens issued for any other server.
+
+Figma's MCP server also runs its own sign-in, but only lets clients from its approved list register. It refused the broker's registration.
 
 ## Run it locally
 
@@ -211,7 +260,7 @@ This starts:
 - Keycloak at `localhost:8180`;
 - a broker that trusts it at `localhost:8600`, with its own OpenBao;
 - the gateway at `localhost:8500`;
-- stand-ins for GitHub and Linear at `localhost:8330` (`/github/mcp` and `/linear/mcp`), which only accept live test tokens.
+- stand-ins for GitHub, Linear, Atlassian, and Cloudflare at `localhost:8330` (`/github/mcp`, `/linear/mcp`, `/atlassian/mcp`, `/cloudflare/mcp`), which only accept live test tokens.
 
 By default the gateway uses the stand-ins (`tests/stack/gateway/stand-in-upstreams.json`). To use the real services, set `GATEWAY_UPSTREAMS=` (empty). The test users are `alice` and `bob`, and each password is the same as the username.
 
@@ -220,7 +269,9 @@ By default the gateway uses the stand-ins (`tests/stack/gateway/stand-in-upstrea
 - **No subscription channel.** The saved tool lists avoid needing one. But if you allow a tool that isn't in a saved copy, clients on MCP 2026-07-28 only see it after they reconnect.
 - **Many dependencies.** FastMCP 4.0.10 brings about 50 other packages, all pinned with checksums in `requirements-gateway.lock`. Review updates to that file like any other supply-chain change.
 - **One swap and one service session per call.** This is simple and keeps nothing between calls, but it adds some delay. The gateway doesn't reuse connections yet.
-- **Read-only.** Write tools are blocked by the tool lists, and by each service's read-only header, URL, or scope.
+- **Read-only.** Write tools are blocked by the tool lists, and by each service's read-only header, URL, or scope. For Cloudflare, only the scopes do this, because `execute` can call any Cloudflare API.
+- **Cloudflare's client secret expires.** See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in). Put the date in your calendar.
+- **Saved tool lists win.** If a service changes a tool, the gateway keeps listing the saved copy until you refresh it. Cloudflare's `execute` is always reported as `changed`, because its live description is personalized.
 - **Linear account IDs aren't recorded.** Linear's API only speaks GraphQL, so the broker logs Linear connections with `vendor_user_id` `unknown`. This only affects audit joins.
 - **Timeouts.** The test setup uses a 5-second `HTTP_TIMEOUT_S` so outage tests run quickly. Against the real services, use the default 15 seconds: some Linear calls take longer than 5.
 - **Signing keys are cached for an hour.** New keys from the sign-in service are picked up on first use. But a key the sign-in service removes (for example after a leak) stays trusted by the gateway until the cache runs out. Restart the gateway when you revoke a signing key. (The broker doesn't have this gap, because it never caches single keys.)

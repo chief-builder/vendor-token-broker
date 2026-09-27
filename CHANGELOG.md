@@ -91,6 +91,20 @@ working unchanged: every wire change below is additive.
   replaced by the upstreams file
 - Upstream errors are logged with a `detail` (token scrubbed); the test
   stand-in is now `tests/stack/mock-mcp` serving `/github/mcp` and `/linear/mcp`
+- **Atlassian** (8 read and search tools for Jira and Confluence) and
+  **Cloudflare** (`search`, `docs`, `execute`, read-only by scopes alone):
+  MCP servers that run their own sign-in. New optional registry field
+  `resource` (RFC 8707), sent on authorize, code exchange, and refresh;
+  `tools/register-mcp-client.py` registers the broker once per vendor
+  (RFC 7591) and refuses to register again unless forced
+- **Saved tool lists win (behavior change):** a live schema that differs
+  from the snapshot is logged as `changed` but no longer replaces it, since
+  the list is shared and Cloudflare personalizes a description with the
+  user's email and account ID; a test refuses snapshots holding either
+- Test stack: mock-vendor plays an MCP sign-in (dynamic registration,
+  resource-bound tokens, `invalid_target`), and mock-mcp adds
+  `/atlassian/mcp` and `/cloudflare/mcp`, which refuse tokens issued for
+  other servers
 
 ### Tests and supply chain
 - 393 unit tests (offline harness over the real app) and 108 integration

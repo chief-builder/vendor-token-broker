@@ -82,17 +82,17 @@
 <main id="content">
 <section id="overview">
 <div class="section-head"><h1>Overview</h1><p class="blurb">Let AI assistants use GitHub as each signed-in person, without handling tokens.</p><p class="src">source: <code>docs/overview.md</code></p></div>
-<p>Let Claude Code and other AI assistants use your development tools, such as GitHub and Linear, on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.</p>
+<p>Let Claude Code and other AI assistants use your development tools, such as GitHub, Linear, Jira, and Cloudflare, on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.</p>
 <p>This project has two parts:</p>
 <ul>
-<li><strong>The MCP gateway.</strong> Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to each service's own MCP server (GitHub's and Linear's today), using the account of the person who is signed in.</li>
+<li><strong>The MCP gateway.</strong> Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to each service's own MCP server (GitHub's, Linear's, Atlassian's, and Cloudflare's today), using the account of the person who is signed in.</li>
 <li><strong>The token broker.</strong> It keeps each person's tokens for each service safe, refreshes them when they expire, and deletes them when the person disconnects. The gateway asks it for a token on every request.</li>
 </ul>
 <p>You get:</p>
 <ul>
 <li><strong>One sign-in.</strong> People sign in with your company's sign-in service, then connect each service once in their browser.</li>
 <li><strong>No token handling.</strong> The assistant, the chat, and the logs never see a service token.</li>
-<li><strong>Read-only tools by default</strong>, from each service's official MCP server: 7 for GitHub and 13 for Linear. More services can be added the same way.</li>
+<li><strong>Read-only tools by default</strong>, from each service's official MCP server: 7 for GitHub, 13 for Linear, 8 for Atlassian (Jira and Confluence), and 3 for Cloudflare. More services can be added the same way.</li>
 </ul>
 <h2 id="how-it-works">How it works</h2>
 <pre class="mermaid">flowchart LR
@@ -159,7 +159,7 @@
 </tbody>
 </table>
 <h2 id="status">Status</h2>
-<p>Software <strong>1.1.0</strong>, marked <strong>unreleased</strong> in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and the real GitHub and Linear MCP servers.</p>
+<p>Software <strong>1.1.0</strong>, marked <strong>unreleased</strong> in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and the real GitHub, Linear, Atlassian, and Cloudflare MCP servers.</p>
 <p>These docs were checked against MCP <strong>2026-07-28</strong> (the MCP specification version) on <strong>2026-09-27</strong>. <a href="#security">Security</a> lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.</p>
 <h2 id="words-used-in-these-docs">Words used in these docs</h2>
 <table>
@@ -254,12 +254,12 @@
 <tr>
 <td>Token broker</td>
 <td><code>http://localhost:8600</code></td>
-<td>Keeps each user's GitHub and Linear tokens</td>
+<td>Keeps each user's GitHub, Linear, Atlassian, and Cloudflare tokens</td>
 </tr>
 <tr>
 <td>Stand-ins</td>
 <td><code>http://localhost:8330</code></td>
-<td>Pretend to be GitHub's and Linear's MCP servers</td>
+<td>Pretend to be GitHub's, Linear's, Atlassian's, and Cloudflare's MCP servers</td>
 </tr>
 </tbody>
 </table>
@@ -273,7 +273,7 @@
 <li>The first time you use a service, the gateway asks you to connect it, and a second tab opens. Finish there. With the stand-ins, this happens by itself.</li>
 <li>The client prints the list of tools and the result.</li>
 </ol>
-<p>Tool names start with the service: <code>github_…</code> or <code>linear_…</code>. The demo client signs in as the pre-registered app <code>mcp-demo-cli</code> and listens for the sign-in result on port 33418.</p>
+<p>Tool names start with the service: <code>github_…</code>, <code>linear_…</code>, <code>atlassian_…</code>, or <code>cloudflare_…</code>. The demo client signs in as the pre-registered app <code>mcp-demo-cli</code> and listens for the sign-in result on port 33418.</p>
 <h3 id="3-try-claude-code">3. Try Claude Code</h3>
 <p>Add the gateway to Claude Code:</p>
 <pre><code class="language-sh">claude mcp add --transport http vtb-gateway http://localhost:8500/mcp --callback-port 33419
@@ -286,7 +286,7 @@
 <li>If a service isn't connected yet, Claude Code asks to open a link. Accept, finish in the browser, and the answer comes back. Each service asks once.</li>
 </ol>
 <p>If sign-in later fails with an error that names an old address, run <code>claude mcp remove vtb-gateway</code>, add it again, and sign in once.</p>
-<h3 id="4-switch-to-the-real-github-and-linear">4. Switch to the real GitHub and Linear</h3>
+<h3 id="4-switch-to-the-real-services">4. Switch to the real services</h3>
 <ol>
 <li><strong>GitHub:</strong> create a GitHub App at <a href="https://github.com/settings/apps/new">https://github.com/settings/apps/new</a>:</li>
 <li>Callback URLs: <code>http://localhost:8300/v1/callback/github</code> and <code>http://localhost:8600/v1/callback/github</code></li>
@@ -296,19 +296,33 @@
 </ol>
 <p>Then generate a client secret, and install the App on the repositories you want to use.
 2. <strong>Linear:</strong> in Linear, go to <strong>Settings → API → OAuth applications</strong> and create an app with callback URL <code>http://localhost:8600/v1/callback/linear</code>. You need to be a workspace admin.
-3. Put the IDs and secrets in <code>tests/stack/.env</code> (git ignores this file):</p>
+3. <strong>Atlassian and Cloudflare:</strong> these register the broker with a script instead of a developer console (<a href="#servers-with-their-own-sign-in">why</a>).
+   - For Atlassian, first ask an org admin to allow <code>http://localhost:*/**</code> in Atlassian Administration, under <strong>Rovo → MCP → Domain settings</strong>.
+   - Then register once per service. The script writes the ID and secret into <code>tests/stack/.env</code>:</p>
+<pre><code> ```sh
+ .venv/bin/python tools/register-mcp-client.py atlassian \
+     --redirect-base http://localhost:8600 --env-file tests/stack/.env
+ .venv/bin/python tools/register-mcp-client.py cloudflare \
+     --redirect-base http://localhost:8600 --env-file tests/stack/.env
+ ```
+
+ Don't run it again later: a new registration disconnects every account connected with the old one. Cloudflare's secret expires after about 3 months, and the script prints the date.
+</code></pre>
+<ol>
+<li>Put the GitHub and Linear IDs and secrets in <code>tests/stack/.env</code> too (git ignores this file):</li>
+</ol>
 <p><code>sh
    GITHUB_CLIENT_ID=...
    GITHUB_CLIENT_SECRET=...
    LINEAR_CLIENT_ID=...
    LINEAR_CLIENT_SECRET=...</code></p>
-<p>Run the <code>up</code> command from step 1 again, so the broker gets them. You can set up just one of the two services.
-4. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:</p>
+<p>Run the <code>up</code> command from step 1 again, so the broker gets them. You can set up any subset of the services.
+5. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:</p>
 <p><code>sh
    GATEWAY_UPSTREAMS= GATEWAY_CONSENT_WAIT_S=120 GATEWAY_HTTP_TIMEOUT_S=15 \
      docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --no-deps --wait mcp-gateway</code></p>
-<p>To serve only one service, add <code>GATEWAY_ENABLED_UPSTREAMS=github</code> (or <code>linear</code>).
-5. Use the demo client or Claude Code as before. <code>github_get_me</code> returns your own GitHub account, and <code>linear_list_teams</code> your Linear teams. To check both automatically, run <code>.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external</code>.</p>
+<p>To serve only some services, add for example <code>GATEWAY_ENABLED_UPSTREAMS=github,atlassian</code>.
+6. Use the demo client or Claude Code as before. <code>github_get_me</code> returns your own GitHub account, <code>linear_list_teams</code> your Linear teams, and <code>atlassian_getAccessibleAtlassianResources</code> your Atlassian sites. <code>connect_cloudflare</code> connects Cloudflare. To check them all automatically, run <code>.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external</code>.</p>
 <p>To go back to the stand-ins, run the <code>up</code> command for <code>mcp-gateway</code> again without those variables.</p>
 <h2 id="look-under-the-hood-the-broker-on-its-own">Look under the hood: the broker on its own</h2>
 <p>The gateway gets tokens from the broker. You can talk to the broker directly, the way a gateway does. Step 1 also started a second broker on port 8300, with a simple sign-in stub instead of Keycloak. This section uses that one. If you skipped step 1, start it with:</p>
@@ -397,7 +411,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <section id="gateway">
 <div class="section-head"><h1>MCP Gateway</h1><p class="blurb">How the gateway works, what your sign-in service must do, and how to configure it.</p><p class="src">source: <code>docs/mcp-gateway.md</code></p></div>
 <p><strong>Checked on 2026-09-27 with MCP 2026-07-28, FastMCP 4.0.10, Keycloak 26.7.4, and Claude Code 2.1.283.</strong></p>
-<p>The MCP gateway lets AI assistants such as Claude Code use tools from several services, each as the signed-in person. Today it serves <strong>GitHub</strong> and <strong>Linear</strong>.</p>
+<p>The MCP gateway lets AI assistants such as Claude Code use tools from several services, each as the signed-in person. Today it serves <strong>GitHub</strong>, <strong>Linear</strong>, <strong>Atlassian</strong> (Jira and Confluence), and <strong>Cloudflare</strong>.</p>
 <ul>
 <li>To the assistant, it looks like one ordinary MCP server, protected by your company's sign-in service (the "hub").</li>
 <li>Behind it, it is an MCP client of each service's own MCP server.</li>
@@ -410,7 +424,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <tr>
 <th>Service</th>
 <th>Its MCP server</th>
-<th>Tools (all read-only)</th>
+<th>Tools</th>
 <th>Read-only by</th>
 </tr>
 </thead>
@@ -427,10 +441,22 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <td>13: <code>linear_list_issues</code>, <code>linear_get_issue</code>, <code>linear_list_comments</code>, <code>linear_list_projects</code>, <code>linear_get_project</code>, <code>linear_list_cycles</code>, <code>linear_list_teams</code>, <code>linear_get_team</code>, <code>linear_list_issue_statuses</code>, <code>linear_list_users</code>, <code>linear_get_user</code>, <code>linear_list_documents</code>, <code>linear_get_document</code></td>
 <td>Linear's read-only URL, the <code>read</code> scope, plus the tool list</td>
 </tr>
+<tr>
+<td>Atlassian</td>
+<td><code>https://mcp.atlassian.com/v2/mcp</code></td>
+<td>8: <code>atlassian_getJiraIssue</code>, <code>atlassian_searchJiraIssuesUsingJql</code>, <code>atlassian_getConfluenceContent</code>, <code>atlassian_searchConfluence</code>, <code>atlassian_executeRead</code>, <code>atlassian_discover</code>, <code>atlassian_atlassianUserInfo</code>, <code>atlassian_getAccessibleAtlassianResources</code></td>
+<td>Read and search scopes only, plus the tool list</td>
+</tr>
+<tr>
+<td>Cloudflare</td>
+<td><code>https://mcp.cloudflare.com/mcp</code></td>
+<td>3: <code>cloudflare_search</code>, <code>cloudflare_docs</code>, <code>cloudflare_execute</code></td>
+<td><strong>Scopes only.</strong> <code>execute</code> runs code against the whole Cloudflare API. What stops it writing is that the token only has 13 read scopes</td>
+</tr>
 </tbody>
 </table>
-<p>Each service also has a <code>connect_&lt;service&gt;</code> tool (<code>connect_github</code>, <code>connect_linear</code>). Each person connects each service separately: connecting GitHub doesn't connect Linear.</p>
-<p>Servers that run their own MCP sign-in (Atlassian's Jira and Confluence, Notion) need the broker to register with them first. That is planned as a separate step.</p>
+<p>Each service also has a <code>connect_&lt;service&gt;</code> tool (<code>connect_github</code>, <code>connect_linear</code>, <code>connect_atlassian</code>, <code>connect_cloudflare</code>). Each person connects each service separately: connecting GitHub doesn't connect Linear.</p>
+<p>Atlassian and Cloudflare run their own sign-in for their MCP servers, so the broker is registered with each of them once. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
 <h2 id="what-happens-on-a-tool-call">What happens on a tool call</h2>
 <pre class="mermaid">flowchart LR
     C[&quot;AI assistant&lt;br/&gt;(Claude Code, demo client)&quot;] --&gt;|&quot;sign-in token for the gateway&quot;| G[&quot;MCP gateway&quot;]
@@ -521,9 +547,9 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <p>Standards: token exchange is RFC 8693. The <code>resource</code> parameter is RFC 8707. The audience a token is meant for is its <code>aud</code> claim.</p>
 <h2 id="tools">Tools</h2>
 <p>Every tool is named <code>&lt;service&gt;_&lt;tool&gt;</code>, for example <code>github_get_me</code> or <code>linear_list_issues</code>. The gateway strips the prefix before calling the service. Tools that change things, such as GitHub's <code>create_issue</code> or Linear's <code>save_issue</code>, are never listed.</p>
-<p><strong>All of these are listed from the moment the gateway starts.</strong> Their descriptions come from a saved copy of each service's tool list (<code>src/mcp_gateway/snapshots/&lt;service&gt;.json</code>). The first time someone with a connected account uses a service after a restart, the gateway reads that service's live tool list. The service stays the source of truth, and the gateway writes a <code>gateway.catalog</code> log line for it:</p>
+<p><strong>All of these are listed from the moment the gateway starts.</strong> Their descriptions come from a saved copy of each service's tool list (<code>src/mcp_gateway/snapshots/&lt;service&gt;.json</code>). The first time someone with a connected account uses a service after a restart, the gateway reads that service's live tool list and writes a <code>gateway.catalog</code> log line for it:</p>
 <ul>
-<li><code>changed</code>: the service describes the tool differently now, so the gateway switches to its version.</li>
+<li><code>changed</code>: the service describes the tool differently now. The gateway keeps listing the saved copy, because the list is shared by every user and a service may personalize what it returns (Cloudflare puts the signed-in user's email and account ID in a description). Refresh the saved copy when you see this.</li>
 <li><code>added</code>: allowed but missing from the saved copy, so the gateway adds it and tells clients the list changed.</li>
 <li><code>missing</code>: the service no longer offers it. It stays listed, and calling it returns the service's error.</li>
 </ul>
@@ -532,8 +558,11 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <p>To update a saved copy from the live service:</p>
 <pre><code class="language-sh">UPSTREAM_TOKEN=$(gh auth token) .venv/bin/python tools/refresh-tool-snapshot.py github
 UPSTREAM_TOKEN=&lt;Linear API key&gt; .venv/bin/python tools/refresh-tool-snapshot.py linear
+UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool-snapshot.py atlassian
 </code></pre>
-<p>The script uses exactly the gateway's URL, headers, and allowlist for that service. A test fails if any saved copy and its tool list ever disagree, or if a saved tool isn't marked read-only.</p>
+<p>For Atlassian and Cloudflare, the token has to come from the broker: connect the account first, then resolve it at the broker (see <a href="#api">Broker API</a>).</p>
+<p>The script uses exactly the gateway's URL, headers, and allowlist for that service. Tests fail if any saved copy and its tool list ever disagree, if a saved tool isn't marked read-only (Cloudflare is the one exception: its scopes are what keep it read-only), or if a saved copy contains an email address or a 32-character hex ID.</p>
+<p><strong>Check a new saved copy before you commit it.</strong> It was fetched with someone's token, and a service may write that person's details into it. Cloudflare's <code>execute</code> description names the person's email and account ID; the committed copy replaces that line with "your Cloudflare account".</p>
 <p>Treat what services return (issue text, file contents, comments) as untrusted input for the assistant. The gateway passes it through unchanged and never acts on it.</p>
 <h2 id="connecting-a-service-during-a-tool-call">Connecting a service during a tool call</h2>
 <p>If the person hasn't connected a service yet, any of its tools, or its <code>connect_…</code> tool, asks the assistant to open the broker's connection link for that service. What that looks like depends on the assistant:</p>
@@ -747,7 +776,64 @@ UPSTREAM_TOKEN=&lt;Linear API key&gt; .venv/bin/python tools/refresh-tool-snapsh
 <li><strong>Save its tool list:</strong> <code>UPSTREAM_TOKEN=… .venv/bin/python tools/refresh-tool-snapshot.py &lt;name&gt;</code>.</li>
 <li><strong>Test it:</strong> add the service to the stand-in (<code>tests/stack/mock-mcp</code>) for CI, and to <code>tests/integration/test_external_mcp_servers.py</code> for a real-account check.</li>
 </ol>
-<p>Services that run their own MCP sign-in (Atlassian, Notion, Datadog, CircleCI) don't fit these steps yet: the broker would first need to register itself with their sign-in service.</p>
+<p>Services that run their own MCP sign-in (Atlassian, Cloudflare, Notion, and many others) need two more steps; see the next section.</p>
+<h2 id="servers-with-their-own-sign-in">Servers with their own sign-in</h2>
+<p>Atlassian's and Cloudflare's MCP servers don't accept a token from an ordinary OAuth app. They run their own OAuth sign-in, and the token is only valid at that one MCP server. So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:</p>
+<ul>
+<li><strong>It registers itself once</strong>, with dynamic client registration (RFC 7591). There is no developer console to create an app in.</li>
+<li><strong>It names the MCP server on every request</strong> (the RFC 8707 <code>resource</code> parameter): when the person connects, when it swaps the code for a token, and on every refresh. The registry entry's <code>resource</code> field holds that address.</li>
+</ul>
+<p>To add one:</p>
+<ol>
+<li><strong>Add a registry entry</strong> with <code>auth_metadata_url</code> (the sign-in service's metadata), <code>resource</code> (the MCP server's URL), <code>scope_ceiling</code> (only read scopes), and <code>enabled_env</code>.</li>
+<li><strong>Register the broker, once:</strong></li>
+</ol>
+<p>```sh
+   # writes <VENDOR>_CLIENT_ID and _SECRET to the file
+   .venv/bin/python tools/register-mcp-client.py atlassian \
+       --redirect-base https://broker.example.com --env-file broker.env</p>
+<p># or straight into custody (needs VAULT_ADDR and an admin VAULT_TOKEN)
+   .venv/bin/python tools/register-mcp-client.py atlassian \
+       --redirect-base https://broker.example.com --vault
+   ```</p>
+<p>It registers as <code>vtb-mcp-gateway</code>, with the callback <code>&lt;redirect-base&gt;/v1/callback/&lt;vendor&gt;</code> and the registry's scopes, and never prints the secret.
+3. <strong>Continue with steps 3–5 above:</strong> the upstreams entry, its saved tool list, and tests.</p>
+<p><strong>Register only once.</strong> Each registration creates a new client, and every connection made with the old one stops working. The script refuses when credentials already exist, unless you pass <code>--force</code>.</p>
+<p>What each service needs:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Atlassian</th>
+<th>Cloudflare</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Before registering</td>
+<td>An org admin allows the broker's callback address: in Atlassian Administration, under <strong>Rovo → MCP → Domain settings</strong></td>
+<td>Nothing</td>
+</tr>
+<tr>
+<td>Scopes the broker asks for</td>
+<td><code>read:me</code>, <code>read:account</code>, <code>offline_access</code>, and read and search for Jira and Confluence (<code>…:agent-interface</code>)</td>
+<td>13: <code>user:read</code>, <code>account:read</code>, <code>offline_access</code>, and <code>.read</code> scopes for Workers scripts, routes, observability, tail, CI, KV, R2, R2 objects, and logs. Asked without a <code>scope</code>, Cloudflare granted 194 read scopes</td>
+</tr>
+<tr>
+<td>Tokens</td>
+<td>8 hours, refresh token rotates</td>
+<td>1 hour, refresh token rotates</td>
+</tr>
+<tr>
+<td>Client secret</td>
+<td>The script warns if the registration sets an expiry date</td>
+<td><strong>Expires after about 3 months.</strong> The test registration expires on 2026-12-26. There's no way to renew it: register again, update custody, and everyone reconnects</td>
+</tr>
+</tbody>
+</table>
+<p>Cloudflare's separate observability and builds MCP servers each have their own sign-in and would need their own registration. The main server covers the same read APIs through <code>execute</code>.</p>
+<p>The test stack stands in for both services: mock-vendor plays their sign-in (it refuses a code exchange or refresh that doesn't name the right server), and the stand-ins at <code>/atlassian/mcp</code> and <code>/cloudflare/mcp</code> refuse tokens issued for any other server.</p>
+<p>Figma's MCP server also runs its own sign-in, but only lets clients from its approved list register. It refused the broker's registration.</p>
 <h2 id="run-it-locally">Run it locally</h2>
 <p>The <a href="#run-the-mcp-gateway">Quickstart</a> walks through it step by step. In short:</p>
 <pre><code class="language-sh">docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
@@ -758,7 +844,7 @@ UPSTREAM_TOKEN=&lt;Linear API key&gt; .venv/bin/python tools/refresh-tool-snapsh
 <li>Keycloak at <code>localhost:8180</code>;</li>
 <li>a broker that trusts it at <code>localhost:8600</code>, with its own OpenBao;</li>
 <li>the gateway at <code>localhost:8500</code>;</li>
-<li>stand-ins for GitHub and Linear at <code>localhost:8330</code> (<code>/github/mcp</code> and <code>/linear/mcp</code>), which only accept live test tokens.</li>
+<li>stand-ins for GitHub, Linear, Atlassian, and Cloudflare at <code>localhost:8330</code> (<code>/github/mcp</code>, <code>/linear/mcp</code>, <code>/atlassian/mcp</code>, <code>/cloudflare/mcp</code>), which only accept live test tokens.</li>
 </ul>
 <p>By default the gateway uses the stand-ins (<code>tests/stack/gateway/stand-in-upstreams.json</code>). To use the real services, set <code>GATEWAY_UPSTREAMS=</code> (empty). The test users are <code>alice</code> and <code>bob</code>, and each password is the same as the username.</p>
 <h2 id="known-limitations">Known limitations</h2>
@@ -766,7 +852,9 @@ UPSTREAM_TOKEN=&lt;Linear API key&gt; .venv/bin/python tools/refresh-tool-snapsh
 <li><strong>No subscription channel.</strong> The saved tool lists avoid needing one. But if you allow a tool that isn't in a saved copy, clients on MCP 2026-07-28 only see it after they reconnect.</li>
 <li><strong>Many dependencies.</strong> FastMCP 4.0.10 brings about 50 other packages, all pinned with checksums in <code>requirements-gateway.lock</code>. Review updates to that file like any other supply-chain change.</li>
 <li><strong>One swap and one service session per call.</strong> This is simple and keeps nothing between calls, but it adds some delay. The gateway doesn't reuse connections yet.</li>
-<li><strong>Read-only.</strong> Write tools are blocked by the tool lists, and by each service's read-only header, URL, or scope.</li>
+<li><strong>Read-only.</strong> Write tools are blocked by the tool lists, and by each service's read-only header, URL, or scope. For Cloudflare, only the scopes do this, because <code>execute</code> can call any Cloudflare API.</li>
+<li><strong>Cloudflare's client secret expires.</strong> See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>. Put the date in your calendar.</li>
+<li><strong>Saved tool lists win.</strong> If a service changes a tool, the gateway keeps listing the saved copy until you refresh it. Cloudflare's <code>execute</code> is always reported as <code>changed</code>, because its live description is personalized.</li>
 <li><strong>Linear account IDs aren't recorded.</strong> Linear's API only speaks GraphQL, so the broker logs Linear connections with <code>vendor_user_id</code> <code>unknown</code>. This only affects audit joins.</li>
 <li><strong>Timeouts.</strong> The test setup uses a 5-second <code>HTTP_TIMEOUT_S</code> so outage tests run quickly. Against the real services, use the default 15 seconds: some Linear calls take longer than 5.</li>
 <li><strong>Signing keys are cached for an hour.</strong> New keys from the sign-in service are picked up on first use. But a key the sign-in service removes (for example after a leak) stays trusted by the gateway until the cache runs out. Restart the gateway when you revoke a signing key. (The broker doesn't have this gap, because it never caches single keys.)</li>
@@ -776,10 +864,10 @@ UPSTREAM_TOKEN=&lt;Linear API key&gt; .venv/bin/python tools/refresh-tool-snapsh
 <hr class='sep'/>
 <section id="mcp">
 <div class="section-head"><h1>Connect Your Own MCP Server</h1><p class="blurb">Use the token broker from an MCP server or gateway you build yourself.</p><p class="src">source: <code>docs/mcp-integration.md</code></p></div>
-<p><strong>Baseline: MCP 2026-07-28 · reviewed 2026-09-26.</strong></p>
+<p><strong>Baseline: MCP 2026-07-28 · reviewed 2026-09-27.</strong></p>
 <p>Use this page to connect <strong>your own</strong> MCP server or gateway to the broker.</p>
 <ul>
-<li><strong>Just want GitHub or Linear?</strong> You do not need this page. The shipped <a href="#gateway">MCP gateway</a> already connects GitHub's and Linear's MCP servers to the broker and handles all the MCP work described here.</li>
+<li><strong>Just want GitHub, Linear, Atlassian, or Cloudflare?</strong> You do not need this page. The shipped <a href="#gateway">MCP gateway</a> already connects their MCP servers to the broker and handles all the MCP work described here.</li>
 <li>The broker itself does not speak MCP. It offers an internal REST API (<a href="#api">API reference</a>). Your gateway sits between MCP clients and that API.</li>
 </ul>
 <h2 id="three-authorization-boundaries">Three authorization boundaries</h2>
@@ -1304,7 +1392,8 @@ bao token create -policy=broker -period=24h -orphan -display-name=broker
 bao kv put vendor-clients/linear  client_id=… client_secret=…
 bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 </code></pre>
-<p>A vendor with <code>enabled_env</code> in the registry (GitHub: <code>GITHUB_CLIENT_ID</code>, Linear: <code>LINEAR_CLIENT_ID</code>) is only active when that variable is set on the broker.</p>
+<p>A vendor with <code>enabled_env</code> in the registry (for example GitHub: <code>GITHUB_CLIENT_ID</code>, Atlassian: <code>ATLASSIAN_CLIENT_ID</code>) is only active when that variable is set on the broker.</p>
+<p>Atlassian and Cloudflare have no developer console: <code>tools/register-mcp-client.py &lt;vendor&gt; --redirect-base &lt;broker URL&gt; --vault</code> registers the broker once and writes <code>vendor-clients/&lt;vendor&gt;</code> itself. Never register again: it disconnects everyone. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
 <p>The credential must match the vendor's <code>token_endpoint_auth_method</code> in the registry:</p>
 <table>
 <thead>
@@ -1461,6 +1550,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <li>Check it against <code>schemas/vendor-registry.schema.json</code> with <code>jsonschema</code>. CI does this on every push. Do the same locally.</li>
 <li>Get the same sign-off for a <code>scope_ceiling</code> change as for a token-contract change. The ceiling is a security boundary: a caller can never go past it at runtime.</li>
 <li>Hardcode endpoints <strong>only</strong> when the vendor publishes no authorization server metadata (e.g. GitHub). When metadata exists, use <code>auth_metadata_url</code>. (Standards: RFC 8414.)</li>
+<li>Set <code>resource</code> only for a vendor whose tokens are bound to one MCP server (Atlassian, Cloudflare). The broker sends it on authorize, code exchange, and every refresh (RFC 8707). Changing it later can break existing connections at their next refresh.</li>
 <li>Never put credentials in the registry. They live only in <code>vendor-clients/*</code>.</li>
 </ol>
 <h2 id="gateway-contract">Gateway contract</h2>
@@ -1566,7 +1656,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <p>This page lists which security controls the broker and gateway have, where the proof lives, and what is still missing.</p>
 <ul>
 <li>The broker stores each user's vendor tokens and runs the vendor sign-in (OAuth) flows. It is one part of a larger MCP deployment.</li>
-<li>The shipped <a href="#gateway">MCP gateway</a> handles the MCP boundary for GitHub's and Linear's MCP servers.</li>
+<li>The shipped <a href="#gateway">MCP gateway</a> handles the MCP boundary for GitHub's, Linear's, Atlassian's, and Cloudflare's MCP servers.</li>
 <li>Passing these tests does not mean a complete deployment meets the MCP standard. <a href="https://modelcontextprotocol.io/specification/2026-07-28">The current specification</a> sets the protocol baseline.</li>
 </ul>
 <h2 id="control-ownership-and-evidence">Control ownership and evidence</h2>
@@ -1648,6 +1738,16 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <td>The development realm allows dynamic registration from localhost only, with consent (tested). Production policy belongs to the IdP</td>
 </tr>
 <tr>
+<td>Broker registration with vendor MCP sign-in</td>
+<td>Implemented / operator tool</td>
+<td><code>tools/register-mcp-client.py</code>: one RFC 7591 registration per vendor, with the broker's callback and the registry's scope ceiling. It refuses to register again unless forced, never prints the secret, and warns about an expiring secret. <code>tests/integration/test_register_mcp_client.py</code></td>
+</tr>
+<tr>
+<td>Resource indicators to vendor MCP servers</td>
+<td>Implemented / broker</td>
+<td>The registry <code>resource</code> goes on authorize, code exchange, and every refresh (RFC 8707). <code>tests/unit/test_resource_indicator.py</code>, <code>test_vendor_client.py</code>; <code>tests/integration/test_mcp_resource.py</code> against a mock that refuses a missing or wrong resource; accepted by the real Atlassian and Cloudflare servers</td>
+</tr>
+<tr>
 <td>Identity handoff without token passthrough</td>
 <td>Implemented / gateway + hub</td>
 <td>RFC 8693 token exchange. The broker rejects a raw MCP token (<code>tests/integration/test_keycloak_hub.py</code>)</td>
@@ -1660,12 +1760,17 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Token-free MCP results and logs</td>
 <td>Implemented for the shipped gateway</td>
-<td>The leak test greps every container for the MCP token, hub JWT, and each service's token (GitHub and Linear). Upstream error details are logged with the token replaced by <code>&lt;token&gt;</code>. Custom gateways must run their own test. Resolve returns a token to its trusted caller on purpose</td>
+<td>The leak test greps every container for the MCP token, hub JWT, and each service's token (the GitHub, Linear, and Atlassian stand-ins). Upstream error details are logged with the token replaced by <code>&lt;token&gt;</code>. Custom gateways must run their own test. Resolve returns a token to its trusted caller on purpose</td>
 </tr>
 <tr>
 <td>Read-only tool allowlist</td>
+<td>Partial / gateway + broker policy</td>
+<td>Per-service allowlist, plus each service's read-only control: <code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code> for GitHub, the <code>/mcp/readonly</code> URL and <code>read</code> scope for Linear, read and search scopes for Atlassian. Write tools stay hidden (tested against the stand-ins). <strong>Cloudflare relies on scopes alone:</strong> <code>cloudflare_execute</code> runs code against the whole API, and only the 13 read scopes in the scope ceiling stop writes</td>
+</tr>
+<tr>
+<td>Shared tool list never taken from one user</td>
 <td>Implemented / gateway</td>
-<td>Per-service allowlist, plus each service's read-only control: <code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code> for GitHub, the <code>/mcp/readonly</code> URL and <code>read</code> scope for Linear. Write tools stay hidden (tested against the stand-ins)</td>
+<td>Every user sees the saved tool lists. Live schemas that differ are logged, never listed, because Cloudflare writes the signed-in user's email and account ID into a description. <code>tests/unit/test_gateway.py</code> (<code>test_drifted_schema_is_reported_but_the_snapshot_stays_listed</code>), and <code>test_gateway_auth.py</code> refuses saved lists that contain an email address or a 32-character hex ID</td>
 </tr>
 <tr>
 <td>Per-service token isolation</td>
@@ -1731,7 +1836,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <p>The broker can sign <code>private_key_jwt</code> client-authentication assertions. It does not issue access tokens. Treat vendor client signing keys as credential material.</p>
 <p><code>broker.stale.mass</code> carries <code>page: true</code>, but that does not contact an alert service. Route the event to monitoring if you need an on-call notification. Availability and latency values in the design are targets, not measured guarantees.</p>
 <h2 id="verification-record">Verification record</h2>
-<p>Review baseline: application commit <code>af0d434</code> (the gateway serving GitHub and Linear). Checks on 2026-09-27:</p>
+<p>Review baseline: application commit <code>a1ef59a</code> (the gateway serving GitHub, Linear, Atlassian, and Cloudflare). Checks on 2026-09-27:</p>
 <table>
 <thead>
 <tr>
@@ -1742,38 +1847,38 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tbody>
 <tr>
 <td>Unit suite</td>
-<td>393 passed</td>
+<td>398 passed</td>
 </tr>
 <tr>
 <td>Docker integration / memory</td>
-<td>61 passed</td>
+<td>64 passed</td>
 </tr>
 <tr>
-<td>Gateway profile (Keycloak hub, broker-kc, gateway, GitHub and Linear stand-ins)</td>
-<td>37 passed, twice</td>
+<td>Gateway profile (Keycloak hub, broker-kc, gateway, stand-ins for all four services)</td>
+<td>46 passed</td>
 </tr>
 <tr>
-<td>Real GitHub and Linear through the gateway (<code>test_external_mcp_servers.py</code>)</td>
-<td>2 passed, with a GitHub App and a Linear OAuth app</td>
+<td>Real Atlassian and Cloudflare through the gateway (<code>test_external_mcp_servers.py</code>)</td>
+<td>2 passed, with the broker registered by <code>tools/register-mcp-client.py</code>. GitHub and Linear were skipped (not connected on that fresh stack) and checked in Claude Code instead</td>
 </tr>
 <tr>
 <td>Demo client (<code>tools/mcp-demo-client.py</code>) against the real services</td>
-<td><code>github_get_me</code> and <code>linear_list_teams</code> returned the tester's accounts; Linear connected through its OAuth flow</td>
+<td><code>connect_atlassian</code> and <code>connect_cloudflare</code> connected through each service's own sign-in, and listed 8 and 3 tools</td>
 </tr>
 <tr>
 <td>Claude Code 2.1.283 against the gateway</td>
-<td>One request used both services: Linear teams and issues, then the GitHub login</td>
+<td>One session used all four services: the Atlassian account and open Jira issues, the Cloudflare Worker's settings, Linear issues, and the GitHub profile</td>
 </tr>
 </tbody>
 </table>
-<p>The previous baseline, <code>a4c7a4b</code> (GitHub only), also passed the full CI run 36267909800.</p>
+<p>Earlier baselines were <code>af0d434</code> (GitHub and Linear) and <code>a4c7a4b</code> (GitHub only). <code>a4c7a4b</code> also passed the full CI run 36267909800.</p>
 <h3 id="earlier-flaky-runs">Earlier flaky runs</h3>
 <p>Earlier CI runs at <code>ba03ed4</code> and <code>2607389</code> each failed one 20-parallel single-flight test once. Rerunning the failed job passed.</p>
 <p>This is a timing race in the test, not a single-flight bug. Mock tokens last 60 seconds, which is inside <code>REFRESH_BUFFER_S</code> (300). So a resolve whose first read lands after the first refresh finishes correctly refreshes again.</p>
 <p>At the earlier <code>2317b07</code> review, the first multi-replica failure had a different likely cause: the standalone Redis broker that ran before it kept its 120-second sweep lease, longer than the test's 60-second deadline. The lease's remaining TTL was not captured at failure, so this is not certain. Host and container clocks matched. The documented <a href="#run-the-automated-checks">test isolation</a> avoids this handoff problem.</p>
 <h3 id="what-these-checks-do-not-show">What these checks do not show</h3>
 <ul>
-<li>Most checks use the mock vendor and the GitHub stand-in.</li>
+<li>Most checks use the mock vendor and the stand-ins.</li>
 <li>The real-GitHub and Claude Code checks show that this one configuration works together. They say nothing wider.</li>
 <li>None of this shows production load capacity or penetration-test results.</li>
 </ul>

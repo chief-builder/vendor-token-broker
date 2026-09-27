@@ -1,17 +1,17 @@
 # Overview
 
-Let Claude Code and other AI assistants use your development tools, such as GitHub and Linear, on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.
+Let Claude Code and other AI assistants use your development tools, such as GitHub, Linear, Jira, and Cloudflare, on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.
 
 This project has two parts:
 
-- **The MCP gateway.** Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to each service's own MCP server (GitHub's and Linear's today), using the account of the person who is signed in.
+- **The MCP gateway.** Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to each service's own MCP server (GitHub's, Linear's, Atlassian's, and Cloudflare's today), using the account of the person who is signed in.
 - **The token broker.** It keeps each person's tokens for each service safe, refreshes them when they expire, and deletes them when the person disconnects. The gateway asks it for a token on every request.
 
 You get:
 
 - **One sign-in.** People sign in with your company's sign-in service, then connect each service once in their browser.
 - **No token handling.** The assistant, the chat, and the logs never see a service token.
-- **Read-only tools by default**, from each service's official MCP server: 7 for GitHub and 13 for Linear. More services can be added the same way.
+- **Read-only tools by default**, from each service's official MCP server: 7 for GitHub, 13 for Linear, 8 for Atlassian (Jira and Confluence), and 3 for Cloudflare. More services can be added the same way.
 
 ## How it works
 
@@ -56,7 +56,7 @@ Each hop uses its own credential. The assistant's sign-in token never reaches Gi
 
 ## Status
 
-Software **1.1.0**, marked **unreleased** in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and the real GitHub and Linear MCP servers.
+Software **1.1.0**, marked **unreleased** in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and the real GitHub, Linear, Atlassian, and Cloudflare MCP servers.
 
 These docs were checked against MCP **2026-07-28** (the MCP specification version) on **2026-09-27**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
 

@@ -29,8 +29,8 @@ This starts:
 |---|---|---|
 | Keycloak | `http://localhost:8180` | The sign-in service. Test users: `alice` / `alice` and `bob` / `bob` |
 | MCP gateway | `http://localhost:8500/mcp` | What your MCP client connects to |
-| Token broker | `http://localhost:8600` | Keeps each user's GitHub and Linear tokens |
-| Stand-ins | `http://localhost:8330` | Pretend to be GitHub's and Linear's MCP servers |
+| Token broker | `http://localhost:8600` | Keeps each user's GitHub, Linear, Atlassian, and Cloudflare tokens |
+| Stand-ins | `http://localhost:8330` | Pretend to be GitHub's, Linear's, Atlassian's, and Cloudflare's MCP servers |
 
 The tests should all pass. They sign in, connect accounts, and call tools, the same way you are about to.
 
@@ -45,7 +45,7 @@ The tests should all pass. They sign in, connect accounts, and call tools, the s
 2. The first time you use a service, the gateway asks you to connect it, and a second tab opens. Finish there. With the stand-ins, this happens by itself.
 3. The client prints the list of tools and the result.
 
-Tool names start with the service: `github_…` or `linear_…`. The demo client signs in as the pre-registered app `mcp-demo-cli` and listens for the sign-in result on port 33418.
+Tool names start with the service: `github_…`, `linear_…`, `atlassian_…`, or `cloudflare_…`. The demo client signs in as the pre-registered app `mcp-demo-cli` and listens for the sign-in result on port 33418.
 
 ### 3. Try Claude Code
 
@@ -64,7 +64,7 @@ Then, in a new Claude Code session:
 
 If sign-in later fails with an error that names an old address, run `claude mcp remove vtb-gateway`, add it again, and sign in once.
 
-### 4. Switch to the real GitHub and Linear
+### 4. Switch to the real services
 
 1. **GitHub:** create a GitHub App at <https://github.com/settings/apps/new>:
    - Callback URLs: `http://localhost:8300/v1/callback/github` and `http://localhost:8600/v1/callback/github`
@@ -74,7 +74,19 @@ If sign-in later fails with an error that names an old address, run `claude mcp 
 
    Then generate a client secret, and install the App on the repositories you want to use.
 2. **Linear:** in Linear, go to **Settings → API → OAuth applications** and create an app with callback URL `http://localhost:8600/v1/callback/linear`. You need to be a workspace admin.
-3. Put the IDs and secrets in `tests/stack/.env` (git ignores this file):
+3. **Atlassian and Cloudflare:** these register the broker with a script instead of a developer console ([why](mcp-gateway.md#servers-with-their-own-sign-in)).
+   - For Atlassian, first ask an org admin to allow `http://localhost:*/**` in Atlassian Administration, under **Rovo → MCP → Domain settings**.
+   - Then register once per service. The script writes the ID and secret into `tests/stack/.env`:
+
+     ```sh
+     .venv/bin/python tools/register-mcp-client.py atlassian \
+         --redirect-base http://localhost:8600 --env-file tests/stack/.env
+     .venv/bin/python tools/register-mcp-client.py cloudflare \
+         --redirect-base http://localhost:8600 --env-file tests/stack/.env
+     ```
+
+     Don't run it again later: a new registration disconnects every account connected with the old one. Cloudflare's secret expires after about 3 months, and the script prints the date.
+4. Put the GitHub and Linear IDs and secrets in `tests/stack/.env` too (git ignores this file):
 
    ```sh
    GITHUB_CLIENT_ID=...
@@ -83,16 +95,16 @@ If sign-in later fails with an error that names an old address, run `claude mcp 
    LINEAR_CLIENT_SECRET=...
    ```
 
-   Run the `up` command from step 1 again, so the broker gets them. You can set up just one of the two services.
-4. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:
+   Run the `up` command from step 1 again, so the broker gets them. You can set up any subset of the services.
+5. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:
 
    ```sh
    GATEWAY_UPSTREAMS= GATEWAY_CONSENT_WAIT_S=120 GATEWAY_HTTP_TIMEOUT_S=15 \
      docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --no-deps --wait mcp-gateway
    ```
 
-   To serve only one service, add `GATEWAY_ENABLED_UPSTREAMS=github` (or `linear`).
-5. Use the demo client or Claude Code as before. `github_get_me` returns your own GitHub account, and `linear_list_teams` your Linear teams. To check both automatically, run `.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external`.
+   To serve only some services, add for example `GATEWAY_ENABLED_UPSTREAMS=github,atlassian`.
+6. Use the demo client or Claude Code as before. `github_get_me` returns your own GitHub account, `linear_list_teams` your Linear teams, and `atlassian_getAccessibleAtlassianResources` your Atlassian sites. `connect_cloudflare` connects Cloudflare. To check them all automatically, run `.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external`.
 
 To go back to the stand-ins, run the `up` command for `mcp-gateway` again without those variables.
 
