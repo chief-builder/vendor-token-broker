@@ -38,7 +38,7 @@ The generated page loads Mermaid from a CDN, pinned to an exact tested version (
 
 The site is one page. It includes Overview, Quickstart, MCP Gateway, Connect Your Own MCP Server, Broker API, Deploy and Operate, Security, Design, Token Lifecycle, Smoke Tests, and the Redis Decision.
 
-`docs-site-review.md` is review evidence for maintainers. It is not in the reader navigation.
+`docs-site-review.md` (at the repository root) is review evidence for maintainers. It is not in the reader navigation.
 
 **Where it goes:**
 
@@ -50,8 +50,8 @@ The site is one page. It includes Overview, Quickstart, MCP Gateway, Connect You
 
 These checks catch docs that fall out of step with the code.
 
-- CI should run the generator check on every docs or source change.
-- A future browser smoke job should load the generated artifact, wait for Mermaid, check that every `.mermaid` block has an SVG, and fail on console errors.
+- CI runs the generator check (`tools/build-pages.py --check`) on every push.
+- Not automated yet: a browser job that would load the generated artifact, wait for Mermaid, check that every `.mermaid` block has an SVG, and fail on console errors. Until then, do this check by hand (step 6 above).
 - Keep that browser check separate from the broker's protocol tests. A diagram that renders does not prove interoperability.
 
 **Redis state in the Docker test workflow.** Start each coordination profile with its own clean Redis state, or wait for the old leader lease to expire. With default settings, a stopped standalone leader can hold its sweep lease for up to 120 seconds. This matters when you check the multi-replica sweep test.

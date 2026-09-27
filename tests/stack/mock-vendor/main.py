@@ -4,7 +4,7 @@ Deliberately hostile in the ways that matter to the broker design:
 - 60 second access tokens (plan §3: 'set a 60s access-token TTL') so every
   resolve lands inside the refresh buffer;
 - rotating refresh tokens where replaying a consumed token REVOKES the whole
-  family (GitHub-class behavior, design §9);
+  family (GitHub-class behavior, design §8);
 - PKCE S256 verified for real, so a broker that loses the verifier fails;
 - RFC 8414 metadata and RFC 9207 iss on the redirect, so the broker's
   discovery and mix-up defense run against a real implementation;
@@ -220,7 +220,7 @@ async def token(request: Request):
         if fam["revoked"]:
             return JSONResponse({"error": "invalid_grant"}, status_code=400)
         if rt["consumed"]:
-            # Replay of a rotated-away refresh token burns the family (§9).
+            # Replay of a rotated-away refresh token burns the family (§8).
             counters["rt_replay"] += 1
             fam["revoked"] = True
             return JSONResponse({"error": "invalid_grant",

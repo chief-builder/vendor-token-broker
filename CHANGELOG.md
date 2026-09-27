@@ -105,6 +105,16 @@ working unchanged: every wire change below is additive.
   resource-bound tokens, `invalid_target`), and mock-mcp adds
   `/atlassian/mcp` and `/cloudflare/mcp`, which refuse tokens issued for
   other servers
+- **`disconnect_<service>` tools**: the gateway calls the broker's
+  self-service `DELETE /v1/grants/{vendor}/{sub}` with the caller's hub JWT
+  (vendor revoke first); outcomes `revoked`, `unsupported`,
+  `not-connected`, `pending` are explained to the user and audited as
+  `gateway.disconnect`. No new broker route
+- Fix: a broker 5xx or outage while the gateway waits for someone to finish
+  connecting is a retryable error, not a consent timeout (401: handoff error)
+- Fix: the gateway's `HUB_ALGORITHM` uses the broker's allowlist (RS384 and
+  RS512 were accepted); the unused `claude-code` client is gone from the
+  Keycloak test realm
 
 ### Tests and supply chain
 - 393 unit tests (offline harness over the real app) and 108 integration

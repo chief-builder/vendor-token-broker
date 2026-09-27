@@ -29,8 +29,8 @@ ensure_mount vendor-clients
 curl -sf -H "X-Vault-Token: ${ROOT}" -d '{"max_versions":2}' \
   "${BAO}/v1/vendor-tokens/config" > /dev/null
 
-# Broker policy: read/write custody, read-only vendor client creds. No human
-# read path to token material. Verbatim from the source lab's provisioning.
+# Broker policy: read/write custody, read-only vendor client creds. It grants
+# nothing to humans (restricting admin reads is a deployment policy).
 curl -sf -H "X-Vault-Token: ${ROOT}" -X PUT \
   -d '{"policy":"path \"vendor-tokens/data/*\" { capabilities = [\"create\",\"read\",\"update\",\"delete\"] }\npath \"vendor-tokens/metadata/*\" { capabilities = [\"read\",\"delete\",\"list\"] }\npath \"vendor-clients/data/*\" { capabilities = [\"read\"] }"}' \
   "${BAO}/v1/sys/policies/acl/broker" > /dev/null

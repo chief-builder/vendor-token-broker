@@ -191,7 +191,7 @@ class VendorClient:
 
     async def revoke(self, vendor: str, entry: dict) -> None:
         """RFC 7009 where offered; GitHub's grant-deletion API as the documented
-        per-vendor deviation (design §2 'deviations documented per vendor')."""
+        per-vendor deviation (design §2.1)."""
         spec = self._registry[vendor]
         kind = spec.get("revocation", {}).get("type", "rfc7009")
         try:

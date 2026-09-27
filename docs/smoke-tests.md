@@ -139,7 +139,7 @@ sequenceDiagram
         participant V as OpenBao
     end
     C->>B: POST /v1/tokens/resolve (hub JWT)
-    Note over B: check JWT again: signature (JWKS),<br/>alg ∈ {PS256, ES256}, issuer,<br/>exactly one tier audience,<br/>mcp_contract, exp/iat/sub/jti
+    Note over B: check JWT again: signature (JWKS),<br/>alg in HUB_ALGORITHMS (default PS256, ES256),<br/>issuer, exp/iat/sub/jti, mcp_contract,<br/>exactly one tier audience
     B->>V: read vendor-tokens/mockhub/sub-b64.{encoded subject}
     V-->>B: not found
     B-->>C: 404 needs-consent + authorize_uri(txn)
@@ -172,9 +172,9 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 open "$(sed 's/.*"authorize_uri":"\([^"]*\)".*/\1/' /tmp/challenge.json)"
 ```
 
-The browser goes broker → hub login → broker → vendor → broker. Output from
-v1.1, captured with `curl -sL -D -` (codes, states, nonces and the cookie
-value are hidden):
+The browser goes broker → hub login → broker → vendor → broker. Output
+captured with `curl -sL -D -` (codes, states, nonces and the cookie value
+are hidden):
 
 ```
 307  location: http://localhost:8320/authorize?client_id=vtb-broker&response_type=code
@@ -193,11 +193,11 @@ The hub stub signs the browser in automatically as the `login_hint` user.
 A real hub shows its own sign-in page, or reuses an existing session.
 
 The flow ends on the page **"Connected — return to your client."** The
-broker log shows the matching audit pair:
+broker log shows the matching audit pair (your `ts` values will differ):
 
 ```json
-{"audit": "broker.consent.start",    "sub": "wf-smoke", "vendor": "mockhub"}
-{"audit": "broker.consent.complete", "sub": "wf-smoke", "vendor": "mockhub", "vendor_user_id": "mock-4217"}
+{"audit": "broker.consent.start", "ts": 1784286281.07, "sub": "wf-smoke", "vendor": "mockhub"}
+{"audit": "broker.consent.complete", "ts": 1784286284.52, "sub": "wf-smoke", "vendor": "mockhub", "vendor_user_id": "mock-4217"}
 ```
 
 ```mermaid
@@ -226,7 +226,7 @@ sequenceDiagram
     UA->>B: GET /v1/callback/_hub (binding cookie)
     B->>H: POST /token (code + PKCE verifier)
     H-->>B: ID token
-    Note over B: ID token valid and its sub == the link's sub<br/>create single-use vendor state record<br/>{sub, vendor, PKCE verifier, issuer,<br/>scopes ≤ registry ceiling, binding}, TTL 10 min
+    Note over B: ID token valid and its sub == the link's sub<br/>create single-use vendor state record<br/>{sub, vendor, PKCE verifier, issuer, iss_required,<br/>scopes ≤ registry ceiling, binding}, TTL 10 min
     B-->>UA: 307 → vendor authorize<br/>(client_id, code_challenge S256, state)
     UA->>M: GET /authorize (auto-consent as mock-4217)
     M-->>UA: 307 → broker callback (code, state, iss)
@@ -292,11 +292,11 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 docker logs --since 5m vtb-broker 2>&1 | grep broker.refresh | tail -3
 ```
 
-Expected:
+Expected (your `ts` values will differ):
 
 ```json
-{"audit": "broker.refresh", "sub": "wf-smoke", "vendor": "mockhub", "generation_from": 1, "generation_to": 2}
-{"audit": "broker.refresh", "sub": "wf-smoke", "vendor": "mockhub", "generation_from": 2, "generation_to": 3}
+{"audit": "broker.refresh", "ts": 1784286285.61, "sub": "wf-smoke", "vendor": "mockhub", "generation_from": 1, "generation_to": 2}
+{"audit": "broker.refresh", "ts": 1784286312.08, "sub": "wf-smoke", "vendor": "mockhub", "generation_from": 2, "generation_to": 3}
 ```
 
 ```mermaid
@@ -366,18 +366,22 @@ Expected:
 
 ```mermaid
 flowchart LR
-    A["Bearer token"] --> C{"alg ∈ PS256, ES256?"}
-    C -- "no (RS256, HS256…)" --> X1["401"]
-    C -- yes --> D{"issuer == HUB_ISSUER?"}
-    D -- no --> X2["401"]
-    D -- yes --> E{"aud contains HUB_TIER_AUDIENCE<br/>and exactly one mcp://tier/* audience?"}
-    E -- no --> X3["401"]
-    E -- yes --> F{"exp / iat / sub / jti<br/>present + fresh?"}
-    F -- no --> X4["401"]
-    F -- yes --> G{"mcp_contract == 1.0?"}
-    G -- no --> X5["401"]
-    G -- yes --> OK["resolve proceeds"]
+    A["Bearer token"] --> K{"signing key found<br/>in hub JWKS by kid?"}
+    K -- "JWKS unreachable" --> U["503 hub-unavailable"]
+    K -- "no" --> X1["401"]
+    K -- yes --> D{"one decode step:<br/>alg in HUB_ALGORITHMS, signature,<br/>iss == HUB_ISSUER,<br/>aud contains HUB_TIER_AUDIENCE,<br/>exp/iat/sub/jti present, not expired"}
+    D -- "any check fails" --> X2["401"]
+    D -- "all pass" --> G{"mcp_contract == 1.0?"}
+    G -- no --> X3["401"]
+    G -- yes --> E{"exactly one<br/>mcp://tier/* audience?"}
+    E -- no --> X4["401"]
+    E -- yes --> OK["resolve proceeds"]
 ```
+
+The checks in the middle box run together in one `jwt.decode` call, so
+the first failure it finds names the `detail`. Here that is the
+algorithm. The contract and tier-count checks run after it, in that
+order.
 
 You get the same 401 for every bad token the stub can make:
 `wrong_issuer`, `external_tier`, `two_tiers` (a token for two tiers),
@@ -454,10 +458,10 @@ sequenceDiagram
         participant V as OpenBao
     end
     U->>B: DELETE /v1/grants/mockhub/wf-smoke (hub JWT)
-    Note over B: sub in path MUST match JWT sub<br/>(anyone else → 403 forbidden)
+    Note over B: sub in path MUST match JWT sub<br/>(anyone else → 403 forbidden)<br/>then hold the refresh lock until done
     B->>M: POST /revoke (RFC 7009, refresh token)
     M-->>B: 200, family revoked at the vendor
-    B->>V: delete vendor-tokens/mockhub/sub-b64.{encoded subject}
+    B->>V: re-read (unchanged), then delete<br/>vendor-tokens/mockhub/sub-b64.{encoded subject}
     B-->>U: {"revoked": true}
     Note over B,M: if the vendor were down: entry waits as<br/>REVOKE_PENDING (502), cannot be resolved,<br/>sweeper retries until the vendor recovers
 ```
@@ -476,20 +480,32 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     classDef live fill:#10b98122,stroke:#10b981
+    classDef transient fill:#6366f122,stroke:#6366f1
     classDef dead fill:#ef444422,stroke:#ef4444
 
     [*] --> NoGrant
     NoGrant --> ACTIVE : consent dance (test 3)<br/>gen=1
     ACTIVE --> ACTIVE : single-flight refresh (test 4)<br/>gen+1, CAS-guarded
-    ACTIVE --> STALE : vendor says invalid_grant<br/>(revoked / rotated away)
+    ACTIVE --> REFRESHING : refresh marker<br/>(redis profile)
+    REFRESHING --> ACTIVE : refresh done<br/>or vendor down
+    ACTIVE --> STALE : invalid_grant<br/>or no refresh token
+    REFRESHING --> STALE : invalid_grant
     STALE --> ACTIVE : re-consent, fresh gen=1
     ACTIVE --> REVOKE_PENDING : DELETE grant, vendor down
+    REFRESHING --> REVOKE_PENDING : DELETE grant, vendor down
     REVOKE_PENDING --> NoGrant : sweeper retry succeeds
+    REVOKE_PENDING --> ACTIVE : re-consent,<br/>old grant revoked first
     ACTIVE --> NoGrant : DELETE grant (test 7)<br/>revoke at vendor FIRST
 
     class ACTIVE live
+    class REFRESHING transient
     class STALE,REVOKE_PENDING dead
 ```
+
+The tests walked the ACTIVE, refresh and DELETE paths. STALE happens on a
+lazy refresh or a sweeper refresh, and also when an entry has no refresh
+token left (no vendor call). DELETE parks whatever state it read as
+`REVOKE_PENDING`.
 
 For every path in detail, see [the token lifecycle](token-lifecycle.md).
 

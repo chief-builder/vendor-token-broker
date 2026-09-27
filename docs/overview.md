@@ -1,46 +1,157 @@
 # Overview
 
-Let Claude Code and other AI assistants use your development tools, such as GitHub, Linear, Jira, and Cloudflare, on each person's behalf. Nobody pastes tokens, and each person only ever acts as themselves.
+Let Claude Code and other AI assistants work in your team's tools as the person who is signed in. The assistant connects to one **MCP gateway**. The gateway calls each service's official MCP server using that person's own account. A **token broker** keeps everyone's service tokens in Vault, never on laptops and never in the chat.
 
-This project has two parts:
+| Service | Tools | Examples |
+|---|---|---|
+| GitHub | 7 | `github_get_me`, `github_list_issues`, `github_pull_request_read` |
+| Linear | 13 | `linear_list_issues`, `linear_get_project`, `linear_list_cycles` |
+| Atlassian (Jira and Confluence) | 8 | `atlassian_searchJiraIssuesUsingJql`, `atlassian_getConfluenceContent` |
+| Cloudflare | 3 | `cloudflare_search`, `cloudflare_docs`, `cloudflare_execute` |
 
-- **The MCP gateway.** Your AI assistant connects to it like any MCP server. It forwards the assistant's requests to each service's own MCP server (GitHub's, Linear's, Atlassian's, and Cloudflare's today), using the account of the person who is signed in.
-- **The token broker.** It keeps each person's tokens for each service safe, refreshes them when they expire, and deletes them when the person disconnects. The gateway asks it for a token on every request.
+Every service also has `connect_<service>` and `disconnect_<service>`. More services can be added with configuration (see [Add another server](mcp-gateway.md#add-another-server)).
 
-You get:
-
-- **One sign-in.** People sign in with your company's sign-in service, then connect each service once in their browser.
-- **No token handling.** The assistant, the chat, and the logs never see a service token.
-- **Read-only tools by default**, from each service's official MCP server: 7 for GitHub, 13 for Linear, 8 for Atlassian (Jira and Confluence), and 3 for Cloudflare. More services can be added the same way.
-
-## How it works
+## The picture
 
 ```mermaid
 flowchart LR
-    C["AI assistant<br/>(Claude Code)"] -->|"1. request, signed in as Alice"| G["MCP gateway"]
-    G -->|"2. whose token?"| B["Token broker"]
-    B -->|"3. Alice's GitHub token"| G
-    G -->|"4. same request, as Alice"| M["GitHub MCP server"]
-    B <-->|"stored safely"| K["Secret store<br/>(OpenBao or Vault)"]
-    C -.->|"sign in"| H["Sign-in service<br/>(Keycloak)"]
+    subgraph laptop["On the laptop"]
+        C["Claude Code<br/>or another MCP client"]
+    end
+    subgraph company["In your company"]
+        H["Sign-in service<br/>(Keycloak)"]
+        G["MCP gateway"]
+        B["Token broker"]
+        V[("Vault or OpenBao<br/>everyone's service tokens")]
+    end
+    subgraph services["Official MCP servers"]
+        GH["GitHub"]
+        LN["Linear"]
+        AT["Atlassian"]
+        CF["Cloudflare"]
+    end
+    C -->|"sign in once"| H
+    C -->|"tool calls"| G
+    G -->|"who is this?"| H
+    G -->|"their token for this service"| B
+    B <--> V
+    G --> GH
+    G --> LN
+    G --> AT
+    G --> CF
 ```
 
-Here's GitHub as the example.
+- **One sign-in.** People sign in with your company's sign-in service (the "hub"), then connect each service once in their browser.
+- **Tokens stay in one place.** The broker keeps each person's service tokens in Vault and refreshes them before they expire. The laptop only holds the sign-in token for the gateway.
+- **Used once, then forgotten.** On every call, the gateway gets the person's token from the broker, uses it for that one call, and throws it away.
 
-1. The assistant calls a GitHub tool, such as "who am I?". It sends a sign-in token that proves who the person is.
-2. The gateway checks that token. It swaps it at the sign-in service for a separate internal token, and asks the broker for that person's GitHub token.
-3. The broker returns the GitHub token, refreshing it first if it's about to expire.
-4. The gateway calls GitHub with it, returns the answer, and forgets the token.
+## Three tokens that never cross
 
-Each hop uses its own credential. The assistant's sign-in token never reaches GitHub or the broker, and the GitHub token never reaches the assistant.
+```mermaid
+flowchart LR
+    C["Claude Code"] -->|"sign-in token<br/>meant for the gateway"| G["Gateway"]
+    G -->|"swapped at the hub"| X(("internal<br/>hub token"))
+    X -->|"only the broker<br/>accepts it"| B["Broker"]
+    B -->|"service token<br/>for one call"| G2["Gateway"]
+    G2 -->|"only this service<br/>ever sees it"| S["GitHub, Linear,<br/>Atlassian, or Cloudflare"]
+```
 
-## The first time someone uses it
+Each hop uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See [Security](security.md).
 
-1. They add the gateway to Claude Code and sign in with the company sign-in service.
-2. They ask for something from a service, such as GitHub. That account isn't connected yet, so Claude Code asks to open a link.
-3. In the browser, they sign in again if needed and approve access on the service.
-4. The request finishes. From then on, requests just work, and the broker keeps the token fresh.
-5. Each service asks once. They can disconnect at any time: the broker asks the service to cancel the token, then deletes its copy.
+## The first time someone uses a service
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor P as Person
+    participant C as Claude Code
+    participant G as Gateway
+    participant B as Broker
+    participant S as Jira
+    P->>C: list my open Jira issues
+    C->>G: atlassian_searchJiraIssuesUsingJql
+    G->>B: this person's Atlassian token?
+    B-->>G: not connected, here is a link
+    G-->>C: please open this link
+    C->>P: open the link?
+    P->>S: sign in and approve, in the browser
+    S-->>B: approval, stored in Vault
+    G->>B: connected now?
+    B-->>G: yes, and the token
+    G->>S: search issues as this person
+    S-->>C: results
+```
+
+Later calls skip steps 3 to 10. How the link reaches the person depends on the assistant:
+
+| Assistant | What happens |
+|---|---|
+| Claude Code (MCP 2026-07-28) | It asks in the chat, opens the link, and repeats the call |
+| Other clients that can open links (MCP 2025-11-25) | The gateway asks it to open the link during the call |
+| Clients that can't open links | The tool's error contains the link. Open it, then try again |
+
+The link only works for the person it was made for, in the browser that opened it. See [Connecting a service during a tool call](mcp-gateway.md#connecting-a-service-during-a-tool-call).
+
+## Two ways services sign in
+
+```mermaid
+flowchart TB
+    subgraph A["Ordinary OAuth app: GitHub, Linear"]
+        A1["An admin creates an app<br/>in the service's console"] --> A2["Client ID and secret<br/>stored in Vault"]
+        A2 --> A3["The token works at the<br/>service's MCP server"]
+    end
+    subgraph M["Own MCP sign-in: Atlassian, Cloudflare"]
+        M1["register-mcp-client.py<br/>registers the broker once"] --> M2["Client ID and secret<br/>stored in Vault"]
+        M2 --> M3["Every request names<br/>the MCP server"]
+        M3 --> M4["The token only works<br/>at that one server"]
+    end
+```
+
+Atlassian and Cloudflare run their own sign-in for their MCP servers. The broker is registered with each of them once, and names the MCP server on every request (the `resource` parameter, RFC 8707). Registering again would disconnect everyone. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in).
+
+## What keeps each service read-only
+
+Each service has several layers. If one fails, the others still hold.
+
+| Service | Tool list | At the service | Scopes the token gets |
+|---|---|---|---|
+| GitHub | 7 read tools | `X-MCP-Readonly` and `X-MCP-Lockdown` headers | Read-only App permissions |
+| Linear | 13 read tools | the `/mcp/readonly` address | `read` |
+| Atlassian | 8 read and search tools | none | read and search scopes only |
+| Cloudflare | `search`, `docs`, `execute` | none | **The only layer:** 12 read scopes plus `offline_access` |
+
+`cloudflare_execute` can call any Cloudflare API. What stops it writing is that the token only carries read scopes. The `disconnect_<service>` tools change only the person's own connection in the broker, never data at the service.
+
+## What happens to a connection
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> NotConnected
+    NotConnected --> Connected: approve in the browser
+    Connected --> Connected: broker refreshes it before it expires
+    Connected --> NeedsReconnect: the service revoked it, or a refresh failed
+    NeedsReconnect --> Connected: connect again
+    Connected --> NotConnected: disconnect_service
+```
+
+- **Refresh.** When many calls need a new token at once, only one refresh happens, even across several broker replicas (through Redis). A compare-and-swap write in Vault is the final safeguard.
+- **Disconnect.** `disconnect_<service>` asks the service to cancel the token first, then deletes the broker's copy. If the service is down, the broker keeps retrying and the service can't be used until the cancel succeeds.
+- **Needs reconnect.** The next tool call asks the person to connect again.
+
+[Token lifecycle](token-lifecycle.md) walks through every path step by step.
+
+## Built in
+
+| | |
+|---|---|
+| **Consent bound to the person** | A connect link works once, for 5 minutes, only for the person it was made for, in the browser that opened it |
+| **Fails closed, visibly** | A Vault, Redis, or broker outage is a "try again shortly" error, never "please connect" |
+| **Saved tool lists** | Tools are listed from the moment the gateway starts. Changes in a service's live list are logged, never adopted, so one person's details never reach another |
+| **Audited, without tokens** | Every decision is a JSON log line with IDs and outcomes only |
+| **Kept fresh ahead of time** | A background sweeper refreshes tokens before they're needed and retries cancels that are still pending |
+| **Alert on mass breakage** | When many connections to one service break within a minute, the broker logs a `broker.stale.mass` alert: the service may have revoked the app |
+| **Custodian, not issuer** | The broker has exactly seven routes and never issues tokens of its own |
 
 ## Where to go next
 
@@ -56,9 +167,9 @@ Each hop uses its own credential. The assistant's sign-in token never reaches Gi
 
 ## Status
 
-Software **1.1.0**, marked **unreleased** in the changelog. It has been tested end to end with Keycloak as the sign-in service, Claude Code as the assistant, and the real GitHub, Linear, Atlassian, and Cloudflare MCP servers.
+Software **1.1.0**, marked **unreleased** in the changelog. Tested end to end with Keycloak as the sign-in service, Claude Code 2.1.283 as the assistant, and the real GitHub, Linear, Atlassian, and Cloudflare MCP servers.
 
-These docs were checked against MCP **2026-07-28** (the MCP specification version) on **2026-09-27**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
+These docs describe MCP **2026-07-28** (the MCP specification version) and were checked against the code on **2026-09-27**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
 
 ## Words used in these docs
 
@@ -67,14 +178,12 @@ These docs were checked against MCP **2026-07-28** (the MCP specification versio
 | MCP | Model Context Protocol: how AI assistants talk to tool servers |
 | MCP client | The AI assistant side, such as Claude Code |
 | Hub | Your company's sign-in service (identity provider), such as Keycloak |
-| Vendor | An outside service that people connect, such as GitHub |
-| Connection (grant) | A person's stored permission to use one vendor |
-| Custody | The protected storage that holds tokens and app secrets |
+| Vendor, service | An outside service that people connect, such as GitHub |
+| Connection (grant) | A person's stored permission to use one service |
+| Custody | The protected storage (Vault or OpenBao) that holds tokens and app secrets |
 | Scope | A named permission, such as "read issues" |
 | Refresh | Swapping an expiring token for a new one without asking the person again |
 | STALE | A connection that no longer works, so the person must reconnect |
 | Single-flight | When many requests need a refresh at once, only one does it and the rest share the result |
-
-## Background
-
-The token broker was taken from the internal `mcp-healthcare-reference` lab at commit `ab699f3a46bb18ab96cb9d17f3cb9e883e6011c6`. The MCP gateway was added in this repository. For the reasoning behind the design, see [Design](design.md) and the [Redis decision record](adr/0001-redis-coordination.md).
+| Saved tool list (snapshot) | The checked-in copy of a service's tools that the gateway lists from startup |
+| Stand-in | A test double of a service's MCP server, used by the local test stack |

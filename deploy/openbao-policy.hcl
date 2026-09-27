@@ -1,5 +1,6 @@
 # Broker ACL: read/write custody, read-only vendor client credentials.
-# No human read path to token material. (docs/operations.md)
+# Grants nothing to humans; restricting admin reads is up to your own
+# deployment policies. (docs/operations.md)
 path "vendor-tokens/data/*" {
   capabilities = ["create", "read", "update", "delete"]
 }

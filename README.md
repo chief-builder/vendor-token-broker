@@ -5,11 +5,13 @@ Cloudflare, and other development tools as each signed-in person, without
 anyone handling tokens.
 
 - **MCP gateway** (`src/mcp_gateway/`). Your assistant connects to it like
-  any MCP server. It calls each service's official MCP server (GitHub's,
-  Linear's, Atlassian's, and Cloudflare's today) as the person who is signed
-  in, with read-only tools by default, named `github_…`, `linear_…`,
-  `atlassian_…`, and `cloudflare_…`. If an account isn't connected
-  yet, the assistant shows a link to connect it. ([docs](docs/mcp-gateway.md))
+  any MCP server. It calls the official MCP servers of GitHub, Linear,
+  Atlassian, and Cloudflare as the person who is signed in. Tools are named
+  `github_…`, `linear_…`, `atlassian_…`, and `cloudflare_…`, and only read
+  tools are listed (Cloudflare's `execute` is held to reading by its token's
+  scopes). Each service also has `connect_…` and `disconnect_…` tools. If an
+  account isn't connected yet, the assistant shows a link to connect it.
+  ([docs](docs/mcp-gateway.md))
 - **Token broker** (`src/token_broker/`). It keeps each person's vendor
   tokens (GitHub and others) in OpenBao or Vault, refreshes them before they
   expire, and cancels them at the vendor when the person disconnects. The
@@ -42,8 +44,10 @@ requests to vendors (`private_key_jwt`) with keys from storage.
   newer one. A connection that can't be refreshed any more becomes `STALE`,
   and the person must reconnect. If many go stale at once at one vendor, the
   broker raises an alert.
-- **Disconnects cleanly.** It cancels the token at the vendor first
-  (RFC 7009), then deletes its copy.
+- **Disconnects cleanly.** It cancels the token at the vendor first (RFC
+  7009, or GitHub's grant-deletion API), then deletes its copy. For a vendor
+  that can't cancel tokens, it deletes its copy and says so. The gateway's
+  `disconnect_<service>` tools use this.
 - **Fails safe.** If token storage is down, it serves only what is in its
   short memory cache (`CACHE_TTL_S`, default 60 s). After that it answers
   503. It never treats "storage down" as "not connected", and never hands out
@@ -54,8 +58,8 @@ requests to vendors (`private_key_jwt`) with keys from storage.
 ## Quickstart
 
 You need Docker and Python 3.12. The [Quickstart guide](docs/quickstart.md)
-walks through signing in and using GitHub tools from Claude Code. Setup and
-tests:
+walks through signing in and using the gateway's tools from Claude Code.
+Setup and tests:
 
 ```sh
 git clone <this-repo> vendor-token-broker && cd vendor-token-broker
@@ -64,17 +68,22 @@ python3.12 -m venv .venv
 .venv/bin/pip install --no-deps -e .
 
 # Everything for the gateway: Keycloak, the gateway, a broker, stand-ins for
-# GitHub, Linear, Atlassian, and Cloudflare, plus the broker test stack (OpenBao, Redis, test vendor, hub stub).
+# GitHub, Linear, Atlassian, and Cloudflare, plus the broker test stack
+# (OpenBao, Redis, test vendor, hub stub).
 docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
 
 .venv/bin/pytest tests/unit tests/integration -m "not external and not multi and not gateway"
 .venv/bin/pytest tests/integration -m "gateway and not external"
 ```
 
-Two brokers sharing work through Redis, behind a load balancer:
+Two brokers sharing work through Redis, behind a load balancer. Stop the
+single broker first, and let its sweep lease expire (up to 120 s; see the
+[Quickstart](docs/quickstart.md#run-the-automated-checks)):
 
 ```sh
-docker compose -f tests/stack/docker-compose.yml --profile multi up -d --build --wait
+docker compose -f tests/stack/docker-compose.yml stop broker
+docker compose -f tests/stack/docker-compose.yml --profile multi \
+  up -d --build --wait broker-a broker-b broker-lb
 BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
   .venv/bin/pytest tests/integration/test_multi_replica.py
 ```

@@ -70,18 +70,22 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
 - `src/mcp_gateway/` — separate service (own `Dockerfile.gateway`,
   `requirements-gateway.lock`, FastMCP 4.0.10; never in the broker image):
   MCP server to clients, MCP client to several vendor MCP servers
-  ("upstreams": GitHub, Linear, Atlassian, Cloudflare). `upstreams.json` lists them (name = tool
-  prefix, broker vendor, URL, auth scheme, headers, allowlist, snapshot);
-  tools are exposed as `<name>_<tool>` plus `connect_<name>`. `server.py`
+  ("upstreams": GitHub, Linear, Atlassian, Cloudflare). `upstreams.json`
+  lists them (name = tool prefix, broker vendor, URL, auth scheme, headers,
+  allowlist, snapshot);
+  tools are exposed as `<name>_<tool>` plus `connect_<name>` and
+  `disconnect_<name>` (the broker's self-service DELETE, with the caller's
+  hub JWT; no new broker route). `server.py`
   (routes, consent elicitation in both protocol eras, auth wiring),
   `clients.py` (hub RFC 8693 exchange, broker resolve/grants per vendor),
   `upstream.py` (fresh session per call), `config.py` (upstreams file
   loading/validation). `snapshots/<name>.json` pin each allowlist's schemas
   so clients see them from startup (2026-07-28 clients only take
   list-changed on subscriptions/listen, which FastMCP 4.0.10 lacks); the
-  first connected call per upstream re-reads live schemas and logs drift
-  (never adopts it: the list is shared, and Cloudflare personalizes
-  descriptions with the user's email and account id; scrub snapshots too).
+  first `connect_<name>` per upstream (per process) re-reads live schemas
+  and logs drift, never adopting it (the list is shared, and Cloudflare
+  personalizes descriptions with the user's email and account id; scrub
+  snapshots too); ordinary tool calls never trigger it.
   Refresh with `UPSTREAM_TOKEN=... .venv/bin/python tools/refresh-tool-snapshot.py <name>`
 - `tests/stack/` — self-contained compose: OpenBao (+ init writing a
   scoped token, never root), redis, mock-vendor (hostile: 60s tokens,

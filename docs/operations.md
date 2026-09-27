@@ -7,6 +7,24 @@ This page shows how to set up and run the broker in a private deployment.
 - Before rollout, read the [security limits](security.md#known-limitations).
 - If you are deploying the [MCP gateway](mcp-gateway.md), you need the broker too. The gateway section below covers what changes.
 
+## Production topology
+
+```mermaid
+flowchart LR
+  C["MCP clients<br/>Claude Code and others"] --> G["MCP gateway"]
+  G --> LB["Load balancer"]
+  LB --> B1["Broker replica"]
+  LB --> B2["Broker replica"]
+  B1 & B2 --> R[("Redis<br/>locks, consent state")]
+  B1 & B2 --> K[("OpenBao / Vault<br/>vendor-tokens<br/>vendor-clients")]
+  B1 & B2 --> H["Hub<br/>JWKS, OIDC sign-in"]
+  G --> H
+  B1 & B2 --> V["Vendors<br/>OAuth endpoints"]
+  G --> M["Vendor MCP servers"]
+```
+
+The gateway is the only caller of the broker. Every replica shares one Redis and one secrets store. No session affinity is needed. The gateway talks to the vendors' MCP servers, and the broker talks to the vendors' OAuth endpoints. A single replica can run without Redis (`COORD_BACKEND=memory`).
+
 ## Set up token storage (OpenBao / Vault, KV v2)
 
 The broker keeps vendor tokens in a secrets store (OpenBao or Vault, KV v2 engine). You create two storage paths ("mounts"), each with its own access rules:
@@ -42,7 +60,11 @@ Turn on an audit device in the storage backend. Check that read events reach you
 Before it serves requests, the broker checks three things: its storage token, the hub's signing keys (JWKS), and the hub's OIDC discovery document. The hub is your company's sign-in service (identity provider).
 
 - If the storage backend or hub is unreachable, the broker retries for `STARTUP_TIMEOUT_S`.
-- If the token is rejected, or the JWKS has no keys, startup stops at once. The message names the setting to fix.
+- Startup stops at once, with a message that names what to fix, when:
+  - the storage token is rejected,
+  - the hub JWKS is unusable (for example, it has no keys),
+  - the hub discovery document is malformed or names an issuer other than `HUB_ISSUER`,
+  - a vendor ID in the registry does not match the allowed pattern (IDs become storage path segments).
 
 ### Vendor client credentials
 
@@ -77,6 +99,8 @@ The broker reads its settings from environment variables.
 `HUB_ISSUER`, `HUB_JWKS_URI`, `BROKER_PUBLIC_URL`, `VAULT_ADDR`,
 `VAULT_TOKEN` or `VAULT_TOKEN_FILE`, `REGISTRY_PATH`, `HUB_LOGIN_CLIENT_ID`.
 
+If both `VAULT_TOKEN_FILE` and `VAULT_TOKEN` are set, the file wins. If the file cannot be read, startup stops.
+
 **Optional, no default value shown in the table:**
 
 - `HUB_DISCOVERY_URL`: where to fetch the hub's OIDC discovery document. Use it when the broker reaches the hub by an internal URL. Defaults to `HUB_ISSUER/.well-known/openid-configuration`. The document must still name `HUB_ISSUER`.
@@ -96,15 +120,16 @@ The broker reads its settings from environment variables.
 | `REDIS_URL` | `redis://localhost:6379/0` | Used by the redis backend |
 | `REFRESH_BUFFER_S` | `300` | A resolve refreshes the token if it expires within this many seconds |
 | `PROACTIVE_REFRESH_S` | `900` | Upper edge of the window where the sweeper refreshes tokens ahead of time |
+| `TXN_TTL_S` | `600` | Lifetime of consent state: each consent step's state and the browser binding cookie. An authorize link must still be opened within 5 minutes, or within `TXN_TTL_S` if that is shorter |
 | `CACHE_TTL_S` | `60` | Per-replica cache lifetime, and so the most grace during a storage outage. The broker does not cap it. Keep it ≤ 60 to keep the documented bound |
-| `SWEEP_INTERVAL_S` | `60` | `0` turns off the sweeper. Every other timing setting must be ≥ 1 (`CACHE_TTL_S` may be `0`: no cache) |
+| `SWEEP_INTERVAL_S` | `60` | `0` turns off the sweeper. Every other integer setting must be ≥ 1 (`CACHE_TTL_S` may be `0`: no cache) |
 | `SWEEP_MAX_ENTRIES` | `500` | Entries checked per sweep pass. The next pass starts where this one stopped |
 | `LOCK_TIMEOUT_S` / `LOCK_TTL_MS` | `10` / `20000` | How long a waiter waits for the lock / how long a redis lock lives. With `COORD_BACKEND=redis`, startup rejects `LOCK_TTL_MS` below `(VENDOR_TIMEOUT_S + 2 × VAULT_TIMEOUT_S) × 1000` |
 | `REFRESHING_TTL_S` | `30` | After this, another replica may take over an abandoned refresh marker |
 | `MASS_STALE_THRESHOLD` / `MASS_STALE_WINDOW_S` | `3` / `60` | How many entries at one vendor must go stale within the window to raise the uninstall alert (`broker.stale.mass`) |
 | `VAULT_TIMEOUT_S` | `3` | Time limit on storage calls, so an outage is detected quickly and fails closed |
 | `VENDOR_TIMEOUT_S` | `10` | Time limit on each vendor HTTP call (metadata, token, userinfo, revocation) |
-| `JWKS_TIMEOUT_S` | `5` | Time limit on fetching the hub JWKS |
+| `JWKS_TIMEOUT_S` | `5` | Time limit on fetching the hub JWKS, the hub OIDC discovery document, and the hub token-endpoint call during consent |
 | `STARTUP_TIMEOUT_S` | `30` | How long startup waits for an unreachable storage backend, hub JWKS, or hub OIDC discovery |
 
 ## Hub login client (consent)
@@ -116,7 +141,7 @@ When a user connects a vendor ("consent"), they must sign in at the hub in the s
 - **ID tokens:** signed with an algorithm in `HUB_ALGORITHMS`, by keys the hub publishes at `HUB_JWKS_URI`.
 - **Client auth:** confidential (`HUB_LOGIN_CLIENT_SECRET`, sent as `client_secret_post`) or public (no secret).
 
-The broker finds the hub's endpoints at `{HUB_ISSUER}/.well-known/openid-configuration`. At startup it checks that this document names `HUB_ISSUER`.
+The broker finds the hub's endpoints in its OIDC discovery document, at `HUB_DISCOVERY_URL` if set, otherwise at `{HUB_ISSUER}/.well-known/openid-configuration`. At startup it checks that this document names `HUB_ISSUER`.
 
 Serve the broker over https. The consent cookie that ties the flow to one browser is then marked `Secure`.
 
@@ -133,19 +158,44 @@ The registry (`REGISTRY_PATH`) lists the allowed vendors and each vendor's polic
 
 ## Gateway contract
 
-The gateway plugin that calls the broker lives outside this repository. It depends on fixed response fields and problem titles.
+Gateways that call the broker depend on a frozen contract. That includes the shipped [MCP gateway](mcp-gateway.md) (`src/mcp_gateway`) and any other gateway plugin. Do not change it:
 
-- For the frozen response fields and problem titles, see the [API reference](api.md) and the [legacy gateway mapping](api.md#legacy-gateway-mapping).
-- For current protocol boundaries and the proposed consent adapter, see [Integrate with MCP](mcp-integration.md).
+- Resolve statuses 200, 404, 409, and 5xx.
+- Response fields `access_token`, `authorize_uri`, and `missing_scopes`.
+- Problem `title` slugs. Only the URN prefix in `type` is configurable (`PROBLEM_URN_PREFIX`).
+- Audit event names (below).
+
+For the fields and titles in detail, see the [API reference](api.md) and the [legacy gateway mapping](api.md#legacy-gateway-mapping). For the protocol boundaries and how a gateway asks the user to connect during a tool call, see [Integrate with MCP](mcp-integration.md).
 
 Frozen audit event names: `broker.resolve`, `broker.consent.start`,
 `broker.consent.complete`, `broker.consent.fail`, `broker.refresh`,
 `broker.stale`, `broker.stale.mass`, `broker.revoke`, `broker.admin.deny`,
-`broker.sweep.error`. Added in 1.1 (additive): `broker.custody.renew_failed`.
+`broker.sweep.error`, `broker.custody.renew_failed`. These names never change.
 
 ## Runbook
 
 Each entry says what you see and what to do.
+
+### Which 503 is it?
+
+```mermaid
+flowchart TD
+  T{"503 problem title"} --> VA["vault-unavailable"]
+  T --> CO["coordination-unavailable"]
+  T --> HU["hub-unavailable"]
+  T --> VE["vendor-unavailable"]
+  VA --> VA2["Check OpenBao / Vault at VAULT_ADDR<br/>and /healthz custody field"]
+  CO --> CO2["Check Redis at REDIS_URL"]
+  HU --> HU2["Check the hub JWKS<br/>and OIDC discovery"]
+  VE --> VE2["Check the vendor, its client credential,<br/>and refresh lock contention"]
+```
+
+Read the problem `title`, not only the status. Each title points at one dependency:
+
+- `vault-unavailable`: see [503 `vault-unavailable`](#503-vault-unavailable) and [`/healthz` body says unreachable](#healthz-body-says-custody-unreachable).
+- `coordination-unavailable`: see [503 `coordination-unavailable`](#503-coordination-unavailable-redis-backend).
+- `hub-unavailable`: the broker cannot fetch the hub's signing keys (`HUB_JWKS_URI`) or its discovery document. Check the hub and the network path to it. Calls are limited by `JWKS_TIMEOUT_S`.
+- `vendor-unavailable`: the vendor is down or slow (`VENDOR_TIMEOUT_S`), its client credential is missing from `vendor-clients/<vendor>`, or refreshes of one connection are contending (a waiter timed out after `LOCK_TIMEOUT_S`). Retrying with backoff is safe. See also [A replica died mid-refresh](#a-replica-died-mid-refresh).
 
 ### `/healthz` returns 503
 
@@ -199,7 +249,7 @@ The storage backend is down. The broker fails closed by design.
 
 ### 503 `coordination-unavailable` (redis backend)
 
-Redis is down. Operations that need coordination fail, including refresh and access to consent state. Usable cache hits keep serving.
+Redis is down. Operations that need coordination fail: refresh, minting consent links, the authorize and callback routes, and DELETE. Every resolve that needs no refresh keeps serving, whether it comes from the cache or from a storage read.
 
 **Do this:** restore Redis. Consent records lost with Redis need a fresh browser flow. Stored credentials stay safe in storage.
 
@@ -217,9 +267,10 @@ CAS stops a losing writer from overwriting a newer version. It cannot recover cr
 
 The sweeper refreshes tokens before they expire. With the redis backend, only the replica holding the leader lease runs it.
 
-- `broker.sweep.error` events carry the vendor/sub that failed. A bad entry never stops the loop.
-- Each pass lists every vendor's entries, then checks at most `SWEEP_MAX_ENTRIES` of them. The next pass starts where the previous one stopped.
-- A full cycle over all entries fits in the 10-minute proactive window while `total entries ≤ SWEEP_MAX_ENTRIES × 600 / SWEEP_INTERVAL_S` (5,000 with the defaults).
+- A `broker.sweep.error` event for one entry carries that entry's `vendor` and `sub`. A bad entry never stops the loop. A `broker.sweep.error` without `vendor` or `sub` means the whole pass failed. The loop tries again on the next tick.
+- Each pass lists the entries of every enabled vendor, then checks at most `SWEEP_MAX_ENTRIES` of them. Vendors switched off through `enabled_env` are skipped. The next pass starts where the previous one stopped.
+- A full cycle over all entries fits in the 10-minute proactive window (`PROACTIVE_REFRESH_S − REFRESH_BUFFER_S`) while `total entries ≤ SWEEP_MAX_ENTRIES × 600 / SWEEP_INTERVAL_S` (5,000 with the defaults).
+- With the redis backend each interval is jittered by ±20%. In the worst case (every interval 20% longer) the bound is `SWEEP_MAX_ENTRIES × 600 / (1.2 × SWEEP_INTERVAL_S)`, about 4,166 with the defaults.
 - Past that, some entries miss the proactive refresh. They are refreshed on their next resolve instead.
 
 ### Slow requests while storage is frozen

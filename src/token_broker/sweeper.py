@@ -1,4 +1,4 @@
-"""Maintenance sweeper (design §8): retry pending revocations and
+"""Maintenance sweeper (design §8.1): retry pending revocations and
 proactively refresh entries approaching expiry
 (the 5–15 min band; the 0–5 min band is served lazily by resolve).
 

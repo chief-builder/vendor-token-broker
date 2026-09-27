@@ -1,6 +1,6 @@
 # Quickstart
 
-Try the whole thing on your own machine: sign in, connect a GitHub account, and call GitHub tools from Claude Code. Everything runs in Docker. You don't need a GitHub account for the first part: a stand-in plays GitHub.
+Try the whole thing on your own machine: sign in, connect accounts, and call GitHub, Linear, Atlassian, and Cloudflare tools from Claude Code. Everything runs in Docker. You don't need any of those accounts for the first part: stand-ins play all four services.
 
 You need Docker Compose, Python 3.12, and a copy of this repository. Run every command from the repository's top folder.
 
@@ -32,18 +32,34 @@ This starts:
 | Token broker | `http://localhost:8600` | Keeps each user's GitHub, Linear, Atlassian, and Cloudflare tokens |
 | Stand-ins | `http://localhost:8330` | Pretend to be GitHub's, Linear's, Atlassian's, and Cloudflare's MCP servers |
 
-The tests should all pass. They sign in, connect accounts, and call tools, the same way you are about to.
+```mermaid
+flowchart LR
+    C["Demo client or<br/>Claude Code"] --> G["Gateway<br/>:8500"]
+    C -.->|"sign in"| K["Keycloak<br/>:8180"]
+    G --> K
+    G --> B["Broker<br/>:8600"]
+    B <--> V[("OpenBao<br/>:8211")]
+    G --> M["Stand-ins<br/>:8330"]
+    B --> MV["Test sign-in<br/>for the stand-ins<br/>:8310"]
+    X["Second broker :8300<br/>with a sign-in stub"] -.- MV
+```
+
+The gateway uses the broker on port 8600, which trusts Keycloak. The second broker on port 8300 uses a simple sign-in stub instead. It's for [looking under the hood](quickstart.md#look-under-the-hood-the-broker-on-its-own) and the broker's own tests.
+
+The tests should all pass. They sign in, connect accounts, call tools, and disconnect, the same way you are about to.
 
 ### 2. Try the demo client
 
 ```sh
 .venv/bin/python tools/mcp-demo-client.py github_get_me
 .venv/bin/python tools/mcp-demo-client.py linear_list_issues
+.venv/bin/python tools/mcp-demo-client.py disconnect_github
 ```
 
 1. A browser tab opens on Keycloak. Sign in as `alice`.
 2. The first time you use a service, the gateway asks you to connect it, and a second tab opens. Finish there. With the stand-ins, this happens by itself.
 3. The client prints the list of tools and the result.
+4. `disconnect_github` cancels the GitHub token and deletes the broker's copy. The next GitHub tool asks you to connect again.
 
 Tool names start with the service: `github_…`, `linear_…`, `atlassian_…`, or `cloudflare_…`. The demo client signs in as the pre-registered app `mcp-demo-cli` and listens for the sign-in result on port 33418.
 
@@ -61,6 +77,7 @@ Then, in a new Claude Code session:
 2. Keycloak opens. Sign in as `alice` and click **Yes** on the "Grant Access" screen. (Claude Code registers itself with Keycloak the first time.)
 3. Ask Claude to use the gateway, for example: *"Using vtb-gateway, list my Linear issues, then tell me my GitHub login."*
 4. If a service isn't connected yet, Claude Code asks to open a link. Accept, finish in the browser, and the answer comes back. Each service asks once.
+5. To disconnect, ask for it, for example: *"Disconnect my Linear account from vtb-gateway."* `disconnect_linear` is marked as a destructive tool, so MCP clients can ask you before they run it.
 
 If sign-in later fails with an error that names an old address, run `claude mcp remove vtb-gateway`, add it again, and sign in once.
 

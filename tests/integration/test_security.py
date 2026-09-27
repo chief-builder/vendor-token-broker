@@ -15,7 +15,7 @@ from stack import (
     wait_for,
 )
 
-# ── No-issuance rule (design §11) ────────────────────────────────────────────
+# ── No-issuance rule (design §10) ────────────────────────────────────────────
 
 @pytest.mark.parametrize("path", [
     "/oauth/token", "/token", "/keys", "/v1/tokens/issue",
@@ -58,7 +58,7 @@ def test_garbage_token_is_401():
     assert r.status_code == 401
 
 
-# ── Fail-closed custody (design §10) ─────────────────────────────────────────
+# ── Fail-closed custody (design §9) ──────────────────────────────────────────
 
 def test_custody_loss_fails_closed():
     # PAUSE (not stop): dev-mode OpenBao holds all provisioning in memory, so
@@ -78,7 +78,7 @@ def test_custody_loss_fails_closed():
              timeout=60, what="broker healthy after openbao unpause")
 
 
-# ── Token-in-log grep (design §11) ───────────────────────────────────────────
+# ── Token-in-log grep (design §10) ───────────────────────────────────────────
 
 def test_no_token_material_in_any_log(alice):
     """No secret the stack handles appears in any container log: the hub

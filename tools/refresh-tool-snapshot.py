@@ -8,7 +8,9 @@ Authorization scheme from src/mcp_gateway/upstreams.json.
     UPSTREAM_TOKEN=<Linear API key> .venv/bin/python tools/refresh-tool-snapshot.py linear
 
 The gateway lists these tools from startup and re-reads the live schemas on
-the first connected call, logging any drift from the snapshot.
+the first connect_<name> call, logging any drift from the snapshot (the
+snapshot stays listed). Check a new snapshot for personal data before
+committing it: some vendors personalize descriptions.
 """
 import asyncio
 import json

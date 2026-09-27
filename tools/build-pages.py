@@ -28,9 +28,9 @@ DOCS = ROOT / "docs"
 
 SECTIONS = [
     ("overview", "Overview", "overview.md",
-     "Let AI assistants use GitHub as each signed-in person, without handling tokens."),
+     "AI assistants in GitHub, Linear, Jira, and Cloudflare, as each signed-in person."),
     ("quickstart", "Quickstart", "quickstart.md",
-     "Try it on your laptop: sign in, connect GitHub, and call tools from Claude Code."),
+     "Try it on your laptop: sign in, connect services, and call tools from Claude Code."),
     ("gateway", "MCP Gateway", "mcp-gateway.md",
      "How the gateway works, what your sign-in service must do, and how to configure it."),
     ("mcp", "Connect Your Own MCP Server", "mcp-integration.md",

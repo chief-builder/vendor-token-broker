@@ -65,7 +65,7 @@ A missing vendor connection is a different problem from the client's permission 
 
 See [URL-mode elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation).
 
-The nested request looks like this. This is an example; the URL comes from resolve. Clients on 2025-11-25 get the same request directly as `elicitation/create` during the call.
+The nested request looks like this. This is an example: the URL comes from resolve, and `elicitationId` is a fresh random ID for each request. MCP 2025-11-25 requires it in URL mode, and the shipped gateway always sends one. Clients on 2025-11-25 get the same request directly as `elicitation/create` during the call.
 
 ```json
 {
@@ -73,7 +73,8 @@ The nested request looks like this. This is an example; the URL comes from resol
   "params": {
     "mode": "url",
     "message": "Connect your vendor account to continue this operation.",
-    "url": "https://broker.example.com/v1/authorize/acme?txn=opaque-handle"
+    "url": "https://broker.example.com/v1/authorize/acme?txn=opaque-handle",
+    "elicitationId": "a-fresh-random-id"
   }
 }
 ```
@@ -83,32 +84,78 @@ The nested request looks like this. This is an example; the URL comes from resol
 | Broker outcome | Adapter action |
 |---|---|
 | 200 | Call the approved vendor with the returned token |
-| 404 `needs-consent` | Ask for a vendor connection through the supported browser flow |
+| 400 `invalid-request` | Fix the resolve body your adapter sends. Do not ask the user to connect |
+| 400 `sub-mismatch` | Drop or fix the `sub` field. The broker uses the hub JWT's subject |
+| 401 `invalid-hub-token` | Fix internal authentication. Do not assume the MCP client's own token expired |
+| 403 `scope-exceeds-ceiling` | The tool asks for scopes the vendor's registry entry does not allow. Fix the tool mapping or the registry. Do not loop through consent |
+| 404 `needs-consent` with `authorize_uri` | Ask for a vendor connection through the supported browser flow |
+| 404 `unknown-vendor` (no `authorize_uri`) | Configuration error: the vendor is not registered or not enabled. Never show a connect prompt |
 | 409 `needs-reconsent-scope` | Explain the extra vendor permissions and use the supplied connection URL |
 | 409 `revoke-pending` | Say that a disconnect is pending. Do not restart consent automatically |
 | 503 | Retry a limited number of times with backoff. Do not treat an outage as missing consent |
-| 401 `invalid-hub-token` | Fix internal authentication. Do not assume the MCP client's own token expired |
+
+Tell the two 404s apart by `authorize_uri`, not by status: only `needs-consent` carries a link. Full list: [Errors and caller actions](api.md#errors-and-caller-actions).
+
+```mermaid
+flowchart TD
+    R["Resolve answer"] --> OK["200: use the token<br/>for this one call"]
+    R --> NC["404 with authorize_uri:<br/>ask the user to connect"]
+    R --> UV["404 unknown-vendor:<br/>configuration error"]
+    R --> RS["409 needs-reconsent-scope:<br/>ask to reconnect with the link"]
+    R --> RP["409 revoke-pending:<br/>say a disconnect is in progress"]
+    R --> UA["401: handoff configuration error"]
+    R --> UN["503: retry later, never connect"]
+```
+
+Only two answers lead to a connect prompt, and both carry a link. Every other failure is either a configuration problem or an outage.
 
 **After the browser flow:**
 
 - Confirm the connection before you resolve again, with the same user and required scopes.
 - The user accepting the prompt does not prove the connection worked.
-- Each failed resolve creates a new connection link. So while you wait, poll the [grant list](api.md#list-and-disconnect), not resolve.
+- Each failed resolve creates a new connection link. So while you wait, poll the [grant list](api.md#list-and-disconnect) (`GET /v1/grants`), not resolve. Wait for the vendor to show `state` `ACTIVE`. The grant list reports a grant that is mid-refresh as `ACTIVE` too.
+- Treat a 5xx or unreachable broker while polling as an outage (retry later), never as "not connected yet".
 - A suggested policy: at most one consent retry per operation, then return an error the user can act on.
 - Stop if the user declines or cancels.
 - If the client does not support URL elicitation, return a clear tool error. Point to a manual connection route that your application supports.
 - Never ask for vendor tokens in chat or form fields.
 
-**Test these cases in your adapter:** cancellation, unsupported capabilities, expired connection URLs, scope expansion, identity handoff, token redaction, and retry limits. The gateway's end-to-end tests (`tests/integration/test_mcp_gateway.py`) cover these with a real MCP client.
+**Offering disconnect.** An adapter can let the user disconnect a vendor with the broker's self-service `DELETE /v1/grants/{vendor}/{sub}` and the hub JWT. Take `sub` from that hub JWT: the broker refuses any other subject (403 `forbidden`). Handle each answer:
+
+| Broker answer | Tell the user |
+|---|---|
+| 200 `{"revoked": true}` | Disconnected: the vendor cancelled the token, and the broker deleted its copy |
+| 200 with `"vendor_revocation": "unsupported"` | Disconnected here only. The vendor can't cancel tokens remotely, so the user should also remove the app's access in the vendor's settings |
+| 404 `no-grant` | Nothing was connected |
+| 502 `revoke-pending` | The vendor could not be reached. The broker keeps retrying, and the vendor can't be used until it succeeds |
+| 5xx (such as 503 `vault-unavailable` or `coordination-unavailable`) | Retry later |
+
+The shipped gateway does this as `disconnect_<service>` ([Disconnecting a service](mcp-gateway.md#disconnecting-a-service)).
+
+**What the shipped gateway's tests cover.** Use them as a model for your own. `tests/integration/test_mcp_gateway.py` drives the gateway with a real MCP client against Keycloak and the stand-in servers. It covers:
+
+- consent in both protocol revisions (2025-11-25 and 2026-07-28), and a connected user never being prompted;
+- declining (`test_declining_leaves_github_disconnected`) and a link opened by someone else (`test_link_opened_by_someone_else_never_connects`);
+- a client without URL elicitation (`test_client_without_url_elicitation_is_given_the_link`);
+- a revoked connection prompting again, and `disconnect_github` revoking at the vendor first;
+- broker and vendor outages being retryable and never asking to connect;
+- parallel calls never burning a rotating refresh-token family;
+- each vendor getting only its own token, and tokens working only at the server they were issued for;
+- tokens not issued for the gateway being refused;
+- no token material in any container log.
+
+Unit tests (`tests/unit/test_gateway.py`) add consent timeouts, polling the grant list instead of resolve, and a broker outage while waiting.
+
+The shipped gateway never sends `required_scopes`, so it never asks for extra scopes and never sees `needs-reconsent-scope`. If your adapter asks for scopes per tool, test that case yourself.
 
 **List all tools from the start.** Do not count on `notifications/tools/list_changed` to reveal tools after a connection. From 2026-07-28, servers may only send it on `subscriptions/listen`. The [gateway's pinned tool list](mcp-gateway.md#tools) shows this approach.
 
 ## Existing gateway compatibility
 
-The internal broker API has not changed.
+Existing gateway plugins can keep calling the internal broker API as they are: its statuses, fields, and problem titles are frozen.
 
 - The source lab's Kong plugin turned broker 404/409 consent results into custom client-facing `401 authorization_required` and 401 step-up responses.
-- That is an old adapter convention. It has not been shown to work as a current MCP wire flow.
+- That is an adapter convention. It is not a tested MCP wire flow.
 - The plugin is not in this repository.
 
 If you are keeping an existing deployment, see [the legacy mapping](api.md#legacy-gateway-mapping).

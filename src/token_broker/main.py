@@ -40,7 +40,7 @@ CACHE_MAX_ENTRIES = 10_000
 
 
 def consent_scopes(required: list[str], ceiling: list[str]) -> list[str]:
-    """§4.2/§6: request the minimum — the tool's required scopes capped by the
+    """§4.1/§6: request the minimum — the tool's required scopes capped by the
     registry ceiling. No required_scopes (legacy caller) → the full ceiling."""
     if not required:
         return list(ceiling)
@@ -273,7 +273,7 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
             # permissions). The broker neither requests nor enforces them.
             required = []
         if not set(required) <= set(ceiling):
-            # A caller can never widen past the registry ceiling (§4.2).
+            # A caller can never widen past the registry ceiling (§4.1).
             audit("broker.resolve", decision="deny", path="scope-ceiling",
                   hub_jti=claims.get("jti"), sub=sub, vendor=vendor,
                   required=required, ceiling=ceiling)
