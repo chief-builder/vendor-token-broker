@@ -70,7 +70,7 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
 - `src/mcp_gateway/` — separate service (own `Dockerfile.gateway`,
   `requirements-gateway.lock`, FastMCP 4.0.10; never in the broker image):
   MCP server to clients, MCP client to several vendor MCP servers
-  ("upstreams": GitHub, Linear). `upstreams.json` lists them (name = tool
+  ("upstreams": GitHub, Linear, Atlassian, Cloudflare). `upstreams.json` lists them (name = tool
   prefix, broker vendor, URL, auth scheme, headers, allowlist, snapshot);
   tools are exposed as `<name>_<tool>` plus `connect_<name>`. `server.py`
   (routes, consent elicitation in both protocol eras, auth wiring),
@@ -93,7 +93,12 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   github -> vendor mockhub, linear -> vendor mockhub-jwt)
 - `registry.example.json` + `schemas/vendor-registry.schema.json` —
   registry changes are reviewed changes; `scope_ceiling` is a security
-  boundary
+  boundary (for Atlassian and Cloudflare it is the only thing keeping the
+  upstream read-only). Vendors whose MCP server runs its own sign-in carry
+  `auth_metadata_url` + `resource` (RFC 8707, sent on authorize, code
+  exchange and refresh); the broker is registered with them once via
+  `tools/register-mcp-client.py` — never re-register (orphans every
+  connection). Cloudflare's client secret expires (2026-12-26).
 
 ## Gotchas
 

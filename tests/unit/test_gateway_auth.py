@@ -106,15 +106,19 @@ ENV = {"GATEWAY_PUBLIC_URL": "http://localhost:8500", "HUB_ISSUER": "http://h/re
        "BROKER_URL": "http://broker:8300/"}
 
 
-def test_bundled_upstreams_are_read_only_github_and_linear():
+def test_bundled_upstreams_are_read_only():
     cfg = GatewayConfig.from_env(ENV)
     assert cfg.resource_url == "http://localhost:8500/mcp"
     assert cfg.broker_url == "http://broker:8300"
     upstreams = {u.name: u for u in cfg.upstreams}
-    assert list(upstreams) == ["github", "linear"]
+    assert list(upstreams) == ["github", "linear", "atlassian", "cloudflare"]
     assert upstreams["github"].headers["X-MCP-Readonly"] == "true"
     assert upstreams["github"].headers["X-MCP-Lockdown"] == "true"
     assert upstreams["linear"].url.endswith("/mcp/readonly")
+    # Atlassian and Cloudflare have no read-only endpoint: the broker's
+    # scope ceiling (registry.example.json) is what keeps them read-only.
+    assert upstreams["atlassian"].vendor == "atlassian"
+    assert upstreams["cloudflare"].vendor == "cloudflare"
 
 
 def test_bundled_snapshots_match_their_allowlists_and_are_read_only():

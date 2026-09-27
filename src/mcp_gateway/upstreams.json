@@ -23,6 +23,22 @@
                 "list_cycles", "list_teams", "get_team", "list_issue_statuses",
                 "list_users", "get_user", "list_documents", "get_document"],
       "snapshot": "linear.json"
+    },
+    {
+      "name": "atlassian",
+      "display_name": "Atlassian",
+      "vendor": "atlassian",
+      "url": "https://mcp.atlassian.com/v2/mcp",
+      "tools": ["getJiraIssue", "searchJiraIssuesUsingJql", "getConfluenceContent",
+                "searchConfluence", "executeRead", "discover", "atlassianUserInfo",
+                "getAccessibleAtlassianResources"]
+    },
+    {
+      "name": "cloudflare",
+      "display_name": "Cloudflare",
+      "vendor": "cloudflare",
+      "url": "https://mcp.cloudflare.com/mcp",
+      "tools": ["search", "docs", "execute"]
     }
   ]
 }

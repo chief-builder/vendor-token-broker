@@ -76,5 +76,17 @@ if [ -n "${LINEAR_CLIENT_ID:-}" ]; then
     "${BAO}/v1/vendor-clients/data/linear" > /dev/null
   echo "==> Linear vendor configured"
 fi
+# Vendors whose MCP server runs its own sign-in: the broker registered once
+# (tools/register-mcp-client.py) and the credentials come from tests/stack/.env.
+for v in ATLASSIAN:atlassian CLOUDFLARE:cloudflare; do
+  prefix=${v%%:*}; vendor=${v#*:}
+  eval "cid=\${${prefix}_CLIENT_ID:-}; csec=\${${prefix}_CLIENT_SECRET:-}"
+  if [ -n "$cid" ]; then
+    curl -sf -H "X-Vault-Token: ${ROOT}" \
+      -d "{\"data\":{\"client_id\":\"${cid}\",\"client_secret\":\"${csec}\"}}" \
+      "${BAO}/v1/vendor-clients/data/${vendor}" > /dev/null
+    echo "==> ${vendor} vendor configured"
+  fi
+done
 
 echo "==> OpenBao initialized (scoped broker token ready)"

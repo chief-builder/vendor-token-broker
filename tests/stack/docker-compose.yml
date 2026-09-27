@@ -37,6 +37,10 @@ services:
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       LINEAR_CLIENT_ID: ${LINEAR_CLIENT_ID:-}
       LINEAR_CLIENT_SECRET: ${LINEAR_CLIENT_SECRET:-}
+      ATLASSIAN_CLIENT_ID: ${ATLASSIAN_CLIENT_ID:-}
+      ATLASSIAN_CLIENT_SECRET: ${ATLASSIAN_CLIENT_SECRET:-}
+      CLOUDFLARE_CLIENT_ID: ${CLOUDFLARE_CLIENT_ID:-}
+      CLOUDFLARE_CLIENT_SECRET: ${CLOUDFLARE_CLIENT_SECRET:-}
       MOCK_JWT_CLIENT_ID: ${MOCK_JWT_CLIENT_ID:-mcp-lab-broker-jwt}
     volumes:
       - ./openbao-init/init.sh:/init.sh:ro
@@ -93,6 +97,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       LINEAR_CLIENT_ID: ${LINEAR_CLIENT_ID:-}
+      ATLASSIAN_CLIENT_ID: ${ATLASSIAN_CLIENT_ID:-}
+      CLOUDFLARE_CLIENT_ID: ${CLOUDFLARE_CLIENT_ID:-}
       # Short per-replica cache so test_cache.py can observe expiry quickly.
       CACHE_TTL_S: "10"
     volumes:
@@ -264,6 +270,8 @@ services:
       COORD_BACKEND: memory
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       LINEAR_CLIENT_ID: ${LINEAR_CLIENT_ID:-}
+      ATLASSIAN_CLIENT_ID: ${ATLASSIAN_CLIENT_ID:-}
+      CLOUDFLARE_CLIENT_ID: ${CLOUDFLARE_CLIENT_ID:-}
     volumes:
       - ../../registry.example.json:/app/registry.json:ro
     ports:
