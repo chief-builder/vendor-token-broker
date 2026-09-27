@@ -50,9 +50,14 @@
     border-radius: 8px; padding: .9rem 1rem; overflow-x: auto;
   }
   pre code { background: none; padding: 0; }
+  :not(pre) > code { overflow-wrap: anywhere; }   /* long paths wrap on phones */
+  /* Diagrams get a wider figure than the text column on large screens, so
+     they render near full size; on narrow screens they fit the viewport. */
   pre.mermaid {
+    --fig: min(1400px, calc(100vw - 48px));
     background: none; border: none; display: flex; justify-content: center;
-    overflow-x: auto;
+    overflow-x: auto; width: var(--fig);
+    margin-inline: calc((100% - var(--fig)) / 2);
   }
   table { border-collapse: collapse; display: block; overflow-x: auto; }
   th, td { border: 1px solid var(--line); padding: .4rem .7rem; text-align: left; }
@@ -148,12 +153,20 @@
 <li><strong>Used once, then forgotten.</strong> On every call, the gateway gets the person's token from the broker, uses it for that one call, and throws it away.</li>
 </ul>
 <h2 id="three-tokens-that-never-cross">Three tokens that never cross</h2>
-<pre class="mermaid">flowchart LR
-    C[&quot;Claude Code&quot;] --&gt;|&quot;sign-in token&lt;br/&gt;meant for the gateway&quot;| G[&quot;Gateway&quot;]
-    G --&gt;|&quot;swapped at the hub&quot;| X((&quot;internal&lt;br/&gt;hub token&quot;))
-    X --&gt;|&quot;only the broker&lt;br/&gt;accepts it&quot;| B[&quot;Broker&quot;]
-    B --&gt;|&quot;service token&lt;br/&gt;for one call&quot;| G2[&quot;Gateway&quot;]
-    G2 --&gt;|&quot;only this service&lt;br/&gt;ever sees it&quot;| S[&quot;GitHub, Linear,&lt;br/&gt;Atlassian, or Cloudflare&quot;]
+<pre class="mermaid">sequenceDiagram
+    participant C as Claude Code
+    participant G as Gateway
+    participant H as Hub
+    participant B as Broker
+    participant S as Service
+    C-&gt;&gt;G: sign-in token, meant only for the gateway
+    G-&gt;&gt;H: swap the sign-in token
+    H--&gt;&gt;G: internal hub token
+    G-&gt;&gt;B: hub token, which only the broker accepts
+    B--&gt;&gt;G: service token, for this one call
+    G-&gt;&gt;S: service token, which only this service sees
+    S--&gt;&gt;G: result
+    G--&gt;&gt;C: result, with no token in it
 </pre>
 <p>Each hop uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See <a href="#security">Security</a>.</p>
 <h2 id="the-first-time-someone-uses-a-service">The first time someone uses a service</h2>
@@ -203,15 +216,18 @@
 <p>The link only works for the person it was made for, in the browser that opened it. See <a href="#connecting-a-service-during-a-tool-call">Connecting a service during a tool call</a>.</p>
 <h2 id="two-ways-services-sign-in">Two ways services sign in</h2>
 <pre class="mermaid">flowchart TB
-    subgraph A[&quot;Ordinary OAuth app: GitHub, Linear&quot;]
+    subgraph A[&quot;GitHub and Linear&quot;]
+        direction LR
         A1[&quot;An admin creates an app&lt;br/&gt;in the service's console&quot;] --&gt; A2[&quot;Client ID and secret&lt;br/&gt;stored in Vault&quot;]
         A2 --&gt; A3[&quot;The token works at the&lt;br/&gt;service's MCP server&quot;]
     end
-    subgraph M[&quot;Own MCP sign-in: Atlassian, Cloudflare&quot;]
+    subgraph M[&quot;Atlassian and Cloudflare&quot;]
+        direction LR
         M1[&quot;register-mcp-client.py&lt;br/&gt;registers the broker once&quot;] --&gt; M2[&quot;Client ID and secret&lt;br/&gt;stored in Vault&quot;]
         M2 --&gt; M3[&quot;Every request names&lt;br/&gt;the MCP server&quot;]
         M3 --&gt; M4[&quot;The token only works&lt;br/&gt;at that one server&quot;]
     end
+    A ~~~ M
 </pre>
 <p>Atlassian and Cloudflare run their own sign-in for their MCP servers. The broker is registered with each of them once, and names the MCP server on every request (the <code>resource</code> parameter, RFC 8707). Registering again would disconnect everyone. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
 <h2 id="what-keeps-each-service-read-only">What keeps each service read-only</h2>
@@ -1431,7 +1447,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 </tbody>
 </table>
 <p>Tell the two 404s apart by <code>authorize_uri</code>, not by status: only <code>needs-consent</code> carries a link. Full list: <a href="#errors-and-caller-actions">Errors and caller actions</a>.</p>
-<pre class="mermaid">flowchart TD
+<pre class="mermaid">flowchart LR
     R[&quot;Resolve answer&quot;] --&gt; OK[&quot;200: use the token&lt;br/&gt;for this one call&quot;]
     R --&gt; NC[&quot;404 with authorize_uri:&lt;br/&gt;ask the user to connect&quot;]
     R --&gt; UV[&quot;404 unknown-vendor:&lt;br/&gt;configuration error&quot;]
@@ -1587,16 +1603,16 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 </tbody>
 </table>
 <pre class="mermaid">flowchart LR
-  subgraph callers[&quot;Gateway or MCP server, with a hub JWT&quot;]
+  subgraph callers[&quot;Gateway, with a hub JWT&quot;]
     R[&quot;POST /v1/tokens/resolve&quot;]
     L[&quot;GET /v1/grants&quot;]
     D[&quot;DELETE /v1/grants/{vendor}/{sub}&quot;]
   end
-  subgraph browser[&quot;User's browser, no bearer token&quot;]
+  subgraph browser[&quot;Browser, no token&quot;]
     A[&quot;GET /v1/authorize/{vendor}&quot;]
     C[&quot;GET /v1/callback/{vendor}&lt;br/&gt;and /v1/callback/_hub&quot;]
   end
-  subgraph admin[&quot;Platform admin, hub JWT with ADMIN_GROUP&quot;]
+  subgraph admin[&quot;Admin, with ADMIN_GROUP&quot;]
     V[&quot;GET /v1/admin/vendors/{vendor}&quot;]
   end
   H[&quot;GET /healthz&lt;br/&gt;load balancer, no auth&quot;]
@@ -2726,7 +2742,7 @@ the reviewed registry and handled in <code>vendors.py</code>:</p>
 <h2 id="3-architecture-and-trust-boundaries">3. Architecture and trust boundaries</h2>
 <p>The hub JWT never goes past the gateway and broker, and vendor tokens
 never reach the MCP client.</p>
-<pre class="mermaid">flowchart LR
+<pre class="mermaid">flowchart TB
     subgraph userplane[&quot;User plane&quot;]
         C[&quot;MCP client&quot;]
         UA[&quot;Browser&lt;br/&gt;(consent steps only)&quot;]
@@ -3621,13 +3637,13 @@ separate implementation and rollout plan.</p>
 <h2 id="14-deployment-profiles">14. Deployment profiles</h2>
 <p>Run one replica with no extra infrastructure, or many replicas with Redis.</p>
 <pre class="mermaid">flowchart TB
-    subgraph mem[&quot;memory profile — exactly 1 replica, zero extra infra&quot;]
+    subgraph mem[&quot;memory: exactly 1 replica&quot;]
         direction LR
         B1[&quot;broker&lt;br/&gt;asyncio locks · local consent&lt;br/&gt;state · fixed-interval sweep&quot;]
         K1[&quot;custody KV-v2&lt;br/&gt;(CAS)&quot;]
         B1 --&gt; K1
     end
-    subgraph red[&quot;redis profile — N replicas, no session affinity&quot;]
+    subgraph red[&quot;redis: N replicas&quot;]
         direction LR
         LB[&quot;any balancer&quot;]
         A2[&quot;broker A&quot;]
@@ -4413,7 +4429,7 @@ part of the trusted gateway and the user.</p>
     subgraph host[&quot;Your machine&quot;]
         T[&quot;Terminal / Browser&lt;br/&gt;(acts as the trusted gateway + user)&quot;]
     end
-    subgraph compose[&quot;docker compose — tests/stack&quot;]
+    subgraph compose[&quot;tests/stack compose&quot;]
         B[&quot;vtb-broker :8300&lt;br/&gt;the service under test&quot;]
         H[&quot;vtb-hub-stub :8320&lt;br/&gt;fake company sign-in (IdP)&lt;br/&gt;JWKS + /_test/token mint&quot;]
         M[&quot;vtb-mock-vendor :8310&lt;br/&gt;hostile vendor AS&lt;br/&gt;60s tokens, rotating RTs&quot;]
@@ -4686,17 +4702,17 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 <pre><code class="language-json">{&quot;type&quot;:&quot;urn:vendor-token-broker:invalid-hub-token&quot;,&quot;title&quot;:&quot;invalid-hub-token&quot;,
  &quot;detail&quot;:&quot;The specified alg value is not allowed&quot;}
 </code></pre>
-<pre class="mermaid">flowchart LR
-    A[&quot;Bearer token&quot;] --&gt; K{&quot;signing key found&lt;br/&gt;in hub JWKS by kid?&quot;}
+<pre class="mermaid">flowchart TB
+    A[&quot;Bearer token&quot;] --&gt; K{&quot;signing key in the&lt;br/&gt;hub JWKS, by kid?&quot;}
     K -- &quot;JWKS unreachable&quot; --&gt; U[&quot;503 hub-unavailable&quot;]
-    K -- &quot;no&quot; --&gt; X1[&quot;401&quot;]
-    K -- yes --&gt; D{&quot;one decode step:&lt;br/&gt;alg in HUB_ALGORITHMS, signature,&lt;br/&gt;iss == HUB_ISSUER,&lt;br/&gt;aud contains HUB_TIER_AUDIENCE,&lt;br/&gt;exp/iat/sub/jti present, not expired&quot;}
-    D -- &quot;any check fails&quot; --&gt; X2[&quot;401&quot;]
+    K -- yes --&gt; D[&quot;One decode step checks all of:&lt;br/&gt;alg in HUB_ALGORITHMS&lt;br/&gt;signature&lt;br/&gt;iss == HUB_ISSUER&lt;br/&gt;aud has HUB_TIER_AUDIENCE&lt;br/&gt;exp, iat, sub, jti present&lt;br/&gt;not expired&quot;]
     D -- &quot;all pass&quot; --&gt; G{&quot;mcp_contract == 1.0?&quot;}
-    G -- no --&gt; X3[&quot;401&quot;]
     G -- yes --&gt; E{&quot;exactly one&lt;br/&gt;mcp://tier/* audience?&quot;}
-    E -- no --&gt; X4[&quot;401&quot;]
     E -- yes --&gt; OK[&quot;resolve proceeds&quot;]
+    K -- no --&gt; X[&quot;401 invalid-hub-token&quot;]
+    D -- &quot;any check fails&quot; --&gt; X
+    G -- no --&gt; X
+    E -- no --&gt; X
 </pre>
 <p>The checks in the middle box run together in one <code>jwt.decode</code> call, so
 the first failure it finds names the <code>detail</code>. Here that is the

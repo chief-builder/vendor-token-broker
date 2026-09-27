@@ -48,12 +48,20 @@ flowchart LR
 ## Three tokens that never cross
 
 ```mermaid
-flowchart LR
-    C["Claude Code"] -->|"sign-in token<br/>meant for the gateway"| G["Gateway"]
-    G -->|"swapped at the hub"| X(("internal<br/>hub token"))
-    X -->|"only the broker<br/>accepts it"| B["Broker"]
-    B -->|"service token<br/>for one call"| G2["Gateway"]
-    G2 -->|"only this service<br/>ever sees it"| S["GitHub, Linear,<br/>Atlassian, or Cloudflare"]
+sequenceDiagram
+    participant C as Claude Code
+    participant G as Gateway
+    participant H as Hub
+    participant B as Broker
+    participant S as Service
+    C->>G: sign-in token, meant only for the gateway
+    G->>H: swap the sign-in token
+    H-->>G: internal hub token
+    G->>B: hub token, which only the broker accepts
+    B-->>G: service token, for this one call
+    G->>S: service token, which only this service sees
+    S-->>G: result
+    G-->>C: result, with no token in it
 ```
 
 Each hop uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See [Security](security.md).
@@ -96,15 +104,18 @@ The link only works for the person it was made for, in the browser that opened i
 
 ```mermaid
 flowchart TB
-    subgraph A["Ordinary OAuth app: GitHub, Linear"]
+    subgraph A["GitHub and Linear"]
+        direction LR
         A1["An admin creates an app<br/>in the service's console"] --> A2["Client ID and secret<br/>stored in Vault"]
         A2 --> A3["The token works at the<br/>service's MCP server"]
     end
-    subgraph M["Own MCP sign-in: Atlassian, Cloudflare"]
+    subgraph M["Atlassian and Cloudflare"]
+        direction LR
         M1["register-mcp-client.py<br/>registers the broker once"] --> M2["Client ID and secret<br/>stored in Vault"]
         M2 --> M3["Every request names<br/>the MCP server"]
         M3 --> M4["The token only works<br/>at that one server"]
     end
+    A ~~~ M
 ```
 
 Atlassian and Cloudflare run their own sign-in for their MCP servers. The broker is registered with each of them once, and names the MCP server on every request (the `resource` parameter, RFC 8707). Registering again would disconnect everyone. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in).

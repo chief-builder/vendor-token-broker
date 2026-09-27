@@ -32,7 +32,7 @@ flowchart LR
     subgraph host["Your machine"]
         T["Terminal / Browser<br/>(acts as the trusted gateway + user)"]
     end
-    subgraph compose["docker compose — tests/stack"]
+    subgraph compose["tests/stack compose"]
         B["vtb-broker :8300<br/>the service under test"]
         H["vtb-hub-stub :8320<br/>fake company sign-in (IdP)<br/>JWKS + /_test/token mint"]
         M["vtb-mock-vendor :8310<br/>hostile vendor AS<br/>60s tokens, rotating RTs"]
@@ -365,17 +365,17 @@ Expected:
 ```
 
 ```mermaid
-flowchart LR
-    A["Bearer token"] --> K{"signing key found<br/>in hub JWKS by kid?"}
+flowchart TB
+    A["Bearer token"] --> K{"signing key in the<br/>hub JWKS, by kid?"}
     K -- "JWKS unreachable" --> U["503 hub-unavailable"]
-    K -- "no" --> X1["401"]
-    K -- yes --> D{"one decode step:<br/>alg in HUB_ALGORITHMS, signature,<br/>iss == HUB_ISSUER,<br/>aud contains HUB_TIER_AUDIENCE,<br/>exp/iat/sub/jti present, not expired"}
-    D -- "any check fails" --> X2["401"]
+    K -- yes --> D["One decode step checks all of:<br/>alg in HUB_ALGORITHMS<br/>signature<br/>iss == HUB_ISSUER<br/>aud has HUB_TIER_AUDIENCE<br/>exp, iat, sub, jti present<br/>not expired"]
     D -- "all pass" --> G{"mcp_contract == 1.0?"}
-    G -- no --> X3["401"]
     G -- yes --> E{"exactly one<br/>mcp://tier/* audience?"}
-    E -- no --> X4["401"]
     E -- yes --> OK["resolve proceeds"]
+    K -- no --> X["401 invalid-hub-token"]
+    D -- "any check fails" --> X
+    G -- no --> X
+    E -- no --> X
 ```
 
 The checks in the middle box run together in one `jwt.decode` call, so

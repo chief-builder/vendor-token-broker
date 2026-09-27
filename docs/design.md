@@ -108,7 +108,7 @@ The hub JWT never goes past the gateway and broker, and vendor tokens
 never reach the MCP client.
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph userplane["User plane"]
         C["MCP client"]
         UA["Browser<br/>(consent steps only)"]
@@ -863,13 +863,13 @@ Run one replica with no extra infrastructure, or many replicas with Redis.
 
 ```mermaid
 flowchart TB
-    subgraph mem["memory profile — exactly 1 replica, zero extra infra"]
+    subgraph mem["memory: exactly 1 replica"]
         direction LR
         B1["broker<br/>asyncio locks · local consent<br/>state · fixed-interval sweep"]
         K1["custody KV-v2<br/>(CAS)"]
         B1 --> K1
     end
-    subgraph red["redis profile — N replicas, no session affinity"]
+    subgraph red["redis: N replicas"]
         direction LR
         LB["any balancer"]
         A2["broker A"]

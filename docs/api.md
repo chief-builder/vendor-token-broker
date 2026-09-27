@@ -28,16 +28,16 @@ The broker has exactly seven routes. Most of them need a hub JWT.
 
 ```mermaid
 flowchart LR
-  subgraph callers["Gateway or MCP server, with a hub JWT"]
+  subgraph callers["Gateway, with a hub JWT"]
     R["POST /v1/tokens/resolve"]
     L["GET /v1/grants"]
     D["DELETE /v1/grants/{vendor}/{sub}"]
   end
-  subgraph browser["User's browser, no bearer token"]
+  subgraph browser["Browser, no token"]
     A["GET /v1/authorize/{vendor}"]
     C["GET /v1/callback/{vendor}<br/>and /v1/callback/_hub"]
   end
-  subgraph admin["Platform admin, hub JWT with ADMIN_GROUP"]
+  subgraph admin["Admin, with ADMIN_GROUP"]
     V["GET /v1/admin/vendors/{vendor}"]
   end
   H["GET /healthz<br/>load balancer, no auth"]

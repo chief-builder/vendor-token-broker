@@ -97,7 +97,7 @@ The nested request looks like this. This is an example: the URL comes from resol
 Tell the two 404s apart by `authorize_uri`, not by status: only `needs-consent` carries a link. Full list: [Errors and caller actions](api.md#errors-and-caller-actions).
 
 ```mermaid
-flowchart TD
+flowchart LR
     R["Resolve answer"] --> OK["200: use the token<br/>for this one call"]
     R --> NC["404 with authorize_uri:<br/>ask the user to connect"]
     R --> UV["404 unknown-vendor:<br/>configuration error"]

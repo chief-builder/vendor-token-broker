@@ -176,9 +176,14 @@ TEMPLATE = """<!DOCTYPE html>
     border-radius: 8px; padding: .9rem 1rem; overflow-x: auto;
   }
   pre code { background: none; padding: 0; }
+  :not(pre) > code { overflow-wrap: anywhere; }   /* long paths wrap on phones */
+  /* Diagrams get a wider figure than the text column on large screens, so
+     they render near full size; on narrow screens they fit the viewport. */
   pre.mermaid {
+    --fig: min(1400px, calc(100vw - 48px));
     background: none; border: none; display: flex; justify-content: center;
-    overflow-x: auto;
+    overflow-x: auto; width: var(--fig);
+    margin-inline: calc((100% - var(--fig)) / 2);
   }
   table { border-collapse: collapse; display: block; overflow-x: auto; }
   th, td { border: 1px solid var(--line); padding: .4rem .7rem; text-align: left; }
