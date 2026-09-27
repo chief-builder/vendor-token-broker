@@ -1,9 +1,11 @@
 """The gateway's two HTTP dependencies: the hub (RFC 8693 token exchange)
-and the broker (resolve + grant listing). Errors carry ids and statuses
-only — never token material."""
+and the broker (resolve, grant listing, self-service disconnect). Errors
+carry ids and statuses only — never token material."""
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import httpx
+import jwt
 
 from .config import GatewayConfig
 
@@ -88,3 +90,28 @@ class Broker:
             raise Unavailable(f"broker answered {r.status_code} listing grants")
         return any(g.get("vendor") == vendor and g.get("state") == "ACTIVE"
                    for g in r.json().get("grants", []))
+
+    async def disconnect(self, hub_jwt: str, vendor: str) -> str:
+        """Revoke and delete the user's grant (the broker's self-service
+        DELETE, vendor first). Returns "revoked", "unsupported" (the vendor
+        can't cancel tokens: deleted here only), "not-connected", or
+        "pending" (the vendor is down: the broker keeps retrying, and the
+        grant stays unusable meanwhile)."""
+        # The broker checks the path's sub against the hub JWT it verifies.
+        sub = jwt.decode(hub_jwt, options={"verify_signature": False})["sub"]
+        url = f"{self._cfg.broker_url}/v1/grants/{quote(vendor, safe='')}/{quote(sub, safe='/')}"
+        try:
+            r = await self._http.delete(url, headers={"Authorization": f"Bearer {hub_jwt}"})
+        except httpx.HTTPError as exc:
+            raise Unavailable(f"broker unreachable ({type(exc).__name__})") from exc
+        body = r.json() if r.headers.get("content-type", "").endswith("json") else {}
+        title = body.get("title", "")
+        if r.status_code == 200:
+            return "unsupported" if body.get("vendor_revocation") == "unsupported" else "revoked"
+        if r.status_code == 404 and title == "no-grant":
+            return "not-connected"
+        if r.status_code == 502 and title == "revoke-pending":
+            return "pending"
+        if r.status_code >= 500:
+            raise Unavailable(f"broker answered {r.status_code} {title}".strip())
+        raise HandoffError(f"broker refused the disconnect ({r.status_code} {title})".strip())

@@ -1,5 +1,5 @@
 """The gateway's broker client over HTTP (httpx mock transport): how grant
-listing answers map to outcomes and errors."""
+listing and disconnect answers map to outcomes and errors."""
 import httpx
 import jwt
 import pytest
@@ -42,9 +42,40 @@ async def test_connected_never_turns_a_failure_into_not_connected(response, erro
         await b.connected(HUB_JWT, "github")
 
 
+@pytest.mark.parametrize("response, outcome", [
+    (httpx.Response(200, json={"revoked": True}), "revoked"),
+    (httpx.Response(200, json={"revoked": True, "vendor_revocation": "unsupported"}),
+     "unsupported"),
+    (problem(404, "no-grant"), "not-connected"),
+    (problem(502, "revoke-pending"), "pending"),
+])
+async def test_disconnect_outcomes(response, outcome):
+    b, seen = broker(lambda r: response)
+    assert await b.disconnect(HUB_JWT, "github") == outcome
+    [request] = seen
+    assert request.method == "DELETE"
+    assert request.url.raw_path == b"/v1/grants/github/tenant/alice"   # the hub JWT's sub
+    assert request.headers["authorization"] == f"Bearer {HUB_JWT}"
+
+
+@pytest.mark.parametrize("response, error", [
+    (problem(503, "vault-unavailable"), Unavailable),
+    (problem(503, "coordination-unavailable"), Unavailable),
+    (problem(401, "invalid-hub-token"), HandoffError),
+    (problem(403, "forbidden"), HandoffError),
+    (problem(404, "unknown-vendor"), HandoffError),
+])
+async def test_disconnect_failures(response, error):
+    b, _ = broker(lambda r: response)
+    with pytest.raises(error):
+        await b.disconnect(HUB_JWT, "github")
+
+
 async def test_unreachable_broker_is_unavailable():
     def down(request):
         raise httpx.ConnectError("refused")
     b, _ = broker(down)
+    with pytest.raises(Unavailable):
+        await b.disconnect(HUB_JWT, "github")
     with pytest.raises(Unavailable):
         await b.connected(HUB_JWT, "github")

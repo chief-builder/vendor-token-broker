@@ -45,7 +45,8 @@ ATLASSIAN = {"atlassian_" + t for t in (
     "executeRead", "discover", "atlassianUserInfo", "getAccessibleAtlassianResources")}
 CLOUDFLARE = {"cloudflare_" + t for t in ("search", "docs", "execute")}
 ALL_TOOLS = GITHUB | LINEAR | ATLASSIAN | CLOUDFLARE | {
-    "connect_github", "connect_linear", "connect_atlassian", "connect_cloudflare"}
+    f"{verb}_{name}" for verb in ("connect", "disconnect")
+    for name in ("github", "linear", "atlassian", "cloudflare")}
 OWN_SIGN_IN = ("mockhub-atlassian", "mockhub-cloudflare")
 STAND_IN = "/config/stand-in-upstreams.json"
 
@@ -283,6 +284,20 @@ async def test_revoked_connection_prompts_again():
     again = User("alice")
     r = await _call("alice", "github_get_me", user=again)
     assert not r.is_error and len(again.prompts) == 1
+
+
+async def test_disconnect_revokes_at_the_vendor_and_the_next_call_asks_again():
+    await _call("alice", "github_get_me", user=User("alice"))      # connected
+    before = mock_state()["counters"]["revoke"]
+    r = await _call("alice", "disconnect_github")
+    assert not r.is_error and "GitHub is disconnected" in r.content[0].text
+    assert mock_state()["counters"]["revoke"] == before + 1         # vendor first
+    assert resolve_kc(hub_jwt("alice")).status_code == 404
+    again = await _call("alice", "disconnect_github")
+    assert "GitHub was not connected" in again.content[0].text
+    user = User("alice")                                            # reconnect for later tests
+    assert not (await _call("alice", "github_get_me", user=user)).is_error
+    assert len(user.prompts) == 1
 
 
 # ----------------------------------------------------------------- failures

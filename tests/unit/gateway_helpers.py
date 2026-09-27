@@ -54,7 +54,9 @@ class FakeBroker:
         self.problem = ""
         self.error: Exception | None = None
         self.poll_error: Exception | None = None      # raised while waiting on consent
+        self.disconnect_outcome: str | None = None    # override the scripted outcome
         self.resolves: list[str] = []
+        self.disconnects: list[str] = []
         self.polls = 0
 
     @property
@@ -79,6 +81,18 @@ class FakeBroker:
         if self.connect_on_poll:
             self.connected_vendors.add(vendor)
         return vendor in self.connected_vendors
+
+    async def disconnect(self, hub_jwt: str, vendor: str) -> str:
+        assert hub_jwt == HUB_JWT
+        self.disconnects.append(vendor)
+        if self.error:
+            raise self.error
+        if self.disconnect_outcome:
+            return self.disconnect_outcome
+        if vendor not in self.connected_vendors:
+            return "not-connected"
+        self.connected_vendors.discard(vendor)
+        return "revoked"
 
 
 def upstream_tool(name: str, param: str = "owner") -> mcp_types.Tool:

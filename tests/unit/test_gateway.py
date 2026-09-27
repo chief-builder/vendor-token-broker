@@ -21,6 +21,7 @@ from gateway_helpers import (
 )
 
 ERAS = ["legacy", "2026-07-28"]
+ACCOUNT = ["connect_github", "disconnect_github"]     # listed for every upstream
 
 
 async def _names(c) -> list[str]:
@@ -38,7 +39,7 @@ async def test_snapshot_tools_are_listed_before_anyone_connects():
                                     ("get_me", "issue_read", "create_issue")])
     async with client(gw) as c:
         # create_issue is in the snapshot but not allowlisted.
-        assert await _names(c) == ["connect_github", "github_get_me", "github_issue_read"]
+        assert await _names(c) == [*ACCOUNT, "github_get_me", "github_issue_read"]
 
 
 @pytest.mark.parametrize("mode", ERAS)
@@ -75,7 +76,7 @@ async def test_allowlisted_tool_missing_from_snapshot_is_added_and_announced(cap
     messages = ListChanged()
     async with client(gw, messages=messages) as c:
         await c.call_tool("connect_github", {})
-        assert await _names(c) == ["connect_github", "github_get_me", "github_issue_read"]
+        assert await _names(c) == [*ACCOUNT, "github_get_me", "github_issue_read"]
     assert _catalog_events(caplog)[-1]["added"] == ["issue_read"]
     assert messages.count == 1
 
@@ -86,7 +87,7 @@ async def test_tool_the_vendor_dropped_stays_listed_and_is_reported(caplog):
                           tools=("get_me", "list_issues"))
     async with client(gw) as c:
         await c.call_tool("connect_github", {})
-        assert await _names(c) == ["connect_github", "github_get_me", "github_list_issues"]
+        assert await _names(c) == [*ACCOUNT, "github_get_me", "github_list_issues"]
     assert _catalog_events(caplog)[-1]["missing"] == ["list_issues"]
 
 
@@ -95,7 +96,7 @@ async def test_tool_the_vendor_dropped_stays_listed_and_is_reported(caplog):
 async def test_starts_with_connect_github_only():
     gw, *_ = make_gateway()
     async with client(gw) as c:
-        assert await _names(c) == ["connect_github"]
+        assert await _names(c) == ACCOUNT
 
 
 @pytest.mark.parametrize("mode", ERAS)
@@ -106,7 +107,7 @@ async def test_connect_loads_allowlisted_tools_and_announces_them(mode):
         r = await c.call_tool("connect_github", {})
         assert "2 GitHub tools" in r.content[0].text
         # create_issue exists upstream but is not allowlisted.
-        assert await _names(c) == ["connect_github", "github_get_me", "github_issue_read"]
+        assert await _names(c) == [*ACCOUNT, "github_get_me", "github_issue_read"]
     assert messages.count == 1
     assert upstream.lists == 1
 
@@ -260,8 +261,9 @@ async def test_every_upstream_is_listed_with_its_prefix():
     async with client(gw) as c:
         await c.call_tool("connect_linear", {})
         names = await _names(c)
-    assert names == ["connect_github", "connect_linear", "github_get_me",
-                     "linear_get_issue", "linear_list_issues"]     # save_issue stays hidden
+    assert names == ["connect_github", "connect_linear", "disconnect_github",
+                     "disconnect_linear", "github_get_me", "linear_get_issue",
+                     "linear_list_issues"]                         # save_issue stays hidden
 
 
 async def test_connections_are_per_upstream():
@@ -318,3 +320,54 @@ async def test_upstream_error_detail_is_logged_without_the_token(caplog):
     event = [json.loads(m) for m in caplog.messages if '"upstream-error"' in m][-1]
     assert event["detail"] == "server said no to <token>"
     assert VENDOR_TOKEN not in caplog.text
+
+
+# --------------------------------------------------------------- disconnect
+
+async def test_disconnect_revokes_and_the_next_call_asks_to_connect(caplog):
+    caplog.set_level(logging.INFO, logger="mcp_gateway")
+    gw, hub, broker, _ = make_gateway()
+    seen: list = []
+    async with client(gw, seen=seen, action="decline") as c:
+        r = await c.call_tool("disconnect_github", {})
+        after = await c.call_tool("connect_github", {}, raise_on_error=False)
+    assert "GitHub is disconnected" in r.content[0].text
+    assert broker.disconnects == ["github"] and hub.seen[-1] == MCP_TOKEN
+    assert after.is_error and [p.url for p in seen] == [CONSENT_URL]
+    [event] = [json.loads(m) for m in caplog.messages if '"gateway.disconnect"' in m]
+    assert (event["upstream"], event["sub"], event["outcome"]) == ("github", "alice", "revoked")
+
+
+@pytest.mark.parametrize("outcome, text", [
+    ("not-connected", "GitHub was not connected"),
+    ("unsupported", "remove the app's access in your GitHub account settings"),
+    ("pending", "The broker keeps retrying"),
+])
+async def test_disconnect_outcomes_are_explained(outcome, text):
+    gw, _, broker, _ = make_gateway()
+    broker.disconnect_outcome = outcome
+    async with client(gw) as c:
+        r = await c.call_tool("disconnect_github", {})
+    assert text in r.content[0].text
+
+
+@pytest.mark.parametrize("error, text", [
+    (Unavailable("broker answered 503 vault-unavailable"), "retry shortly"),
+    (HandoffError("broker refused the disconnect (403 forbidden)"),
+     "gateway configuration problem"),
+])
+async def test_disconnect_failures_are_errors(error, text):
+    gw, _, broker, _ = make_gateway()
+    broker.error = error
+    async with client(gw) as c:
+        r = await c.call_tool("disconnect_github", {}, raise_on_error=False)
+    assert r.is_error and text in r.content[0].text
+
+
+async def test_disconnect_is_marked_destructive_and_touches_only_its_upstream():
+    gw, _, broker, _ = make_gateway(with_linear=True)
+    async with client(gw) as c:
+        tool = next(t for t in await c.list_tools() if t.name == "disconnect_linear")
+        await c.call_tool("disconnect_linear", {})
+    assert tool.annotations.destructive_hint and not tool.annotations.read_only_hint
+    assert broker.disconnects == ["linear"] and "github" in broker.connected_vendors

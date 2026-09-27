@@ -8,22 +8,24 @@ session. A missing vendor connection becomes a URL-mode elicitation
 pointing at the broker's consent link; an outage becomes a retryable error,
 never "connect".
 
-Tools: for each upstream, `connect_<name>` plus its allowlisted tools
-exposed as `<name>_<tool>`, listed from startup with the schemas in a
-checked-in snapshot so no client ever needs a list-changed notification
-(2026-07-28 clients only take those on subscriptions/listen). The first
-connected call per upstream re-reads the live schemas and logs any drift,
-but a snapshotted tool keeps its snapshot: the list is shared by every
-user, and a vendor may personalize what it lists (Cloudflare writes the
-signed-in user's email and account id into a description). Vendor tokens are used for one upstream
-call and never logged, cached, or returned.
+Tools: for each upstream, `connect_<name>`, `disconnect_<name>`, and its
+allowlisted tools exposed as `<name>_<tool>`, listed from startup with the
+schemas in a checked-in snapshot so no client ever needs a list-changed
+notification (2026-07-28 clients only take those on subscriptions/listen).
+The first `connect_<name>` per upstream and process re-reads the live
+schemas and logs any drift, but a snapshotted tool keeps its snapshot: the
+list is shared by every user, and a vendor may personalize what it lists
+(Cloudflare writes the signed-in user's email and account id into a
+description). Vendor tokens are used for one upstream call and never
+logged, cached, or returned.
 """
 import asyncio
 import json
 import logging
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx
@@ -53,6 +55,32 @@ POLL_S = 2.0
 def audit(event: str, **fields) -> None:
     """One JSON line per decision: ids and outcomes only, never tokens."""
     log.info(json.dumps({"event": event, "ts": round(time.time(), 3), **fields}))
+
+
+@contextmanager
+def _dependency_errors(who: dict) -> Iterator[None]:
+    """Hub or broker trouble becomes a tool error that never says "connect":
+    a refused handoff is a configuration problem, an outage is retryable."""
+    try:
+        yield
+    except HandoffError as exc:
+        audit("gateway.call", **who, outcome="error", reason=str(exc))
+        raise ToolError("the gateway could not establish your identity with the "
+                        "token broker; this is a gateway configuration problem") from exc
+    except Unavailable as exc:
+        audit("gateway.call", **who, outcome="unavailable", reason=str(exc))
+        raise ToolError(f"a dependency is unavailable ({exc}); retry shortly") from exc
+
+
+DISCONNECTED = {
+    "revoked": "{name} is disconnected: {name} was asked to cancel the token, and the "
+               "broker deleted its copy. Run connect_{n} to connect again.",
+    "unsupported": "{name} is disconnected here, but {name} can't cancel tokens remotely. "
+                   "To be sure, also remove the app's access in your {name} account settings.",
+    "not-connected": "{name} was not connected.",
+    "pending": "{name} could not be reached to cancel the token. The broker keeps retrying; "
+               "until it succeeds, {name} can't be used here.",
+}
 
 
 def _mcp_token() -> tuple[str, str]:
@@ -95,7 +123,7 @@ class Gateway:
         raw, sub = self.current_token()
         who = {"upstream": route.spec.name, "tool": tool, "sub": sub}
         name = route.spec.display_name
-        try:
+        with _dependency_errors(who):
             hub_jwt = await self.hub.exchange(raw)
             era = ctx.request_context.protocol_version
             answer = (ctx.input_responses or {}).get(CONSENT_KEY) if era >= MRTR_ERA else None
@@ -110,13 +138,18 @@ class Gateway:
                                 "try again later")
             return await self._ask_to_connect(ctx, era, hub_jwt, resolved.consent_url,
                                               route, who)
-        except HandoffError as exc:
-            audit("gateway.call", **who, outcome="error", reason=str(exc))
-            raise ToolError("the gateway could not establish your identity with the "
-                            "token broker; this is a gateway configuration problem") from exc
-        except Unavailable as exc:
-            audit("gateway.call", **who, outcome="unavailable", reason=str(exc))
-            raise ToolError(f"a dependency is unavailable ({exc}); retry shortly") from exc
+
+    async def disconnect(self, route: Route) -> str:
+        """Disconnect the caller's account for this route's vendor: the broker
+        asks the vendor to cancel the token, then deletes its copy."""
+        raw, sub = self.current_token()
+        name, n = route.spec.display_name, route.spec.name
+        who = {"upstream": n, "tool": f"disconnect_{n}", "sub": sub}
+        with _dependency_errors(who):
+            outcome = await self.broker.disconnect(await self.hub.exchange(raw),
+                                                   route.spec.vendor)
+        audit("gateway.disconnect", **who, outcome=outcome)
+        return DISCONNECTED[outcome].format(name=name, n=n)
 
     async def _ask_to_connect(self, ctx: Context, era: str, hub_jwt: str, url: str,
                               route: Route, who: dict) -> str | mcp_types.InputRequiredResult:
@@ -245,6 +278,16 @@ def _connect_tool(gateway: Gateway, route: Route):
     return connect
 
 
+def _disconnect_tool(gateway: Gateway, route: Route):
+    async def disconnect() -> str:
+        return await gateway.disconnect(route)
+    return disconnect
+
+
+DISCONNECT_ANNOTATIONS = mcp_types.ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True)
+
+
 def build_server(gateway: Gateway, auth=None) -> FastMCP:
     mcp = FastMCP("vtb-mcp-gateway", auth=auth, on_duplicate="replace")
     gateway.mcp = mcp
@@ -254,6 +297,11 @@ def build_server(gateway: Gateway, auth=None) -> FastMCP:
                  description=f"Connect your {name} account (a browser opens if it isn't "
                              f"connected yet). The {name} tools start with "
                              f"{route.spec.name}_.")
+        mcp.tool(_disconnect_tool(gateway, route), name=f"disconnect_{route.spec.name}",
+                 description=f"Disconnect your {name} account: {name} is asked to cancel "
+                             f"the token, and the broker deletes its copy. Run "
+                             f"connect_{route.spec.name} to connect again.",
+                 annotations=DISCONNECT_ANNOTATIONS)
         for tool in route.spec.snapshot:
             if tool.name in route.spec.tools:
                 gateway.register(route, tool)
