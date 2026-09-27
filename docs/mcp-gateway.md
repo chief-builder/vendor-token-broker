@@ -94,9 +94,9 @@ Standards: token exchange is RFC 8693. The `resource` parameter is RFC 8707. The
 
 Every tool is named `<service>_<tool>`, for example `github_get_me` or `linear_list_issues`. The gateway strips the prefix before calling the service. Tools that change things, such as GitHub's `create_issue` or Linear's `save_issue`, are never listed.
 
-**All of these are listed from the moment the gateway starts.** Their descriptions come from a saved copy of each service's tool list (`src/mcp_gateway/snapshots/<service>.json`). The first time someone with a connected account uses a service after a restart, the gateway reads that service's live tool list. The service stays the source of truth, and the gateway writes a `gateway.catalog` log line for it:
+**All of these are listed from the moment the gateway starts.** Their descriptions come from a saved copy of each service's tool list (`src/mcp_gateway/snapshots/<service>.json`). The first time someone with a connected account uses a service after a restart, the gateway reads that service's live tool list and writes a `gateway.catalog` log line for it:
 
-- `changed`: the service describes the tool differently now, so the gateway switches to its version.
+- `changed`: the service describes the tool differently now. The gateway keeps listing the saved copy, because the list is shared by every user and a service may personalize what it returns (Cloudflare puts the signed-in user's email and account ID in a description). Refresh the saved copy when you see this.
 - `added`: allowed but missing from the saved copy, so the gateway adds it and tells clients the list changed.
 - `missing`: the service no longer offers it. It stays listed, and calling it returns the service's error.
 

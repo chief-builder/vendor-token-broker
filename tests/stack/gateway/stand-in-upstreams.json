@@ -31,14 +31,16 @@
       "url": "http://mock-mcp:8330/atlassian/mcp",
       "tools": ["getJiraIssue", "searchJiraIssuesUsingJql", "getConfluenceContent",
                 "searchConfluence", "executeRead", "discover", "atlassianUserInfo",
-                "getAccessibleAtlassianResources"]
+                "getAccessibleAtlassianResources"],
+      "snapshot": "atlassian.json"
     },
     {
       "name": "cloudflare",
       "display_name": "Cloudflare",
       "vendor": "mockhub-cloudflare",
       "url": "http://mock-mcp:8330/cloudflare/mcp",
-      "tools": ["search", "docs", "execute"]
+      "tools": ["search", "docs", "execute"],
+      "snapshot": "cloudflare.json"
     }
   ]
 }

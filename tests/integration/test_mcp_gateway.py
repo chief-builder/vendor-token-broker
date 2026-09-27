@@ -43,10 +43,9 @@ LINEAR = {"linear_" + t for t in (
 ATLASSIAN = {"atlassian_" + t for t in (
     "getJiraIssue", "searchJiraIssuesUsingJql", "getConfluenceContent", "searchConfluence",
     "executeRead", "discover", "atlassianUserInfo", "getAccessibleAtlassianResources")}
-# Atlassian and Cloudflare have no snapshot yet: their tools are listed once
-# someone connects (the catalog load), so only their connect tools are here.
-ALL_TOOLS = GITHUB | LINEAR | {"connect_github", "connect_linear", "connect_atlassian",
-                               "connect_cloudflare"}
+CLOUDFLARE = {"cloudflare_" + t for t in ("search", "docs", "execute")}
+ALL_TOOLS = GITHUB | LINEAR | ATLASSIAN | CLOUDFLARE | {
+    "connect_github", "connect_linear", "connect_atlassian", "connect_cloudflare"}
 OWN_SIGN_IN = ("mockhub-atlassian", "mockhub-cloudflare")
 STAND_IN = "/config/stand-in-upstreams.json"
 
@@ -111,7 +110,8 @@ def _last_call(upstream: str) -> dict:
 
 async def _call(username: str, tool: str, args: dict | None = None, **kw):
     async with gateway_client(username, **kw) as c:
-        return await c.call_tool(tool, args or {}, raise_on_error=False)
+        await c.list_tools()     # as real clients do: 2026-07-28 mirrors x-mcp-header
+        return await c.call_tool(tool, args or {}, raise_on_error=False)   # args from it
 
 
 # ------------------------------------------------------------- first contact
@@ -205,7 +205,7 @@ async def test_each_upstream_gets_its_own_token_and_policy():
 
 # ------------------------------------------ servers with their own sign-in
 
-async def test_atlassian_tools_are_listed_once_connected():
+async def test_connect_atlassian_uses_its_own_sign_in():
     user = User("alice")
     async with gateway_client("alice", user) as c:
         r = await c.call_tool("connect_atlassian", {}, raise_on_error=False)
@@ -214,7 +214,7 @@ async def test_atlassian_tools_are_listed_once_connected():
     assert "Atlassian is connected; 8 Atlassian tools" in r.content[0].text
     assert [p.url.split("?")[0] for p in user.prompts] == \
         [f"{BROKER_KC}/v1/authorize/mockhub-atlassian"]
-    assert ATLASSIAN <= names and "atlassian_executeWrite" not in names
+    assert names == ALL_TOOLS                        # atlassian_executeWrite stays hidden
 
 
 async def test_atlassian_calls_keep_working_across_refreshes():

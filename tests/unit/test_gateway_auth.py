@@ -1,6 +1,7 @@
 """Gateway configuration and its OAuth protected-resource wiring."""
 import json
 import logging
+import re
 import time
 
 import jwt
@@ -124,7 +125,21 @@ def test_bundled_upstreams_are_read_only():
 def test_bundled_snapshots_match_their_allowlists_and_are_read_only():
     for u in load_upstreams():
         assert [t.name for t in u.snapshot] == list(u.tools), u.name
+        if u.name == "cloudflare":
+            # search/docs/execute run code against the API and aren't marked
+            # read-only; the broker's read-only scope ceiling is what holds.
+            continue
         assert all(t.annotations and t.annotations.read_only_hint for t in u.snapshot), u.name
+
+
+def test_bundled_snapshots_hold_no_personal_data():
+    """Snapshots are fetched with someone's token, and some vendors
+    personalize descriptions (Cloudflare: email and account id)."""
+    for u in load_upstreams():
+        for t in u.snapshot:
+            text = json.dumps(t.model_dump(mode="json"))
+            assert not re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text), (u.name, t.name)
+            assert not re.search(r"\b[0-9a-f]{32}\b", text), (u.name, t.name)
 
 
 def test_enabled_upstreams_filter_the_list():

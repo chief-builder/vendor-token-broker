@@ -12,8 +12,10 @@ Tools: for each upstream, `connect_<name>` plus its allowlisted tools
 exposed as `<name>_<tool>`, listed from startup with the schemas in a
 checked-in snapshot so no client ever needs a list-changed notification
 (2026-07-28 clients only take those on subscriptions/listen). The first
-connected call per upstream re-reads the live schemas, which stay
-authoritative, and logs any drift. Vendor tokens are used for one upstream
+connected call per upstream re-reads the live schemas and logs any drift,
+but a snapshotted tool keeps its snapshot: the list is shared by every
+user, and a vendor may personalize what it lists (Cloudflare writes the
+signed-in user's email and account id into a description). Vendor tokens are used for one upstream
 call and never logged, cached, or returned.
 """
 import asyncio
@@ -170,10 +172,11 @@ class Gateway:
 
     async def load_catalog(self, ctx: Context, route: Route, vendor_token: str) -> int:
         """Reconcile this route's listed tools with the vendor's live schemas,
-        once per process: re-register tools whose schema drifted from the
-        snapshot, add allowlisted tools the snapshot lacked, and report ones
-        the vendor no longer lists (they stay listed; calling them returns the
-        vendor's error). Returns how many of the route's tools are listed."""
+        once per process: add allowlisted tools the snapshot lacked, and
+        report tools whose live schema differs from the snapshot (they keep
+        the snapshot, never one user's live version) and ones the vendor no
+        longer lists (they stay listed; calling them returns the vendor's
+        error). Returns how many of the route's tools are listed."""
         async with route.lock:
             if not route.catalog_loaded:
                 allowed = set(route.spec.tools)
@@ -184,7 +187,7 @@ class Gateway:
                 changed = sorted(n for n in set(live) & set(listed)
                                  if (live[n].description or "", live[n].input_schema)
                                  != (listed[n].description, listed[n].parameters))
-                for name in added + changed:
+                for name in added:
                     self.register(route, live[name])
                 missing = sorted(allowed - set(live))
                 audit("gateway.catalog", upstream=route.spec.name, listed=sorted(live),

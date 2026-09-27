@@ -79,7 +79,9 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   loading/validation). `snapshots/<name>.json` pin each allowlist's schemas
   so clients see them from startup (2026-07-28 clients only take
   list-changed on subscriptions/listen, which FastMCP 4.0.10 lacks); the
-  first connected call per upstream re-reads live schemas and logs drift.
+  first connected call per upstream re-reads live schemas and logs drift
+  (never adopts it: the list is shared, and Cloudflare personalizes
+  descriptions with the user's email and account id; scrub snapshots too).
   Refresh with `UPSTREAM_TOKEN=... .venv/bin/python tools/refresh-tool-snapshot.py <name>`
 - `tests/stack/` — self-contained compose: OpenBao (+ init writing a
   scoped token, never root), redis, mock-vendor (hostile: 60s tokens,
@@ -95,8 +97,7 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   upstream, auth scheme, headers and token fingerprints) and mcp-gateway
   (:8500, stand-in upstreams file `tests/stack/gateway/stand-in-upstreams.json`:
   github -> vendor mockhub, linear -> vendor mockhub-jwt, atlassian ->
-  mockhub-atlassian, cloudflare -> mockhub-cloudflare; the last two have no
-  snapshot yet, so their tools are listed only after someone connects)
+  mockhub-atlassian, cloudflare -> mockhub-cloudflare)
 - `registry.example.json` + `schemas/vendor-registry.schema.json` —
   registry changes are reviewed changes; `scope_ceiling` is a security
   boundary (for Atlassian and Cloudflare it is the only thing keeping the

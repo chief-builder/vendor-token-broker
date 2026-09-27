@@ -6,10 +6,12 @@ Runs only when the gateway serves the bundled upstreams (the real servers):
       up -d --no-deps --wait mcp-gateway
     pytest tests/integration/test_external_mcp_servers.py -m external
 
-Each server needs its OAuth app configured on the stack (GITHUB_CLIENT_ID /
-LINEAR_CLIENT_ID with secrets in tests/stack/.env, callback
-http://localhost:8600/v1/callback/<vendor>). The first run skips each server
-with a link to connect it once in a browser (sign in as alice/alice)."""
+Each server needs its OAuth client configured on the stack (GITHUB_CLIENT_ID /
+LINEAR_CLIENT_ID / ATLASSIAN_CLIENT_ID / CLOUDFLARE_CLIENT_ID with secrets in
+tests/stack/.env, callback http://localhost:8600/v1/callback/<vendor>; the
+Atlassian and Cloudflare ones from tools/register-mcp-client.py). The first
+run skips each server with a link to connect it once in a browser (sign in
+as alice/alice)."""
 import subprocess
 
 import pytest
@@ -22,6 +24,8 @@ pytestmark = [pytest.mark.gateway, pytest.mark.external]
 SERVERS = {
     "github": ("get_me", {}, '"login"'),
     "linear": ("list_teams", {}, '"teams"'),
+    "atlassian": ("atlassianUserInfo", {}, '"accountId"'),
+    "cloudflare": ("docs", {"query": "Workers KV"}, "developers.cloudflare.com"),
 }
 
 

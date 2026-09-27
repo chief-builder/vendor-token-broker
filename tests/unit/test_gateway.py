@@ -54,7 +54,9 @@ async def test_snapshot_matching_upstream_changes_nothing(mode, caplog):
     assert messages.count == 0
 
 
-async def test_drifted_schema_is_replaced_by_the_live_one(caplog):
+async def test_drifted_schema_is_reported_but_the_snapshot_stays_listed(caplog):
+    """The list is shared by every user: one user's live schema (which a
+    vendor may personalize) never replaces the snapshot."""
     caplog.set_level(logging.INFO, logger="mcp_gateway")
     gw, *_ = make_gateway(snapshot=[upstream_tool("get_me"),
                                     upstream_tool("issue_read", param="old_param")])
@@ -62,9 +64,9 @@ async def test_drifted_schema_is_replaced_by_the_live_one(caplog):
     async with client(gw, messages=messages) as c:
         await c.call_tool("connect_github", {})
         tool = next(t for t in await c.list_tools() if t.name == "github_issue_read")
-    assert list(tool.input_schema["properties"]) == ["owner"]
+    assert list(tool.input_schema["properties"]) == ["old_param"]
     assert _catalog_events(caplog)[-1]["changed"] == ["issue_read"]
-    assert messages.count == 0                    # same names: nothing to announce
+    assert messages.count == 0
 
 
 async def test_allowlisted_tool_missing_from_snapshot_is_added_and_announced(caplog):
