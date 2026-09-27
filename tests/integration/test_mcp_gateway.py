@@ -345,9 +345,12 @@ def test_no_token_material_in_any_container_log():
         r = pool.submit(asyncio.run, _call("alice", "github_get_me", token=mcp)).result()
         r2 = pool.submit(asyncio.run, _call("alice", "linear_list_issues", token=mcp,
                                             user=User("alice"))).result()
-    assert not r.is_error and not r2.is_error
+        r3 = pool.submit(asyncio.run, _call("alice", "atlassian_atlassianUserInfo", token=mcp,
+                                            user=User("alice"))).result()
+    assert not r.is_error and not r2.is_error and not r3.is_error
     hub = hub_jwt("alice")
     github = resolve_kc(hub).json()["access_token"]
     linear = resolve_kc(hub, "mockhub-jwt").json()["access_token"]
-    for secret in (mcp, hub, github, linear):
+    atlassian = resolve_kc(hub, "mockhub-atlassian").json()["access_token"]
+    for secret in (mcp, hub, github, linear, atlassian):
         assert grep_container_logs(secret, since="10m") == {}
