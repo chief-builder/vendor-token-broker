@@ -1,33 +1,25 @@
-"""The vendor's MCP server. Every operation opens a fresh session with the
+"""A vendor's MCP server. Every operation opens a fresh session with the
 calling user's vendor token and closes it: nothing is kept between calls.
-GitHub negotiates at most 2025-11-25, so the handshake era is pinned."""
+The protocol era is set per upstream (GitHub and Linear negotiate at most
+2025-11-25, so they pin the handshake era)."""
 from typing import Any
 
 import mcp_types
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-from .config import GatewayConfig
+from .config import UpstreamSpec
 
 
 class Upstream:
-    def __init__(self, cfg: GatewayConfig):
-        self._cfg = cfg
-
-    def _headers(self, token: str) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {token}"}
-        if self._cfg.upstream_readonly:
-            headers["X-MCP-Readonly"] = "true"
-        if self._cfg.upstream_lockdown:
-            headers["X-MCP-Lockdown"] = "true"
-        if self._cfg.upstream_toolsets:
-            headers["X-MCP-Toolsets"] = ",".join(self._cfg.upstream_toolsets)
-        return headers
+    def __init__(self, spec: UpstreamSpec, timeout_s: float):
+        self.spec, self._timeout = spec, timeout_s
 
     def _client(self, token: str) -> Client:
-        return Client(StreamableHttpTransport(self._cfg.upstream_url,
-                                              headers=self._headers(token)),
-                      mode="legacy", timeout=self._cfg.http_timeout_s)
+        headers = {**self.spec.headers,
+                   "Authorization": f"{self.spec.auth_scheme} {token}"}
+        return Client(StreamableHttpTransport(self.spec.url, headers=headers),
+                      mode=self.spec.protocol, timeout=self._timeout)
 
     async def list_tools(self, token: str) -> list[mcp_types.Tool]:
         async with self._client(token) as up:

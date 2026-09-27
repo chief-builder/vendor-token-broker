@@ -10,8 +10,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from gateway_helpers import make_gateway, make_gateway_config
 from starlette.testclient import TestClient
 
-from mcp_gateway.config import ConfigError, GatewayConfig
+from mcp_gateway.config import ConfigError, GatewayConfig, UpstreamSpec, load_upstreams
 from mcp_gateway.server import AuditingJWTVerifier, build_app, build_auth
+from mcp_gateway.upstream import Upstream
 
 CFG = make_gateway_config()
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -105,28 +106,82 @@ ENV = {"GATEWAY_PUBLIC_URL": "http://localhost:8500", "HUB_ISSUER": "http://h/re
        "BROKER_URL": "http://broker:8300/"}
 
 
-def test_config_defaults_are_read_only_github():
+def test_bundled_upstreams_are_read_only_github_and_linear():
     cfg = GatewayConfig.from_env(ENV)
     assert cfg.resource_url == "http://localhost:8500/mcp"
     assert cfg.broker_url == "http://broker:8300"
-    assert cfg.upstream_readonly and cfg.upstream_lockdown
-    assert "issue_read" in cfg.upstream_tools and cfg.vendor == "github"
+    upstreams = {u.name: u for u in cfg.upstreams}
+    assert list(upstreams) == ["github", "linear"]
+    assert upstreams["github"].headers["X-MCP-Readonly"] == "true"
+    assert upstreams["github"].headers["X-MCP-Lockdown"] == "true"
+    assert upstreams["linear"].url.endswith("/mcp/readonly")
 
 
-def test_config_reads_overrides():
-    cfg = GatewayConfig.from_env({**ENV, "UPSTREAM_TOOLS": "get_me, list_issues",
-                                  "UPSTREAM_READONLY": "false", "MIN_TTL_S": "60"})
-    assert cfg.upstream_tools == ("get_me", "list_issues")
-    assert cfg.upstream_readonly is False and cfg.min_ttl_s == 60
+def test_bundled_snapshots_match_their_allowlists_and_are_read_only():
+    for u in load_upstreams():
+        assert [t.name for t in u.snapshot] == list(u.tools), u.name
+        assert all(t.annotations and t.annotations.read_only_hint for t in u.snapshot), u.name
+
+
+def test_enabled_upstreams_filter_the_list():
+    cfg = GatewayConfig.from_env({**ENV, "GATEWAY_ENABLED_UPSTREAMS": "linear",
+                                  "MIN_TTL_S": "60"})
+    assert [u.name for u in cfg.upstreams] == ["linear"] and cfg.min_ttl_s == 60
+
+
+def _write(tmp_path, upstreams: list[dict], snapshot: dict | None = None) -> str:
+    if snapshot is not None:
+        (tmp_path / "snap.json").write_text(json.dumps(snapshot))
+    path = tmp_path / "upstreams.json"
+    path.write_text(json.dumps({"upstreams": upstreams}))
+    return str(path)
+
+
+UP = {"name": "sentry", "display_name": "Sentry", "vendor": "sentry",
+      "url": "https://mcp.sentry.dev/mcp", "tools": ["search_issues"],
+      "auth_scheme": "Sentry-Bearer"}
+
+
+def test_custom_upstreams_file_with_a_relative_snapshot(tmp_path):
+    tool = {"name": "search_issues", "description": "d", "inputSchema": {"type": "object"}}
+    path = _write(tmp_path, [{**UP, "snapshot": "./snap.json"}], {"tools": [tool]})
+    [u] = GatewayConfig.from_env({**ENV, "GATEWAY_UPSTREAMS": path}).upstreams
+    assert (u.name, u.auth_scheme, [t.name for t in u.snapshot]) == \
+        ("sentry", "Sentry-Bearer", ["search_issues"])
+
+
+@pytest.mark.parametrize("upstreams, message", [
+    ([UP, UP], "unique"),
+    ([{**UP, "name": "Sentry"}], "lowercase"),
+    ([{**UP, "name": "my_sentry"}], "lowercase"),
+    ([{**UP, "tools": []}], "at least one tool"),
+    ([{**UP, "auth_scheme": "Basic"}], "auth_scheme"),
+    ([{**UP, "protocol": "2024-11-05"}], "protocol"),
+    ([{**UP, "headers": {"authorization": "x"}}], "Authorization"),
+    ([{k: v for k, v in UP.items() if k != "vendor"}], "vendor"),
+    ([], "no upstreams"),
+])
+def test_bad_upstreams_files_fail_fast(tmp_path, upstreams, message):
+    path = _write(tmp_path, upstreams)
+    with pytest.raises(ConfigError, match=message):
+        GatewayConfig.from_env({**ENV, "GATEWAY_UPSTREAMS": path})
 
 
 @pytest.mark.parametrize("env, message", [
     ({k: v for k, v in ENV.items() if k != "HUB_ISSUER"}, "HUB_ISSUER"),
     ({**ENV, "HUB_ALGORITHM": "RS256"}, "not allowed"),
-    ({**ENV, "UPSTREAM_TOOLS": " , "}, "at least one tool"),
-    ({**ENV, "UPSTREAM_READONLY": "maybe"}, "true or false"),
     ({**ENV, "MIN_TTL_S": "soon"}, "invalid literal"),
+    ({**ENV, "GATEWAY_ENABLED_UPSTREAMS": "github,jira"}, "unknown upstreams"),
+    ({**ENV, "GATEWAY_UPSTREAMS": "/nonexistent/upstreams.json"}, "upstreams file"),
 ])
 def test_config_fails_fast(env, message):
     with pytest.raises(ConfigError, match=message):
         GatewayConfig.from_env(env)
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "Sentry-Bearer"])
+def test_upstream_sends_its_scheme_and_headers(scheme):
+    spec = UpstreamSpec(name="x", display_name="X", vendor="x", url="http://x/mcp",
+                        tools=("t",), auth_scheme=scheme, headers={"X-MCP-Readonly": "true"})
+    headers = Upstream(spec, 5)._client("tok").transport.headers
+    assert headers == {"X-MCP-Readonly": "true", "Authorization": f"{scheme} tok"}

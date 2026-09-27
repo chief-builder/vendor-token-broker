@@ -1,0 +1,28 @@
+{
+  "upstreams": [
+    {
+      "name": "github",
+      "display_name": "GitHub",
+      "vendor": "github",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "X-MCP-Readonly": "true",
+        "X-MCP-Lockdown": "true",
+        "X-MCP-Toolsets": "repos,issues,pull_requests,context"
+      },
+      "tools": ["get_me", "search_repositories", "get_file_contents", "list_issues",
+                "issue_read", "list_pull_requests", "pull_request_read"],
+      "snapshot": "github.json"
+    },
+    {
+      "name": "linear",
+      "display_name": "Linear",
+      "vendor": "linear",
+      "url": "https://mcp.linear.app/mcp/readonly",
+      "tools": ["list_issues", "get_issue", "list_comments", "list_projects", "get_project",
+                "list_cycles", "list_teams", "get_team", "list_issue_statuses",
+                "list_users", "get_user", "list_documents", "get_document"],
+      "snapshot": "linear.json"
+    }
+  ]
+}

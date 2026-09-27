@@ -7,9 +7,11 @@ import logging
 import pytest
 from gateway_helpers import (
     CONSENT_URL,
+    CONSENT_URLS,
     HUB_JWT,
     MCP_TOKEN,
     VENDOR_TOKEN,
+    VENDOR_TOKENS,
     HandoffError,
     ListChanged,
     Unavailable,
@@ -17,9 +19,6 @@ from gateway_helpers import (
     make_gateway,
     upstream_tool,
 )
-
-from mcp_gateway.config import DEFAULT_TOOLS
-from mcp_gateway.server import load_snapshot
 
 ERAS = ["legacy", "2026-07-28"]
 
@@ -39,14 +38,14 @@ async def test_snapshot_tools_are_listed_before_anyone_connects():
                                     ("get_me", "issue_read", "create_issue")])
     async with client(gw) as c:
         # create_issue is in the snapshot but not allowlisted.
-        assert await _names(c) == ["connect_github", "get_me", "issue_read"]
+        assert await _names(c) == ["connect_github", "github_get_me", "github_issue_read"]
 
 
 @pytest.mark.parametrize("mode", ERAS)
 async def test_snapshot_matching_upstream_changes_nothing(mode, caplog):
     caplog.set_level(logging.INFO, logger="mcp_gateway")
     gw, *_ = make_gateway(snapshot=[upstream_tool("get_me"), upstream_tool("issue_read")],
-                          upstream_tools=("get_me", "issue_read"))
+                          tools=("get_me", "issue_read"))
     messages = ListChanged()
     async with client(gw, mode=mode, messages=messages) as c:
         await c.call_tool("connect_github", {})
@@ -62,7 +61,7 @@ async def test_drifted_schema_is_replaced_by_the_live_one(caplog):
     messages = ListChanged()
     async with client(gw, messages=messages) as c:
         await c.call_tool("connect_github", {})
-        tool = next(t for t in await c.list_tools() if t.name == "issue_read")
+        tool = next(t for t in await c.list_tools() if t.name == "github_issue_read")
     assert list(tool.input_schema["properties"]) == ["owner"]
     assert _catalog_events(caplog)[-1]["changed"] == ["issue_read"]
     assert messages.count == 0                    # same names: nothing to announce
@@ -74,7 +73,7 @@ async def test_allowlisted_tool_missing_from_snapshot_is_added_and_announced(cap
     messages = ListChanged()
     async with client(gw, messages=messages) as c:
         await c.call_tool("connect_github", {})
-        assert await _names(c) == ["connect_github", "get_me", "issue_read"]
+        assert await _names(c) == ["connect_github", "github_get_me", "github_issue_read"]
     assert _catalog_events(caplog)[-1]["added"] == ["issue_read"]
     assert messages.count == 1
 
@@ -82,21 +81,14 @@ async def test_allowlisted_tool_missing_from_snapshot_is_added_and_announced(cap
 async def test_tool_the_vendor_dropped_stays_listed_and_is_reported(caplog):
     caplog.set_level(logging.INFO, logger="mcp_gateway")
     gw, *_ = make_gateway(snapshot=[upstream_tool(n) for n in ("get_me", "list_issues")],
-                          upstream_tools=("get_me", "list_issues"))
+                          tools=("get_me", "list_issues"))
     async with client(gw) as c:
         await c.call_tool("connect_github", {})
-        assert await _names(c) == ["connect_github", "get_me", "list_issues"]
+        assert await _names(c) == ["connect_github", "github_get_me", "github_list_issues"]
     assert _catalog_events(caplog)[-1]["missing"] == ["list_issues"]
 
 
-def test_bundled_snapshot_is_exactly_the_default_allowlist():
-    tools = load_snapshot()
-    assert [t.name for t in tools] == list(DEFAULT_TOOLS)
-    assert all(t.annotations and t.annotations.read_only_hint for t in tools)
-    assert load_snapshot("none") == []
-
-
-# ------------------------------------------- no snapshot (UPSTREAM_TOOL_SNAPSHOT=none)
+# ----------------------------------------------------------- no snapshot
 
 async def test_starts_with_connect_github_only():
     gw, *_ = make_gateway()
@@ -112,7 +104,7 @@ async def test_connect_loads_allowlisted_tools_and_announces_them(mode):
         r = await c.call_tool("connect_github", {})
         assert "2 GitHub tools" in r.content[0].text
         # create_issue exists upstream but is not allowlisted.
-        assert await _names(c) == ["connect_github", "get_me", "issue_read"]
+        assert await _names(c) == ["connect_github", "github_get_me", "github_issue_read"]
     assert messages.count == 1
     assert upstream.lists == 1
 
@@ -129,7 +121,7 @@ async def test_upstream_schema_is_exposed():
     gw, *_ = make_gateway()
     async with client(gw) as c:
         await c.call_tool("connect_github", {})
-        tool = next(t for t in await c.list_tools() if t.name == "issue_read")
+        tool = next(t for t in await c.list_tools() if t.name == "github_issue_read")
     assert tool.input_schema["properties"] == {"owner": {"type": "string"}}
 
 
@@ -137,7 +129,7 @@ async def test_forwards_with_the_users_vendor_token():
     gw, hub, _, upstream = make_gateway()
     async with client(gw) as c:
         await c.call_tool("connect_github", {})
-        r = await c.call_tool("issue_read", {"owner": "octo"})
+        r = await c.call_tool("github_issue_read", {"owner": "octo"})
     assert r.content[0].text == "issue_read ok {'owner': 'octo'}"
     assert upstream.calls == [(VENDOR_TOKEN, "issue_read", {"owner": "octo"})]
     assert hub.seen[-1] == MCP_TOKEN          # the MCP token only ever goes to the hub
@@ -186,7 +178,7 @@ async def test_waiting_polls_grants_not_resolve():
     broker.connect_on_poll = True
     async with client(gw) as c:
         await c.call_tool("connect_github", {})
-    assert broker.resolves == 2               # first ask + the final token fetch
+    assert len(broker.resolves) == 2          # first ask + the final token fetch
 
 
 @pytest.mark.parametrize("error, text", [
@@ -231,7 +223,7 @@ async def test_upstream_failures(error, text):
     async with client(gw) as c:
         await c.call_tool("connect_github", {})
         upstream.error = error
-        r = await c.call_tool("get_me", {}, raise_on_error=False)
+        r = await c.call_tool("github_get_me", {}, raise_on_error=False)
     assert r.is_error and text in r.content[0].text
 
 
@@ -241,7 +233,75 @@ async def test_no_token_material_in_logs_or_results(caplog):
     broker.connect_on_poll = True
     async with client(gw) as c:
         texts = [(await c.call_tool("connect_github", {})).content[0].text,
-                 (await c.call_tool("get_me", {})).content[0].text]
+                 (await c.call_tool("github_get_me", {})).content[0].text]
     for secret in (VENDOR_TOKEN, HUB_JWT, MCP_TOKEN):
         assert secret not in caplog.text
         assert all(secret not in t for t in texts)
+
+
+# ---------------------------------------------------------- several upstreams
+
+async def test_every_upstream_is_listed_with_its_prefix():
+    gw, *_ = make_gateway(with_linear=True, snapshot=[upstream_tool("get_me")],
+                          tools=("get_me",))
+    async with client(gw) as c:
+        await c.call_tool("connect_linear", {})
+        names = await _names(c)
+    assert names == ["connect_github", "connect_linear", "github_get_me",
+                     "linear_get_issue", "linear_list_issues"]     # save_issue stays hidden
+
+
+async def test_connections_are_per_upstream():
+    """Connected to GitHub but not Linear: only Linear asks to connect."""
+    gw, _, broker, _ = make_gateway(connected={"github"}, with_linear=True)
+    broker.connect_on_poll = True
+    seen: list = []
+    async with client(gw, seen=seen) as c:
+        await c.call_tool("connect_github", {})
+        assert seen == []
+        r = await c.call_tool("connect_linear", {})
+    assert "Linear is connected" in r.content[0].text
+    assert [(p.url, p.message) for p in seen] == [
+        (CONSENT_URLS["linear"], "Connect your Linear account to continue.")]
+
+
+async def test_each_upstream_gets_only_its_own_vendors_token():
+    gw, _, broker, github = make_gateway(with_linear=True)
+    linear = gw.routes["linear"].client
+    async with client(gw) as c:
+        await c.call_tool("connect_github", {})
+        await c.call_tool("connect_linear", {})
+        await c.call_tool("github_get_me", {})
+        await c.call_tool("linear_list_issues", {"owner": "x"})
+    assert [(t, n) for t, n, _ in github.calls] == [(VENDOR_TOKENS["github"], "get_me")]
+    assert [(t, n) for t, n, _ in linear.calls] == [(VENDOR_TOKENS["linear"], "list_issues")]
+    assert broker.resolves.count("linear") == 2 and broker.resolves.count("github") == 2
+
+
+async def test_catalogs_load_per_upstream():
+    gw, _, _, github = make_gateway(with_linear=True)
+    async with client(gw) as c:
+        await c.call_tool("connect_github", {})
+        assert gw.routes["linear"].client.lists == 0
+        await c.call_tool("connect_linear", {})
+    assert github.lists == 1 and gw.routes["linear"].client.lists == 1
+
+
+async def test_errors_name_the_right_service():
+    gw, *_ = make_gateway(connected={"github"}, with_linear=True)
+    async with client(gw, action=None) as c:
+        r = await c.call_tool("connect_linear", {}, raise_on_error=False)
+    assert r.is_error and r.content[0].text.startswith("Connect Linear first")
+    assert CONSENT_URLS["linear"] in r.content[0].text
+
+
+async def test_upstream_error_detail_is_logged_without_the_token(caplog):
+    caplog.set_level(logging.INFO, logger="mcp_gateway")
+    gw, _, _, upstream = make_gateway()
+    upstream.error = RuntimeError(f"server said no to {VENDOR_TOKEN}")
+    async with client(gw) as c:
+        await c.call_tool("connect_github", {})
+        await c.call_tool("github_get_me", {}, raise_on_error=False)
+    event = [json.loads(m) for m in caplog.messages if '"upstream-error"' in m][-1]
+    assert event["detail"] == "server said no to <token>"
+    assert VENDOR_TOKEN not in caplog.text

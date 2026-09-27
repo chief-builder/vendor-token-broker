@@ -48,7 +48,7 @@ docker compose -f tests/stack/docker-compose.yml --profile multi up -d --build -
 BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
   pytest tests/integration/test_multi_replica.py -q
 
-# MCP gateway end to end: Keycloak hub, broker-kc, mock-github-mcp, mcp-gateway
+# MCP gateway end to end: Keycloak hub, broker-kc, mock-mcp stand-ins, mcp-gateway
 docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
 pytest tests/integration -m gateway -q
 ```
@@ -69,23 +69,28 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   core), `sweeper.py`, `problems.py` (frozen titles), `audit.py`
 - `src/mcp_gateway/` — separate service (own `Dockerfile.gateway`,
   `requirements-gateway.lock`, FastMCP 4.0.10; never in the broker image):
-  MCP server to clients, MCP client to GitHub's MCP server. `server.py`
-  (tools, consent elicitation in both protocol eras, auth wiring),
-  `clients.py` (hub RFC 8693 exchange, broker resolve/grants),
-  `upstream.py` (fresh session per call), `config.py`
-  `github_tools.json` pins the allowlisted tools' schemas so clients see them
-  from startup (2026-07-28 clients only take list-changed on
-  subscriptions/listen, which FastMCP 4.0.10 lacks); the first connected
-  call re-reads live schemas and logs drift. Refresh it with
-  `GITHUB_TOKEN=$(gh auth token) .venv/bin/python tools/refresh-github-tool-snapshot.py`
+  MCP server to clients, MCP client to several vendor MCP servers
+  ("upstreams": GitHub, Linear). `upstreams.json` lists them (name = tool
+  prefix, broker vendor, URL, auth scheme, headers, allowlist, snapshot);
+  tools are exposed as `<name>_<tool>` plus `connect_<name>`. `server.py`
+  (routes, consent elicitation in both protocol eras, auth wiring),
+  `clients.py` (hub RFC 8693 exchange, broker resolve/grants per vendor),
+  `upstream.py` (fresh session per call), `config.py` (upstreams file
+  loading/validation). `snapshots/<name>.json` pin each allowlist's schemas
+  so clients see them from startup (2026-07-28 clients only take
+  list-changed on subscriptions/listen, which FastMCP 4.0.10 lacks); the
+  first connected call per upstream re-reads live schemas and logs drift.
+  Refresh with `UPSTREAM_TOKEN=... .venv/bin/python tools/refresh-tool-snapshot.py <name>`
 - `tests/stack/` — self-contained compose: OpenBao (+ init writing a
   scoped token, never root), redis, mock-vendor (hostile: 60s tokens,
   rotating RTs, replay burns the family), hub-stub (JWKS, good and bad
   hub JWTs via `POST /_test/token`, OIDC login for the consent leg)
   — plus, in the `gateway` profile, Keycloak (real hub), broker-kc (:8600,
-  own OpenBao), mock-github-mcp (:8330, GitHub MCP stand-in accepting only
-  live mockhub tokens; `/_test/state` records per-call headers and token
-  fingerprints) and mcp-gateway (:8500, VENDOR=mockhub)
+  own OpenBao), mock-mcp (:8330, stand-ins at /github/mcp and /linear/mcp
+  accepting only live mock-vendor tokens; `/_test/state` records per-call
+  upstream, auth scheme, headers and token fingerprints) and mcp-gateway
+  (:8500, stand-in upstreams file `tests/stack/gateway/stand-in-upstreams.json`:
+  github -> vendor mockhub, linear -> vendor mockhub-jwt)
 - `registry.example.json` + `schemas/vendor-registry.schema.json` —
   registry changes are reviewed changes; `scope_ceiling` is a security
   boundary

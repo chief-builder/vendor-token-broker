@@ -1,5 +1,5 @@
 """Fakes for the MCP gateway's dependencies (hub, broker, upstream MCP
-server). Uniquely named so bare imports never collide with the
+servers). Uniquely named so bare imports never collide with the
 integration suite's modules."""
 from dataclasses import dataclass, field
 from typing import Any
@@ -10,20 +10,24 @@ from fastmcp.client.elicitation import ElicitResult
 from fastmcp.client.messages import MessageHandler
 
 from mcp_gateway.clients import HandoffError, Resolved, Unavailable
-from mcp_gateway.config import GatewayConfig
-from mcp_gateway.server import Gateway, build_server
+from mcp_gateway.config import GatewayConfig, UpstreamSpec
+from mcp_gateway.server import Gateway, Route, build_server
 
-VENDOR_TOKEN = "ghu_FAKEvendorTOKEN000000000000000000000"
+VENDOR_TOKENS = {"github": "ghu_FAKEvendorTOKEN000000000000000000000",
+                 "linear": "lin_oauth_FAKEvendorTOKEN0000000000000000"}
+VENDOR_TOKEN = VENDOR_TOKENS["github"]
 HUB_JWT = "hub.jwt.for-alice"
 MCP_TOKEN = "mcp.token.for-alice"
-CONSENT_URL = "http://localhost:8600/v1/authorize/github?txn=t1"
+CONSENT_URLS = {v: f"http://localhost:8600/v1/authorize/{v}?txn=t1" for v in VENDOR_TOKENS}
+CONSENT_URL = CONSENT_URLS["github"]
+DISPLAY = {"github": "GitHub", "linear": "Linear"}
 
 
-def make_gateway_config(**over) -> GatewayConfig:
+def make_gateway_config(upstreams: tuple[UpstreamSpec, ...] = (), **over) -> GatewayConfig:
     base = dict(public_url="http://localhost:8500", hub_issuer="http://hub.test/realms/mcp",
                 hub_jwks_uri="http://hub.test/certs", hub_token_endpoint="http://hub.test/token",
                 client_id="mcp-gateway", client_secret="s", broker_url="http://broker.test",
-                consent_wait_s=5)
+                upstreams=upstreams, consent_wait_s=5)
     base.update(over)
     return GatewayConfig(**base)
 
@@ -41,33 +45,37 @@ class FakeHub:
 
 
 class FakeBroker:
-    """Connected or not; `connect_on_poll` simulates the user finishing the
-    browser flow while the gateway waits."""
+    """Which vendors the user has connected; `connect_on_poll` simulates the
+    user finishing the browser flow while the gateway waits."""
 
-    def __init__(self, connected: bool = True):
-        self.is_connected = connected
+    def __init__(self, connected: set[str]):
+        self.connected_vendors = set(connected)
         self.connect_on_poll = False
         self.problem = ""
         self.error: Exception | None = None
-        self.resolves = 0
+        self.resolves: list[str] = []
         self.polls = 0
 
-    async def resolve(self, hub_jwt: str) -> Resolved:
+    @property
+    def is_connected(self) -> bool:          # single-vendor shorthand used by tests
+        return "github" in self.connected_vendors
+
+    async def resolve(self, hub_jwt: str, vendor: str) -> Resolved:
         assert hub_jwt == HUB_JWT
-        self.resolves += 1
+        self.resolves.append(vendor)
         if self.error:
             raise self.error
         if self.problem:
             return Resolved(problem=self.problem)
-        if self.is_connected:
-            return Resolved(token=VENDOR_TOKEN)
-        return Resolved(consent_url=CONSENT_URL, problem="needs-consent")
+        if vendor in self.connected_vendors:
+            return Resolved(token=VENDOR_TOKENS[vendor])
+        return Resolved(consent_url=CONSENT_URLS[vendor], problem="needs-consent")
 
-    async def connected(self, hub_jwt: str) -> bool:
+    async def connected(self, hub_jwt: str, vendor: str) -> bool:
         self.polls += 1
         if self.connect_on_poll:
-            self.is_connected = True
-        return self.is_connected
+            self.connected_vendors.add(vendor)
+        return vendor in self.connected_vendors
 
 
 def upstream_tool(name: str, param: str = "owner") -> mcp_types.Tool:
@@ -77,13 +85,14 @@ def upstream_tool(name: str, param: str = "owner") -> mcp_types.Tool:
 
 @dataclass
 class FakeUpstream:
+    vendor: str = "github"
     names: tuple[str, ...] = ("get_me", "issue_read", "create_issue")
     error: Exception | None = None
     calls: list[tuple[str, str, dict]] = field(default_factory=list)
     lists: int = 0
 
     async def list_tools(self, token: str) -> list[mcp_types.Tool]:
-        assert token == VENDOR_TOKEN
+        assert token == VENDOR_TOKENS[self.vendor]
         self.lists += 1
         return [upstream_tool(n) for n in self.names]
 
@@ -96,14 +105,33 @@ class FakeUpstream:
             content=[mcp_types.TextContent(type="text", text=f"{name} ok {arguments}")])
 
 
-def make_gateway(connected: bool = True, snapshot: list[mcp_types.Tool] | None = None,
-                 **cfg) -> tuple[Gateway, FakeHub, FakeBroker, FakeUpstream]:
-    """No snapshot by default: tools appear on the first connected call."""
-    hub, broker, upstream = FakeHub(), FakeBroker(connected), FakeUpstream()
-    gw = Gateway(make_gateway_config(**cfg), hub, broker, upstream,
-                 current_token=lambda: (MCP_TOKEN, "alice"), snapshot=snapshot)
+def spec(name: str = "github", tools: tuple[str, ...] = ("get_me", "issue_read"),
+         snapshot: list[mcp_types.Tool] | None = None) -> UpstreamSpec:
+    return UpstreamSpec(name=name, display_name=DISPLAY[name], vendor=name,
+                        url=f"http://{name}.test/mcp", tools=tools,
+                        snapshot=tuple(snapshot or ()))
+
+
+def make_gateway(connected: bool | set[str] = True,
+                 snapshot: list[mcp_types.Tool] | None = None,
+                 tools: tuple[str, ...] = ("get_me", "issue_read"),
+                 with_linear: bool = False, **cfg
+                 ) -> tuple[Gateway, FakeHub, FakeBroker, FakeUpstream]:
+    """A gateway in front of a fake GitHub (and optionally a fake Linear).
+    No snapshot by default: tools appear on the first connected call.
+    Returns the GitHub fake upstream; `gw.routes["linear"].client` is Linear's."""
+    if isinstance(connected, bool):
+        connected = {"github", "linear"} if connected else set()
+    hub, broker = FakeHub(), FakeBroker(connected)
+    github = FakeUpstream("github")
+    routes = [Route(spec("github", tools, snapshot), github)]
+    if with_linear:
+        routes.append(Route(spec("linear", ("list_issues", "get_issue")),
+                            FakeUpstream("linear", ("list_issues", "get_issue", "save_issue"))))
+    gw = Gateway(make_gateway_config(tuple(r.spec for r in routes), **cfg), hub, broker, routes,
+                 current_token=lambda: (MCP_TOKEN, "alice"))
     build_server(gw)
-    return gw, hub, broker, upstream
+    return gw, hub, broker, github
 
 
 class ListChanged(MessageHandler):

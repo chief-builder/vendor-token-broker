@@ -35,6 +35,8 @@ services:
       MOCK_CLIENT_SECRET: ${MOCK_CLIENT_SECRET:-mock-secret}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      LINEAR_CLIENT_ID: ${LINEAR_CLIENT_ID:-}
+      LINEAR_CLIENT_SECRET: ${LINEAR_CLIENT_SECRET:-}
       MOCK_JWT_CLIENT_ID: ${MOCK_JWT_CLIENT_ID:-mcp-lab-broker-jwt}
     volumes:
       - ./openbao-init/init.sh:/init.sh:ro
@@ -90,6 +92,7 @@ services:
       COORD_BACKEND: ${COORD_BACKEND:-memory}
       REDIS_URL: redis://redis:6379/0
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      LINEAR_CLIENT_ID: ${LINEAR_CLIENT_ID:-}
       # Short per-replica cache so test_cache.py can observe expiry quickly.
       CACHE_TTL_S: "10"
     volumes:
@@ -260,6 +263,7 @@ services:
       REGISTRY_PATH: /app/registry.json
       COORD_BACKEND: memory
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      LINEAR_CLIENT_ID: ${LINEAR_CLIENT_ID:-}
     volumes:
       - ../../registry.example.json:/app/registry.json:ro
     ports:
@@ -279,12 +283,13 @@ services:
       mock-vendor:
         condition: service_started
 
-  # Stand-in for GitHub's MCP server: accepts only live mockhub tokens.
-  mock-github-mcp:
+  # Stand-ins for vendor MCP servers (/github/mcp, /linear/mcp): accept only
+  # live mockhub tokens.
+  mock-mcp:
     build:
       context: ../..
-      dockerfile: tests/stack/mock-github-mcp/Dockerfile
-    container_name: vtb-mock-github-mcp
+      dockerfile: tests/stack/mock-mcp/Dockerfile
+    container_name: vtb-mock-mcp
     profiles: ["gateway"]
     environment:
       MOCK_VENDOR_URL: http://mock-vendor:8310
@@ -308,15 +313,19 @@ services:
       GATEWAY_CLIENT_ID: mcp-gateway
       GATEWAY_CLIENT_SECRET: gateway-dev-secret
       BROKER_URL: http://broker-kc:8300
-      # Real GitHub instead of the stand-in (needs a configured GitHub App):
-      #   GATEWAY_VENDOR=github GATEWAY_UPSTREAM_URL=https://api.githubcopilot.com/mcp/
-      VENDOR: ${GATEWAY_VENDOR:-mockhub}
-      UPSTREAM_MCP_URL: ${GATEWAY_UPSTREAM_URL:-http://mock-github-mcp:8330/mcp}
+      # Stand-ins by default. For the real servers (needs their OAuth apps),
+      # set GATEWAY_UPSTREAMS= (empty): the gateway's bundled upstreams.json.
+      # GATEWAY_ENABLED_UPSTREAMS=github limits which servers are served.
+      GATEWAY_UPSTREAMS: ${GATEWAY_UPSTREAMS-/config/stand-in-upstreams.json}
+      GATEWAY_ENABLED_UPSTREAMS: ${GATEWAY_ENABLED_UPSTREAMS:-}
       # Short, so "accepted but never finished" runs in test time.
       # Manual runs (a person in the browser): GATEWAY_CONSENT_WAIT_S=120.
       CONSENT_WAIT_S: ${GATEWAY_CONSENT_WAIT_S:-15}
-      # Short, so paused-dependency tests fail over quickly.
-      HTTP_TIMEOUT_S: "5"
+      # Short, so paused-dependency tests fail over quickly. Real servers can
+      # take longer (Linear's list_issues > 5s): GATEWAY_HTTP_TIMEOUT_S=15.
+      HTTP_TIMEOUT_S: ${GATEWAY_HTTP_TIMEOUT_S:-5}
+    volumes:
+      - ./gateway/stand-in-upstreams.json:/config/stand-in-upstreams.json:ro
     ports:
       - "8500:8500"
     healthcheck:
@@ -329,5 +338,5 @@ services:
     depends_on:
       broker-kc:
         condition: service_healthy
-      mock-github-mcp:
+      mock-mcp:
         condition: service_started

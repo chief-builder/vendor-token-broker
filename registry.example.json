@@ -11,14 +11,38 @@
     "refresh_rotation": true,
     "ema_status": "none",
     "vendor_user_endpoint": "https://api.github.com/user",
-    "revocation": { "type": "github_grant" },
-    "_notes": "GitHub App: no RFC 8414 metadata (endpoints hardcoded — allowed where no metadata exists); scopes come from App permissions, so the ceiling is empty; revocation uses GitHub's grant-deletion API, the documented RFC 7009 deviation."
+    "revocation": {
+      "type": "github_grant"
+    },
+    "_notes": "GitHub App: no RFC 8414 metadata (endpoints hardcoded \u2014 allowed where no metadata exists); scopes come from App permissions, so the ceiling is empty; revocation uses GitHub's grant-deletion API, the documented RFC 7009 deviation."
+  },
+  "linear": {
+    "vendor_id": "linear",
+    "enabled_env": "LINEAR_CLIENT_ID",
+    "endpoints": {
+      "authorization_endpoint": "https://linear.app/oauth/authorize",
+      "token_endpoint": "https://api.linear.app/oauth/token",
+      "revocation_endpoint": "https://api.linear.app/oauth/revoke"
+    },
+    "token_endpoint_auth_method": "client_secret_post",
+    "scope_ceiling": [
+      "read"
+    ],
+    "refresh_rotation": true,
+    "ema_status": "none",
+    "revocation": {
+      "type": "rfc7009"
+    },
+    "_notes": "Linear OAuth app: no RFC 8414 metadata (endpoints hardcoded). 24h access tokens, rotating refresh tokens with a 30-minute grace period. RFC 7009 revocation. Read-only scope ceiling; the gateway also uses Linear's /mcp/readonly endpoint. Linear's API is GraphQL-only, so no REST user endpoint: vendor_user_id is recorded as 'unknown'."
   },
   "mockhub": {
     "vendor_id": "mockhub",
     "auth_metadata_url": "http://mock-vendor:8310/.well-known/oauth-authorization-server",
     "token_endpoint_auth_method": "client_secret_post",
-    "scope_ceiling": ["issues:read", "issues:write"],
+    "scope_ceiling": [
+      "issues:read",
+      "issues:write"
+    ],
     "refresh_rotation": true,
     "ema_status": "none",
     "_notes": "Test vendor AS (tests/stack/mock-vendor): RFC 8414 discovery, 60s access tokens, rotating refresh tokens with replay-revokes-family, RFC 7009 revocation. Exists so the single-flight and revocation gates run headless."
@@ -27,7 +51,10 @@
     "vendor_id": "mockhub-jwt",
     "auth_metadata_url": "http://mock-vendor:8310/.well-known/oauth-authorization-server",
     "token_endpoint_auth_method": "private_key_jwt",
-    "scope_ceiling": ["issues:read", "issues:write"],
+    "scope_ceiling": [
+      "issues:read",
+      "issues:write"
+    ],
     "refresh_rotation": true,
     "ema_status": "none",
     "_notes": "Same test AS via private_key_jwt (RFC 7523): the broker signs a client assertion with the private key held in vendor-clients/mockhub-jwt ({client_id, private_key, alg}); the mock verifies it for real. Exists so the pkj leg of the client-auth matrix runs headless."
@@ -36,7 +63,10 @@
     "vendor_id": "mockhub-norevoke",
     "auth_metadata_url": "http://mock-vendor:8310/.well-known/oauth-authorization-server/norevoke",
     "token_endpoint_auth_method": "client_secret_post",
-    "scope_ceiling": ["issues:read", "issues:write"],
+    "scope_ceiling": [
+      "issues:read",
+      "issues:write"
+    ],
     "refresh_rotation": true,
     "ema_status": "none",
     "_notes": "Same test AS, but its metadata advertises no revocation_endpoint. Exists so the delete-without-vendor-revocation path runs headless (local delete, audited outcome: unsupported)."

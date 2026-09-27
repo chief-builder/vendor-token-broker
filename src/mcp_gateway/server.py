@@ -1,17 +1,20 @@
-"""The gateway's MCP server.
+"""The gateway's MCP server, in front of one or more vendor MCP servers
+("upstreams", configured in upstreams.json).
 
 Per tool call: verify the caller's MCP token (FastMCP auth), exchange it at
-the hub for a hub JWT, resolve the user's vendor token at the broker, and
-forward the call to the vendor's MCP server in a fresh session. A missing
-vendor connection becomes a URL-mode elicitation pointing at the broker's
-consent link; an outage becomes a retryable error, never "connect".
+the hub for a hub JWT, resolve the user's token for that upstream's vendor
+at the broker, and forward the call to the vendor's MCP server in a fresh
+session. A missing vendor connection becomes a URL-mode elicitation
+pointing at the broker's consent link; an outage becomes a retryable error,
+never "connect".
 
-Tools: `connect_github` plus the allowlisted upstream tools, listed from
-startup with the schemas in a checked-in snapshot (github_tools.json) so no
-client ever needs a list-changed notification (2026-07-28 clients only take
-those on subscriptions/listen). The first connected call re-reads the live
-schemas, which stay authoritative, and logs any drift. The vendor token is
-used for one upstream call and never logged, cached, or returned.
+Tools: for each upstream, `connect_<name>` plus its allowlisted tools
+exposed as `<name>_<tool>`, listed from startup with the schemas in a
+checked-in snapshot so no client ever needs a list-changed notification
+(2026-07-28 clients only take those on subscriptions/listen). The first
+connected call per upstream re-reads the live schemas, which stay
+authoritative, and logs any drift. Vendor tokens are used for one upstream
+call and never logged, cached, or returned.
 """
 import asyncio
 import json
@@ -19,7 +22,6 @@ import logging
 import secrets
 import time
 from collections.abc import Callable
-from importlib import resources
 from typing import Any
 
 import httpx
@@ -34,7 +36,7 @@ from fastmcp.tools.base import InputRequiredToolResult, Tool, ToolResult
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .clients import Broker, HandoffError, Hub, Unavailable
-from .config import GatewayConfig
+from .config import GatewayConfig, UpstreamSpec
 from .upstream import Upstream
 
 log = logging.getLogger("mcp_gateway")
@@ -51,16 +53,6 @@ def audit(event: str, **fields) -> None:
     log.info(json.dumps({"event": event, "ts": round(time.time(), 3), **fields}))
 
 
-def load_snapshot(path: str = "") -> list[mcp_types.Tool]:
-    """Tool definitions from a snapshot file (default: the bundled GitHub
-    snapshot; "none": no snapshot, tools appear on the first connected call)."""
-    if path == "none":
-        return []
-    text = open(path).read() if path else \
-        resources.files("mcp_gateway").joinpath("github_tools.json").read_text()
-    return [mcp_types.Tool.model_validate(t) for t in json.loads(text)["tools"]]
-
-
 def _mcp_token() -> tuple[str, str]:
     """(raw MCP access token, sub) of the verified caller."""
     token = get_access_token()
@@ -69,55 +61,70 @@ def _mcp_token() -> tuple[str, str]:
     return token.token, str(token.claims.get("sub", ""))
 
 
-class Gateway:
-    def __init__(self, cfg: GatewayConfig, hub: Hub, broker: Broker, upstream: Upstream,
-                 current_token: Callable[[], tuple[str, str]] = _mcp_token,
-                 snapshot: list[mcp_types.Tool] | None = None):
-        self.cfg, self.hub, self.broker, self.upstream = cfg, hub, broker, upstream
-        self.current_token = current_token
-        self.snapshot = snapshot or []
+class Route:
+    """One upstream as the gateway serves it: its spec, its MCP client, and
+    whether its live catalog has been reconciled in this process."""
+
+    def __init__(self, spec: UpstreamSpec, client):
+        self.spec, self.client = spec, client
         self.catalog_loaded = False
-        self._catalog_lock = asyncio.Lock()
+        self.lock = asyncio.Lock()
+
+    def exposed(self, tool: str) -> str:
+        return f"{self.spec.name}_{tool}"
+
+
+class Gateway:
+    def __init__(self, cfg: GatewayConfig, hub: Hub, broker: Broker, routes: list[Route],
+                 current_token: Callable[[], tuple[str, str]] = _mcp_token):
+        self.cfg, self.hub, self.broker = cfg, hub, broker
+        self.routes = {r.spec.name: r for r in routes}
+        self.current_token = current_token
         self.mcp: FastMCP | None = None
 
     # ---------------------------------------------------------- token path
 
-    async def vendor_token(self, ctx: Context, tool: str) -> str | mcp_types.InputRequiredResult:
-        """The caller's vendor token, running the consent flow if needed.
-        On the 2026-07-28 revision this whole tool body re-runs after the
-        client answers, so everything before the answer check is idempotent."""
+    async def vendor_token(self, ctx: Context, route: Route,
+                           tool: str) -> str | mcp_types.InputRequiredResult:
+        """The caller's token for this route's vendor, running the consent
+        flow if needed. On the 2026-07-28 revision this whole tool body
+        re-runs after the client answers, so everything before the answer
+        check is idempotent."""
         raw, sub = self.current_token()
+        who = {"upstream": route.spec.name, "tool": tool, "sub": sub}
+        name = route.spec.display_name
         try:
             hub_jwt = await self.hub.exchange(raw)
             era = ctx.request_context.protocol_version
             answer = (ctx.input_responses or {}).get(CONSENT_KEY) if era >= MRTR_ERA else None
             if answer is not None:                          # MRTR: the client answered
-                return await self._after_answer(hub_jwt, answer.action, sub, tool)
-            resolved = await self.broker.resolve(hub_jwt)
+                return await self._after_answer(hub_jwt, answer.action, route, who)
+            resolved = await self.broker.resolve(hub_jwt, route.spec.vendor)
             if resolved.token:
                 return resolved.token
             if not resolved.consent_url:
-                audit("gateway.call", tool=tool, sub=sub, outcome="deny",
-                      reason=resolved.problem)
-                raise ToolError(f"GitHub is not usable right now ({resolved.problem}); "
+                audit("gateway.call", **who, outcome="deny", reason=resolved.problem)
+                raise ToolError(f"{name} is not usable right now ({resolved.problem}); "
                                 "try again later")
-            return await self._ask_to_connect(ctx, era, hub_jwt, resolved.consent_url, sub, tool)
+            return await self._ask_to_connect(ctx, era, hub_jwt, resolved.consent_url,
+                                              route, who)
         except HandoffError as exc:
-            audit("gateway.call", tool=tool, sub=sub, outcome="error", reason=str(exc))
+            audit("gateway.call", **who, outcome="error", reason=str(exc))
             raise ToolError("the gateway could not establish your identity with the "
                             "token broker; this is a gateway configuration problem") from exc
         except Unavailable as exc:
-            audit("gateway.call", tool=tool, sub=sub, outcome="unavailable", reason=str(exc))
+            audit("gateway.call", **who, outcome="unavailable", reason=str(exc))
             raise ToolError(f"a dependency is unavailable ({exc}); retry shortly") from exc
 
     async def _ask_to_connect(self, ctx: Context, era: str, hub_jwt: str, url: str,
-                              sub: str, tool: str) -> str | mcp_types.InputRequiredResult:
-        message = "Connect your GitHub account to continue."
+                              route: Route, who: dict) -> str | mcp_types.InputRequiredResult:
+        name = route.spec.display_name
+        message = f"Connect your {name} account to continue."
         if not ctx.session.check_client_capability(URL_ELICITATION):
-            audit("gateway.consent", tool=tool, sub=sub, outcome="manual")
-            raise ToolError(f"Connect GitHub first: open {url} in your browser, "
+            audit("gateway.consent", **who, outcome="manual")
+            raise ToolError(f"Connect {name} first: open {url} in your browser, "
                             "then retry.")
-        audit("gateway.consent", tool=tool, sub=sub, outcome="elicit", era=era)
+        audit("gateway.consent", **who, outcome="elicit", era=era)
         elicitation_id = secrets.token_urlsafe(12)
         if era >= MRTR_ERA:
             return mcp_types.InputRequiredResult(
@@ -127,107 +134,126 @@ class Gateway:
                 request_state="consent")
         result = await ctx.session.elicit_url(message, url, elicitation_id,
                                               related_request_id=ctx.request_id)
-        return await self._after_answer(hub_jwt, result.action, sub, tool)
+        return await self._after_answer(hub_jwt, result.action, route, who)
 
-    async def _after_answer(self, hub_jwt: str, action: str, sub: str, tool: str) -> str:
+    async def _after_answer(self, hub_jwt: str, action: str, route: Route, who: dict) -> str:
         """The user answered the connect prompt. Accept only means they chose
         to open the link, so wait (bounded) for the browser flow to finish."""
+        name = route.spec.display_name
         if action != "accept":
-            audit("gateway.consent", tool=tool, sub=sub, outcome=action)
-            raise ToolError("GitHub was not connected; the request was cancelled")
+            audit("gateway.consent", **who, outcome=action)
+            raise ToolError(f"{name} was not connected; the request was cancelled")
         deadline = time.monotonic() + self.cfg.consent_wait_s
-        while not await self.broker.connected(hub_jwt):
+        while not await self.broker.connected(hub_jwt, route.spec.vendor):
             if time.monotonic() >= deadline:
-                audit("gateway.consent", tool=tool, sub=sub, outcome="timeout")
-                raise ToolError("GitHub is not connected yet; finish connecting in the "
+                audit("gateway.consent", **who, outcome="timeout")
+                raise ToolError(f"{name} is not connected yet; finish connecting in the "
                                 "browser, then retry")
             await asyncio.sleep(POLL_S)
-        resolved = await self.broker.resolve(hub_jwt)
+        resolved = await self.broker.resolve(hub_jwt, route.spec.vendor)
         if not resolved.token:
-            raise ToolError(f"GitHub connection is not usable ({resolved.problem}); retry")
-        audit("gateway.consent", tool=tool, sub=sub, outcome="connected")
+            raise ToolError(f"{name} connection is not usable ({resolved.problem}); retry")
+        audit("gateway.consent", **who, outcome="connected")
         return resolved.token
 
     # ------------------------------------------------------------- catalog
 
-    def register(self, tool: mcp_types.Tool) -> None:
+    def register(self, route: Route, tool: mcp_types.Tool) -> None:
         self.mcp.add_tool(UpstreamTool(
-            gateway=self, name=tool.name, description=tool.description or "",
+            gateway=self, route_name=route.spec.name, upstream_tool=tool.name,
+            name=route.exposed(tool.name), description=tool.description or "",
             parameters=tool.input_schema, annotations=tool.annotations))
 
-    async def _registered(self) -> dict[str, Tool]:
-        return {t.name: t for t in await self.mcp.list_tools() if isinstance(t, UpstreamTool)}
+    async def _registered(self, route: Route) -> dict[str, Tool]:
+        return {t.upstream_tool: t for t in await self.mcp.list_tools()
+                if isinstance(t, UpstreamTool) and t.route_name == route.spec.name}
 
-    async def load_catalog(self, ctx: Context, vendor_token: str) -> int:
-        """Reconcile the listed tools with the vendor's live schemas, once per
-        process: re-register tools whose schema drifted from the snapshot, add
-        allowlisted tools the snapshot lacked, and report ones the vendor no
-        longer lists (they stay listed; calling them returns the vendor's
-        error). Returns how many upstream tools are listed."""
-        async with self._catalog_lock:
-            if not self.catalog_loaded:
-                live = {t.name: t for t in await self.upstream.list_tools(vendor_token)
-                        if t.name in self.cfg.upstream_tools}
-                listed = await self._registered()
+    async def load_catalog(self, ctx: Context, route: Route, vendor_token: str) -> int:
+        """Reconcile this route's listed tools with the vendor's live schemas,
+        once per process: re-register tools whose schema drifted from the
+        snapshot, add allowlisted tools the snapshot lacked, and report ones
+        the vendor no longer lists (they stay listed; calling them returns the
+        vendor's error). Returns how many of the route's tools are listed."""
+        async with route.lock:
+            if not route.catalog_loaded:
+                allowed = set(route.spec.tools)
+                live = {t.name: t for t in await route.client.list_tools(vendor_token)
+                        if t.name in allowed}
+                listed = await self._registered(route)
                 added = sorted(set(live) - set(listed))
                 changed = sorted(n for n in set(live) & set(listed)
                                  if (live[n].description or "", live[n].input_schema)
                                  != (listed[n].description, listed[n].parameters))
                 for name in added + changed:
-                    self.register(live[name])
-                missing = sorted(set(self.cfg.upstream_tools) - set(live))
-                audit("gateway.catalog", listed=sorted(live), added=added, changed=changed,
-                      missing=missing)
-                self.catalog_loaded = True
+                    self.register(route, live[name])
+                missing = sorted(allowed - set(live))
+                audit("gateway.catalog", upstream=route.spec.name, listed=sorted(live),
+                      added=added, changed=changed, missing=missing)
+                route.catalog_loaded = True
                 if added:        # only older clients act on this; see module docstring
                     await ctx.send_notification(mcp_types.ToolListChangedNotification())
-        return len(await self._registered())
+        return len(await self._registered(route))
 
-    async def forward(self, ctx: Context, name: str, arguments: dict[str, Any]) -> ToolResult:
-        token = await self.vendor_token(ctx, name)
+    async def forward(self, ctx: Context, route: Route, tool: str,
+                      arguments: dict[str, Any]) -> ToolResult:
+        exposed = route.exposed(tool)
+        token = await self.vendor_token(ctx, route, exposed)
         if isinstance(token, mcp_types.InputRequiredResult):
             return InputRequiredToolResult(token)
         _, sub = self.current_token()
+        who = {"upstream": route.spec.name, "tool": exposed, "sub": sub}
+        name = route.spec.display_name
         try:
-            result = await self.upstream.call_tool(token, name, arguments)
+            result = await route.client.call_tool(token, tool, arguments)
         except Exception as exc:     # transport or protocol failure upstream
             rejected = "401" in str(exc)
-            audit("gateway.call", tool=name, sub=sub, outcome="upstream-error",
-                  reason="rejected" if rejected else type(exc).__name__)
+            detail = str(exc).replace(token, "<token>")[:200]   # never log the token
+            audit("gateway.call", **who, outcome="upstream-error",
+                  reason="rejected" if rejected else type(exc).__name__, detail=detail)
             if rejected:
-                raise ToolError("GitHub rejected the connection; reconnect GitHub "
+                raise ToolError(f"{name} rejected the connection; reconnect {name} "
                                 "and retry") from exc
-            raise ToolError("GitHub's MCP server is unavailable; retry shortly") from exc
-        audit("gateway.call", tool=name, sub=sub, outcome="ok", is_error=result.is_error)
+            raise ToolError(f"{name}'s MCP server is unavailable; retry shortly") from exc
+        audit("gateway.call", **who, outcome="ok", is_error=result.is_error)
         return ToolResult.from_mcp_result(result)
 
 
 class UpstreamTool(Tool):
-    """An allowlisted vendor tool: the vendor's schema, forwarded per call.
+    """An allowlisted vendor tool, exposed as <upstream>_<tool> with the
+    vendor's schema and forwarded per call under its upstream name.
     Arguments are validated by the vendor, not here."""
     gateway: Any = None
+    route_name: str = ""
+    upstream_tool: str = ""
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
-        return await self.gateway.forward(get_context(), self.name, arguments)
+        route = self.gateway.routes[self.route_name]
+        return await self.gateway.forward(get_context(), route, self.upstream_tool, arguments)
+
+
+def _connect_tool(gateway: Gateway, route: Route):
+    async def connect(ctx: Context) -> str | mcp_types.InputRequiredResult:
+        token = await gateway.vendor_token(ctx, route, f"connect_{route.spec.name}")
+        if isinstance(token, mcp_types.InputRequiredResult):
+            return token
+        count = await gateway.load_catalog(ctx, route, token)
+        name = route.spec.display_name
+        return f"{name} is connected; {count} {name} tools are available."
+    return connect
 
 
 def build_server(gateway: Gateway, auth=None) -> FastMCP:
     mcp = FastMCP("vtb-mcp-gateway", auth=auth, on_duplicate="replace")
     gateway.mcp = mcp
-    for tool in gateway.snapshot:
-        if tool.name in gateway.cfg.upstream_tools:
-            gateway.register(tool)
-
-    @mcp.tool
-    async def connect_github(ctx: Context) -> str | mcp_types.InputRequiredResult:
-        """Connect your GitHub account (a browser opens if it isn't connected
-        yet) and make the GitHub tools available. Call this first."""
-        token = await gateway.vendor_token(ctx, "connect_github")
-        if isinstance(token, mcp_types.InputRequiredResult):
-            return token
-        count = await gateway.load_catalog(ctx, token)
-        return f"GitHub is connected; {count} GitHub tools are available."
-
+    for route in gateway.routes.values():
+        name = route.spec.display_name
+        mcp.tool(_connect_tool(gateway, route), name=f"connect_{route.spec.name}",
+                 description=f"Connect your {name} account (a browser opens if it isn't "
+                             f"connected yet). The {name} tools start with "
+                             f"{route.spec.name}_.")
+        for tool in route.spec.snapshot:
+            if tool.name in route.spec.tools:
+                gateway.register(route, tool)
     return mcp
 
 
@@ -304,6 +330,6 @@ def create_app():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     cfg = GatewayConfig.from_env()
     http = httpx.AsyncClient(timeout=cfg.http_timeout_s)
-    gateway = Gateway(cfg, Hub(cfg, http), Broker(cfg, http), Upstream(cfg),
-                      snapshot=load_snapshot(cfg.upstream_tool_snapshot))
+    routes = [Route(spec, Upstream(spec, cfg.http_timeout_s)) for spec in cfg.upstreams]
+    gateway = Gateway(cfg, Hub(cfg, http), Broker(cfg, http), routes)
     return build_app(gateway, build_auth(cfg))

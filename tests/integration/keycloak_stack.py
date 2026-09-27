@@ -18,7 +18,7 @@ KC_AUTH = f"{KC_REALM}/protocol/openid-connect/auth"
 KC_TOKEN = f"{KC_REALM}/protocol/openid-connect/token"
 BROKER_KC = "http://localhost:8600"
 GATEWAY_MCP = "http://localhost:8500/mcp"
-MOCK_GITHUB_MCP = "http://localhost:8330"
+MOCK_MCP = "http://localhost:8330"
 
 MCP_CLIENT_ID = "mcp-demo-cli"
 MCP_REDIRECT = "http://localhost:33418/callback"

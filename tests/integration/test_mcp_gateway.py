@@ -1,7 +1,8 @@
 """End to end through the MCP gateway (gateway profile): a real MCP client
 with a Keycloak-issued MCP token calls the gateway, which exchanges it at
 Keycloak, resolves the user's vendor token at broker-kc, and forwards to the
-GitHub stand-in (mock-github-mcp, which accepts only live mockhub tokens).
+vendor stand-ins (mock-mcp: /github/mcp for vendor mockhub, /linear/mcp for
+vendor mockhub-jwt; both accept only live mock-vendor tokens).
 When the user isn't connected, the client's elicitation handler plays the
 user: it opens the consent link and signs in at Keycloak."""
 import asyncio
@@ -19,7 +20,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from keycloak_stack import (
     BROKER_KC,
     GATEWAY_MCP,
-    MOCK_GITHUB_MCP,
+    MOCK_MCP,
     consent_via_keycloak,
     hub_jwt,
     mcp_token,
@@ -30,8 +31,15 @@ from stack import grep_container_logs, mock_state
 
 pytestmark = pytest.mark.gateway
 
-ALLOWLISTED = {"get_me", "search_repositories", "get_file_contents", "list_issues",
-               "issue_read", "list_pull_requests", "pull_request_read"}
+GITHUB = {"github_" + t for t in (
+    "get_me", "search_repositories", "get_file_contents", "list_issues", "issue_read",
+    "list_pull_requests", "pull_request_read")}
+LINEAR = {"linear_" + t for t in (
+    "list_issues", "get_issue", "list_comments", "list_projects", "get_project", "list_cycles",
+    "list_teams", "get_team", "list_issue_statuses", "list_users", "get_user",
+    "list_documents", "get_document")}
+ALL_TOOLS = GITHUB | LINEAR | {"connect_github", "connect_linear"}
+STAND_IN = "/config/stand-in-upstreams.json"
 
 
 def _wait_healthy(url: str, timeout: float = 60) -> None:
@@ -48,16 +56,18 @@ def _wait_healthy(url: str, timeout: float = 60) -> None:
 def fresh_gateway():
     """Start from a gateway that has never loaded the catalog, and users
     who have never connected."""
-    vendor = subprocess.run(["docker", "exec", "vtb-mcp-gateway", "printenv", "VENDOR"],
-                            capture_output=True, text=True).stdout.strip()
-    if vendor != "mockhub":
-        pytest.skip(f"gateway is pointed at {vendor!r}, not the mockhub stand-in; "
-                    "recreate it without GATEWAY_VENDOR/GATEWAY_UPSTREAM_URL")
+    upstreams = subprocess.run(
+        ["docker", "exec", "vtb-mcp-gateway", "printenv", "GATEWAY_UPSTREAMS"],
+        capture_output=True, text=True).stdout.strip()
+    if upstreams != STAND_IN:
+        pytest.skip(f"gateway uses upstreams {upstreams or '(bundled: real servers)'!r}, "
+                    "not the stand-ins; recreate it without GATEWAY_UPSTREAMS")
     subprocess.run(["docker", "restart", "vtb-mcp-gateway"], check=True, capture_output=True)
     _wait_healthy("http://localhost:8500/.well-known/oauth-protected-resource/mcp")
     for user in ("alice", "bob"):
-        revoke_kc(hub_jwt(user))
-    requests.post(f"{MOCK_GITHUB_MCP}/_test/reset", timeout=5)
+        for vendor in ("mockhub", "mockhub-jwt"):
+            revoke_kc(hub_jwt(user), vendor)
+    requests.post(f"{MOCK_MCP}/_test/reset", timeout=5)
 
 
 class User:
@@ -85,6 +95,11 @@ def gateway_client(username: str, user: User | None = None, mode: str = "legacy"
     return Client(transport, mode=mode, timeout=60, **kw)
 
 
+def _last_call(upstream: str) -> dict:
+    calls = requests.get(f"{MOCK_MCP}/_test/state", timeout=5).json()["calls"]
+    return [c for c in calls if c["upstream"] == upstream][-1]
+
+
 async def _call(username: str, tool: str, args: dict | None = None, **kw):
     async with gateway_client(username, **kw) as c:
         return await c.call_tool(tool, args or {}, raise_on_error=False)
@@ -95,7 +110,7 @@ async def _call(username: str, tool: str, args: dict | None = None, **kw):
 async def test_all_tools_are_listed_before_anyone_connects():
     """Pinned tool list: no client ever needs a list-changed notification."""
     async with gateway_client("alice") as c:
-        assert {t.name for t in await c.list_tools()} == ALLOWLISTED | {"connect_github"}
+        assert {t.name for t in await c.list_tools()} == ALL_TOOLS
 
 
 @pytest.mark.parametrize("username, mode", [("alice", "legacy"), ("bob", "2026-07-28")])
@@ -108,27 +123,28 @@ async def test_connect_runs_consent_then_lists_the_allowlisted_tools(username, m
     assert "GitHub is connected" in r.content[0].text
     assert [p.url.split("?")[0] for p in user.prompts] == [f"{BROKER_KC}/v1/authorize/mockhub"]
     assert user.pages == [200]                           # "Connected" page in the browser
-    assert names == ALLOWLISTED | {"connect_github"}      # create_issue stays hidden
+    assert names == ALL_TOOLS              # create_issue and save_issue stay hidden
 
 
 # ------------------------------------------------------------ connected use
 
 @pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
 async def test_tool_call_reaches_github_with_the_users_token_and_policy(mode):
-    r = await _call("alice", "issue_read",
+    r = await _call("alice", "github_issue_read",
                     {"owner": "octocat-lab", "repo": "hello-world", "issue_number": 1},
                     user=User("alice", action="decline"), mode=mode)
     assert not r.is_error, r.content[0].text
     assert "First issue" in r.content[0].text
-    call = requests.get(f"{MOCK_GITHUB_MCP}/_test/state", timeout=5).json()["calls"][-1]
+    call = _last_call("github")
     assert call["tool"] == "issue_read" and call["args"]["issue_number"] == 1
+    assert call["scheme"] == "Bearer"
     assert (call["readonly"], call["lockdown"]) == ("true", "true")
     assert call["toolsets"] == "repos,issues,pull_requests,context"
 
 
 async def test_a_connected_user_is_never_prompted():
     user = User("alice", action="decline")
-    r = await _call("alice", "get_me", user=user)
+    r = await _call("alice", "github_get_me", user=user)
     assert not r.is_error and "octocat-lab" in r.content[0].text
     assert user.prompts == []
 
@@ -139,7 +155,7 @@ async def test_parallel_calls_never_burn_the_rotating_token_family():
     before = mock_state()["counters"]
 
     async def one():
-        return await _call("alice", "get_me", token=token)
+        return await _call("alice", "github_get_me", token=token)
 
     token = mcp_token("alice")
     results = await asyncio.gather(*[one() for _ in range(10)])
@@ -147,12 +163,43 @@ async def test_parallel_calls_never_burn_the_rotating_token_family():
     assert mock_state()["counters"]["rt_replay"] == before["rt_replay"]
 
 
+# ------------------------------------------------------ a second upstream
+
+async def test_linear_connects_separately_from_github():
+    """Connected to GitHub does not mean connected to Linear: a Linear tool
+    asks for its own connection, and GitHub keeps working without a prompt."""
+    await _call("alice", "github_get_me", user=User("alice"))   # GitHub connected
+    revoke_kc(hub_jwt("alice"), "mockhub-jwt")
+    user = User("alice")
+    r = await _call("alice", "linear_list_issues", user=user)
+    assert not r.is_error, r.content[0].text
+    assert "Fix login" in r.content[0].text
+    assert [p.url.split("?")[0] for p in user.prompts] == \
+        [f"{BROKER_KC}/v1/authorize/mockhub-jwt"]
+    assert "Linear" in user.prompts[0].message
+    quiet = User("alice", action="decline")
+    assert not (await _call("alice", "github_get_me", user=quiet)).is_error
+    assert quiet.prompts == []
+
+
+async def test_each_upstream_gets_its_own_token_and_policy():
+    await _call("alice", "github_get_me", user=User("alice", action="decline"))
+    await _call("alice", "linear_get_issue", {"id": "LIN-2"},
+                user=User("alice", action="decline"))
+    github, linear = _last_call("github"), _last_call("linear")
+    assert linear["tool"] == "get_issue" and linear["args"] == {"id": "LIN-2"}
+    assert linear["scheme"] == "Bearer"
+    assert (linear["readonly"], linear["lockdown"]) == (None, None)   # Linear: read-only URL
+    assert github["readonly"] == "true"
+    assert github["token_fp"] != linear["token_fp"]                  # different vendors
+
+
 # ---------------------------------------------------------- consent outcomes
 
 async def test_declining_leaves_github_disconnected():
     revoke_kc(hub_jwt("alice"))
     user = User("alice", action="decline")
-    r = await _call("alice", "get_me", user=user)
+    r = await _call("alice", "github_get_me", user=user)
     assert r.is_error and "not connected" in r.content[0].text
     assert len(user.prompts) == 1
     assert resolve_kc(hub_jwt("alice")).status_code == 404
@@ -163,7 +210,7 @@ async def test_link_opened_by_someone_else_never_connects():
     gateway gives up after its bounded wait."""
     revoke_kc(hub_jwt("alice"))
     user = User("alice", sign_in_as="bob")
-    r = await _call("alice", "get_me", user=user)
+    r = await _call("alice", "github_get_me", user=user)
     assert user.pages == [403]
     assert r.is_error and "not connected yet" in r.content[0].text
     assert resolve_kc(hub_jwt("alice")).status_code == 404
@@ -171,17 +218,17 @@ async def test_link_opened_by_someone_else_never_connects():
 
 async def test_client_without_url_elicitation_is_given_the_link():
     revoke_kc(hub_jwt("alice"))
-    r = await _call("alice", "get_me")                      # no elicitation handler
+    r = await _call("alice", "github_get_me")               # no elicitation handler
     assert r.is_error and f"{BROKER_KC}/v1/authorize/mockhub?txn=" in r.content[0].text
 
 
 async def test_revoked_connection_prompts_again():
     user = User("alice")
-    r = await _call("alice", "get_me", user=user)          # reconnects (after the tests above)
+    r = await _call("alice", "github_get_me", user=user)   # reconnects (after the tests above)
     assert not r.is_error and len(user.prompts) == 1
     revoke_kc(hub_jwt("alice"))
     again = User("alice")
-    r = await _call("alice", "get_me", user=again)
+    r = await _call("alice", "github_get_me", user=again)
     assert not r.is_error and len(again.prompts) == 1
 
 
@@ -200,21 +247,30 @@ async def test_broker_outage_is_retryable_and_never_asks_to_connect():
     user = User("alice", action="decline")
     token = mcp_token("alice")
     with paused("vtb-broker-kc"):
-        r = await _call("alice", "get_me", user=user, token=token)
+        r = await _call("alice", "github_get_me", user=user, token=token)
     assert r.is_error and "retry shortly" in r.content[0].text
     assert user.prompts == []
 
 
 async def test_github_outage_is_retryable():
     token = mcp_token("alice")
-    with paused("vtb-mock-github-mcp"):
-        r = await _call("alice", "get_me", user=User("alice", action="decline"), token=token)
+    with paused("vtb-mock-mcp"):
+        r = await _call("alice", "github_get_me", user=User("alice", action="decline"),
+                        token=token)
     assert r.is_error and "unavailable" in r.content[0].text
 
 
 INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
     "protocolVersion": "2025-11-25", "capabilities": {},
     "clientInfo": {"name": "t", "version": "0"}}}
+
+
+@pytest.mark.parametrize("path", ["/github/mcp", "/linear/mcp"])
+@pytest.mark.parametrize("auth", [None, "Basic dXNlcjpwYXNz", "Bearer not-a-live-token"])
+def test_stand_ins_refuse_calls_without_a_live_vendor_token(path, auth):
+    """The stand-ins behave like the real servers: no live token, 401."""
+    headers = {"Content-Type": "application/json", **({"Authorization": auth} if auth else {})}
+    assert httpx.post(f"{MOCK_MCP}{path}", json=INIT, headers=headers).status_code == 401
 
 
 @pytest.mark.parametrize("which", ["hub-jwt", "no-gateway-scope", "garbage"])
@@ -232,9 +288,12 @@ def test_tokens_not_issued_for_the_gateway_are_rejected(which):
 def test_no_token_material_in_any_container_log():
     mcp = mcp_token("alice")
     with ThreadPoolExecutor(1) as pool:                     # a real call with this token
-        r = pool.submit(asyncio.run, _call("alice", "get_me", token=mcp)).result()
-    assert not r.is_error
+        r = pool.submit(asyncio.run, _call("alice", "github_get_me", token=mcp)).result()
+        r2 = pool.submit(asyncio.run, _call("alice", "linear_list_issues", token=mcp,
+                                            user=User("alice"))).result()
+    assert not r.is_error and not r2.is_error
     hub = hub_jwt("alice")
-    vendor = resolve_kc(hub).json()["access_token"]
-    for secret in (mcp, hub, vendor):
+    github = resolve_kc(hub).json()["access_token"]
+    linear = resolve_kc(hub, "mockhub-jwt").json()["access_token"]
+    for secret in (mcp, hub, github, linear):
         assert grep_container_logs(secret, since="10m") == {}

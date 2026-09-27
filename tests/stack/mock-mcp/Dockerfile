@@ -4,6 +4,6 @@ FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b
 WORKDIR /app
 COPY requirements-gateway.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements-gateway.lock
-COPY tests/stack/mock-github-mcp/main.py .
+COPY tests/stack/mock-mcp/main.py .
 USER 65534
 CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8330"]

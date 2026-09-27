@@ -70,5 +70,11 @@ if [ -n "${GITHUB_CLIENT_ID:-}" ]; then
     "${BAO}/v1/vendor-clients/data/github" > /dev/null
   echo "==> GitHub vendor configured"
 fi
+if [ -n "${LINEAR_CLIENT_ID:-}" ]; then
+  curl -sf -H "X-Vault-Token: ${ROOT}" \
+    -d "{\"data\":{\"client_id\":\"${LINEAR_CLIENT_ID}\",\"client_secret\":\"${LINEAR_CLIENT_SECRET}\"}}" \
+    "${BAO}/v1/vendor-clients/data/linear" > /dev/null
+  echo "==> Linear vendor configured"
+fi
 
 echo "==> OpenBao initialized (scoped broker token ready)"

@@ -54,11 +54,11 @@ class Broker:
     def __init__(self, cfg: GatewayConfig, http: httpx.AsyncClient):
         self._cfg, self._http = cfg, http
 
-    async def resolve(self, hub_jwt: str) -> Resolved:
+    async def resolve(self, hub_jwt: str, vendor: str) -> Resolved:
         try:
             r = await self._http.post(
                 f"{self._cfg.broker_url}/v1/tokens/resolve",
-                json={"vendor": self._cfg.vendor, "min_ttl_s": self._cfg.min_ttl_s},
+                json={"vendor": vendor, "min_ttl_s": self._cfg.min_ttl_s},
                 headers={"Authorization": f"Bearer {hub_jwt}"})
         except httpx.HTTPError as exc:
             raise Unavailable(f"broker unreachable ({type(exc).__name__})") from exc
@@ -74,7 +74,7 @@ class Broker:
             raise Unavailable(f"broker answered {r.status_code} {title}".strip())
         return Resolved(problem=title or str(r.status_code))   # e.g. 409 revoke-pending
 
-    async def connected(self, hub_jwt: str) -> bool:
+    async def connected(self, hub_jwt: str, vendor: str) -> bool:
         """True once the user holds an ACTIVE grant for the vendor. Used while
         waiting on the browser flow: unlike resolve, it mints no new link."""
         try:
@@ -84,5 +84,5 @@ class Broker:
             raise Unavailable(f"broker unreachable ({type(exc).__name__})") from exc
         if r.status_code != 200:
             return False
-        return any(g.get("vendor") == self._cfg.vendor and g.get("state") == "ACTIVE"
+        return any(g.get("vendor") == vendor and g.get("state") == "ACTIVE"
                    for g in r.json().get("grants", []))

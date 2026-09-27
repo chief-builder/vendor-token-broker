@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Demo MCP client for the gateway: sign in at the hub with OAuth
-(authorization code + PKCE, pre-registered public client), connect GitHub
-through the broker when asked, then call a GitHub tool.
+(authorization code + PKCE, pre-registered public client), connect the
+tool's service through the broker when asked, then call the tool.
 
 Usage (gateway profile running):
-    .venv/bin/python tools/mcp-demo-client.py                   # get_me
-    .venv/bin/python tools/mcp-demo-client.py list_issues '{"owner": "o", "repo": "r"}'
+    .venv/bin/python tools/mcp-demo-client.py                        # github_get_me
+    .venv/bin/python tools/mcp-demo-client.py linear_list_issues
+    .venv/bin/python tools/mcp-demo-client.py github_list_issues '{"owner": "o", "repo": "r"}'
 
 Two browser windows may open: the hub sign-in (every run) and, the first
-time, the GitHub connection. Nothing needs to be pasted back here.
+time, the service connection. Nothing needs to be pasted back here.
 """
 import argparse
 import asyncio
@@ -22,7 +23,7 @@ from fastmcp.client.elicitation import ElicitResult
 
 
 async def connect_prompt(message, response_type, params, ctx):
-    """The gateway asks the user to connect GitHub (URL-mode elicitation).
+    """The gateway asks the user to connect a service (URL-mode elicitation).
     Open the link and accept: the gateway waits until the browser flow is
     done, so there is nothing to confirm here."""
     print(f"\n{message}\nOpening {params.url}\n(finish in the browser; waiting...)",
@@ -38,7 +39,8 @@ async def main(args) -> int:
                       mode=args.mode, timeout=180) as c:
         names = [t.name for t in await c.list_tools()]
         if args.tool not in names:
-            r = await c.call_tool("connect_github", {}, raise_on_error=False)
+            service = args.tool.split("_", 1)[0]          # tools are <service>_<tool>
+            r = await c.call_tool(f"connect_{service}", {}, raise_on_error=False)
             print(r.content[0].text, file=sys.stderr)
             if r.is_error:
                 return 1
@@ -52,7 +54,7 @@ async def main(args) -> int:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("tool", nargs="?", default="get_me")
+    p.add_argument("tool", nargs="?", default="github_get_me")
     p.add_argument("arguments", nargs="?", default="{}", help="tool arguments as JSON")
     p.add_argument("--url", default="http://localhost:8500/mcp")
     p.add_argument("--client-id", default="mcp-demo-cli")
