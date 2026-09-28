@@ -123,7 +123,11 @@ class VendorClient:
         eps = await self.endpoints(vendor)
         auth_form, basic = await self._auth_for(vendor, eps["token_endpoint"])
         form = {**form, **auth_form}
-        if resource := self.resource(vendor):
+        # Some MCP authorization servers (Linear) refuse `resource` on refresh
+        # and keep the refreshed token bound to the original resource anyway.
+        refresh = form.get("grant_type") == "refresh_token"
+        if (resource := self.resource(vendor)) and (
+                not refresh or self._registry[vendor].get("resource_on_refresh", True)):
             form["resource"] = resource
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as c:
@@ -209,25 +213,28 @@ class VendorClient:
                     if r.status_code not in (204, 404, 422):
                         raise VendorUnavailable(f"github grant delete {r.status_code}")
                 else:
-                    # Revoke the refresh token (RFC 7009 §2.1: its access
-                    # tokens go with it); a non-expiring grant has only an
-                    # access token; a scrubbed STALE entry has neither.
-                    if entry.get("refresh_token"):
-                        token, hint = entry["refresh_token"], "refresh_token"
-                    elif entry.get("access_token"):
-                        token, hint = entry["access_token"], "access_token"
-                    else:
+                    # Revoke the access token, then the refresh token. RFC 7009
+                    # §2.1 says revoking a refresh token should take its access
+                    # tokens with it, but not every vendor does (Linear's live
+                    # on for up to 24 h). A server may refuse access-token
+                    # revocation (unsupported_token_type): only the refresh
+                    # token's answer decides. A scrubbed STALE entry has neither.
+                    tokens = [(entry[h], h) for h in ("access_token", "refresh_token")
+                              if entry.get(h)]
+                    if not tokens:
                         return
                     eps = await self.endpoints(vendor)
                     if not eps.get("revocation_endpoint"):
                         raise RevocationUnsupported(f"{vendor} has no revocation endpoint")
                     # The assertion audience stays the token endpoint (RFC 7523
                     # accepts any identifier of the AS).
-                    auth_form, basic = await self._auth_for(vendor, eps["token_endpoint"])
-                    r = await c.post(eps["revocation_endpoint"], auth=basic,
-                                     data={"token": token, "token_type_hint": hint,
-                                           **auth_form})
-                    if r.status_code >= 400:
-                        raise VendorUnavailable(f"revocation endpoint {r.status_code}")
+                    for token, hint in tokens:
+                        auth_form, basic = await self._auth_for(vendor, eps["token_endpoint"])
+                        r = await c.post(eps["revocation_endpoint"], auth=basic,
+                                         data={"token": token, "token_type_hint": hint,
+                                               **auth_form})
+                        last = hint == tokens[-1][1]
+                        if r.status_code >= 500 or (last and r.status_code >= 400):
+                            raise VendorUnavailable(f"revocation endpoint {r.status_code}")
         except httpx.HTTPError as exc:
             raise _unreachable("vendor revocation", exc) from exc

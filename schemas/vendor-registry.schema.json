@@ -66,6 +66,10 @@
         "format": "uri",
         "description": "RFC 8707 resource indicator, for vendors whose tokens are bound to an MCP server (their own MCP authorization server, e.g. Atlassian, Cloudflare). Sent on authorize, code exchange, and refresh, as the MCP authorization spec requires. Use the MCP server's protected-resource `resource` value."
       },
+      "resource_on_refresh": {
+        "type": "boolean",
+        "description": "Send `resource` on refresh too (default true). Set false for an authorization server that refuses it on refresh and keeps the refreshed token bound to the original resource (Linear)."
+      },
       "revocation": {
         "type": "object",
         "required": ["type"],

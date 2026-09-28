@@ -201,13 +201,9 @@ def test_registry_ids_that_are_unsafe_path_segments_are_rejected(tmp_path, vendo
 # ------------------------------------------------------------ revocation shapes
 
 
-@pytest.mark.parametrize("entry,token,hint", [
-    ({"refresh_token": "rt", "access_token": "at"}, "rt", "refresh_token"),
-    ({"refresh_token": "", "access_token": "at-forever"}, "at-forever", "access_token"),
-])
-async def test_rfc7009_revokes_the_right_token(monkeypatch, entry, token, hint):
-    """A non-expiring grant has no refresh token: revoke its access token
-    instead of sending an empty token."""
+def _revocation_server(monkeypatch, answers: dict[str, int] | None = None) -> list[dict]:
+    """A vendor with an RFC 7009 endpoint; `answers` maps token_type_hint to
+    the status it returns (default 200). Returns the posted forms."""
     posted = []
     real = httpx.AsyncClient
     meta = {"issuer": "x", "authorization_endpoint": "http://as/a",
@@ -215,13 +211,48 @@ async def test_rfc7009_revokes_the_right_token(monkeypatch, entry, token, hint):
 
     def handler(request):
         if request.url.path == "/r":
-            posted.append(dict(httpx.QueryParams(request.content.decode())))
-            return httpx.Response(200, json={})
+            form = dict(httpx.QueryParams(request.content.decode()))
+            posted.append(form)
+            return httpx.Response((answers or {}).get(form["token_type_hint"], 200), json={})
         return httpx.Response(200, json=meta)
 
     monkeypatch.setattr(vendors_mod.httpx, "AsyncClient",
                         lambda *a, **k: real(transport=httpx.MockTransport(handler)))
+    return posted
+
+
+def _vendor_client() -> VendorClient:
     custody = MemoryCustody()
     custody.clients["mockhub"] = {"client_id": "cid", "client_secret": "s"}
-    await VendorClient(make_config(), custody).revoke("mockhub", entry)
-    assert posted[0]["token"] == token and posted[0]["token_type_hint"] == hint
+    return VendorClient(make_config(), custody)
+
+
+@pytest.mark.parametrize("entry,expected", [
+    ({"refresh_token": "rt", "access_token": "at"},
+     [("at", "access_token"), ("rt", "refresh_token")]),
+    ({"refresh_token": "", "access_token": "at-forever"}, [("at-forever", "access_token")]),
+])
+async def test_rfc7009_revokes_the_access_token_then_the_refresh_token(monkeypatch, entry,
+                                                                        expected):
+    """Not every vendor kills the access tokens with the refresh token
+    (Linear's live on for 24 h), so both are revoked, access token first.
+    A non-expiring grant has no refresh token: never send an empty token."""
+    posted = _revocation_server(monkeypatch)
+    await _vendor_client().revoke("mockhub", entry)
+    assert [(f["token"], f["token_type_hint"]) for f in posted] == expected
+
+
+async def test_a_refused_access_token_revocation_is_not_a_failure(monkeypatch):
+    """RFC 7009 lets a server refuse access-token revocation
+    (unsupported_token_type): the refresh token's answer decides."""
+    posted = _revocation_server(monkeypatch, {"access_token": 400})
+    await _vendor_client().revoke("mockhub", {"refresh_token": "rt", "access_token": "at"})
+    assert [f["token_type_hint"] for f in posted] == ["access_token", "refresh_token"]
+
+
+@pytest.mark.parametrize("answers", [{"refresh_token": 400}, {"access_token": 503},
+                                     {"refresh_token": 503}])
+async def test_revocation_failures_leave_the_grant_pending(monkeypatch, answers):
+    _revocation_server(monkeypatch, answers)
+    with pytest.raises(vendors_mod.VendorUnavailable):
+        await _vendor_client().revoke("mockhub", {"refresh_token": "rt", "access_token": "at"})

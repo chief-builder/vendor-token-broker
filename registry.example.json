@@ -19,11 +19,9 @@
   "linear": {
     "vendor_id": "linear",
     "enabled_env": "LINEAR_CLIENT_ID",
-    "endpoints": {
-      "authorization_endpoint": "https://linear.app/oauth/authorize",
-      "token_endpoint": "https://api.linear.app/oauth/token",
-      "revocation_endpoint": "https://api.linear.app/oauth/revoke"
-    },
+    "auth_metadata_url": "https://mcp.linear.app/.well-known/oauth-authorization-server",
+    "resource": "https://mcp.linear.app/mcp/readonly",
+    "resource_on_refresh": false,
     "token_endpoint_auth_method": "client_secret_post",
     "scope_ceiling": [
       "read"
@@ -33,7 +31,7 @@
     "revocation": {
       "type": "rfc7009"
     },
-    "_notes": "Linear OAuth app: no RFC 8414 metadata (endpoints hardcoded). 24h access tokens, rotating refresh tokens with a 30-minute grace period. RFC 7009 revocation. Read-only scope ceiling; the gateway also uses Linear's /mcp/readonly endpoint. Linear's API is GraphQL-only, so no REST user endpoint: vendor_user_id is recorded as 'unknown'."
+    "_notes": "Linear's MCP authorization server. The broker is a client registered once with tools/register-mcp-client.py (DCR); the client secret expires after 90 days. Tokens are bound to the read-only MCP server (Linear's full MCP server refuses them). Linear refuses `resource` on refresh but keeps the refreshed token bound, hence resource_on_refresh false. 24h access tokens, rotating refresh tokens (reuse fails). Revoking the refresh token does not revoke the access token, so the broker revokes both. No REST user endpoint: vendor_user_id is 'unknown'."
   },
   "atlassian": {
     "vendor_id": "atlassian",

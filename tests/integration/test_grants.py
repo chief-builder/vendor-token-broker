@@ -14,7 +14,7 @@ def test_delete_grant_revokes_at_vendor(alice):
                         headers={"Authorization": f"Bearer {alice}"}, timeout=10)
     assert r.status_code == 200 and r.json()["revoked"] is True
 
-    assert mock_state()["counters"]["revoke"] == revokes_before + 1  # RFC 7009 hit
+    assert mock_state()["counters"]["revoke"] == revokes_before + 2  # RFC 7009: AT, then RT
     assert resolve(alice).status_code == 404                          # entry gone
     grants = requests.get(f"{BROKER}/v1/grants",
                           headers={"Authorization": f"Bearer {alice}"}, timeout=10)

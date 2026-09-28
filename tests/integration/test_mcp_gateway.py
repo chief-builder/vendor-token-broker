@@ -291,7 +291,7 @@ async def test_disconnect_revokes_at_the_vendor_and_the_next_call_asks_again():
     before = mock_state()["counters"]["revoke"]
     r = await _call("alice", "disconnect_github")
     assert not r.is_error and "GitHub is disconnected" in r.content[0].text
-    assert mock_state()["counters"]["revoke"] == before + 1         # vendor first
+    assert mock_state()["counters"]["revoke"] == before + 2   # vendor first: AT, then RT
     assert resolve_kc(hub_jwt("alice")).status_code == 404
     again = await _call("alice", "disconnect_github")
     assert "GitHub was not connected" in again.content[0].text

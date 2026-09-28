@@ -194,6 +194,17 @@ async def test_code_exchange_and_refresh_send_the_vendors_resource(client, vendo
     assert all(f["resource"] == mcp for f in forms)
 
 
+async def test_resource_can_be_left_off_refresh(client, vendor_http):
+    """Linear refuses `resource` on refresh (and keeps the token bound)."""
+    mcp = "https://mcp.example.test/mcp/readonly"
+    client._registry["mockhub"] = {**client._registry["mockhub"], "resource": mcp,
+                                   "resource_on_refresh": False}
+    forms = _capture_token_forms(vendor_http)
+    await client.exchange_code("mockhub", "code", "verifier", "http://broker/cb")
+    await client.refresh("mockhub", "rt-0")
+    assert forms[0]["resource"] == mcp and "resource" not in forms[1]
+
+
 async def test_ordinary_vendor_token_requests_have_no_resource(client, vendor_http):
     forms = _capture_token_forms(vendor_http)
     await client.exchange_code("mockhub", "code", "verifier", "http://broker/cb")

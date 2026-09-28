@@ -27,7 +27,7 @@ def test_pkj_consent_refresh_and_revoke():
                         headers={"Authorization": f"Bearer {tok}"}, timeout=15)
     assert r.status_code == 200 and r.json()["revoked"] is True   # RFC 7009 via pkj
     after = mock_state()["counters"]
-    assert after["revoke"] == before["revoke"] + 1
+    assert after["revoke"] == before["revoke"] + 2   # access token, then refresh token
     assert after["bad_assertions"] == before["bad_assertions"]
     assert resolve(tok, VENDOR).status_code == 404
 
