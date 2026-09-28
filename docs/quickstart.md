@@ -34,7 +34,7 @@ This starts:
 
 ```mermaid
 flowchart LR
-    C["Demo client or<br/>Claude Code"] --> G["Gateway<br/>:8500"]
+    C["Demo client or<br/>Claude Code"] --> G["MCP gateway<br/>:8500"]
     C -.->|"sign in"| K["Keycloak<br/>:8180"]
     G --> K
     G --> B["Broker<br/>:8600"]

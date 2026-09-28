@@ -50,11 +50,11 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant C as Claude Code
-    participant G as Gateway
+    participant G as MCP gateway
     participant H as Hub
     participant B as Broker
     participant S as Service
-    C->>G: sign-in token, meant only for the gateway
+    C->>G: sign-in token, meant only for the MCP gateway
     G->>H: swap the sign-in token
     H-->>G: internal hub token
     G->>B: hub token, which only the broker accepts
@@ -73,7 +73,7 @@ sequenceDiagram
     autonumber
     actor P as Person
     participant C as Claude Code
-    participant G as Gateway
+    participant G as MCP gateway
     participant B as Broker
     participant S as Jira
     P->>C: list my open Jira issues

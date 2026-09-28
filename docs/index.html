@@ -155,11 +155,11 @@
 <h2 id="three-tokens-that-never-cross">Three tokens that never cross</h2>
 <pre class="mermaid">sequenceDiagram
     participant C as Claude Code
-    participant G as Gateway
+    participant G as MCP gateway
     participant H as Hub
     participant B as Broker
     participant S as Service
-    C-&gt;&gt;G: sign-in token, meant only for the gateway
+    C-&gt;&gt;G: sign-in token, meant only for the MCP gateway
     G-&gt;&gt;H: swap the sign-in token
     H--&gt;&gt;G: internal hub token
     G-&gt;&gt;B: hub token, which only the broker accepts
@@ -174,7 +174,7 @@
     autonumber
     actor P as Person
     participant C as Claude Code
-    participant G as Gateway
+    participant G as MCP gateway
     participant B as Broker
     participant S as Jira
     P-&gt;&gt;C: list my open Jira issues
@@ -475,7 +475,7 @@
 </tbody>
 </table>
 <pre class="mermaid">flowchart LR
-    C[&quot;Demo client or&lt;br/&gt;Claude Code&quot;] --&gt; G[&quot;Gateway&lt;br/&gt;:8500&quot;]
+    C[&quot;Demo client or&lt;br/&gt;Claude Code&quot;] --&gt; G[&quot;MCP gateway&lt;br/&gt;:8500&quot;]
     C -.-&gt;|&quot;sign in&quot;| K[&quot;Keycloak&lt;br/&gt;:8180&quot;]
     G --&gt; K
     G --&gt; B[&quot;Broker&lt;br/&gt;:8600&quot;]
@@ -717,7 +717,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <pre class="mermaid">sequenceDiagram
     autonumber
     participant C as AI assistant
-    participant G as Gateway
+    participant G as MCP gateway
     participant H as Sign-in service
     participant B as Broker
     participant M as Service MCP server
@@ -866,7 +866,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <pre class="mermaid">sequenceDiagram
     autonumber
     participant C as AI assistant
-    participant G as Gateway
+    participant G as MCP gateway
     participant H as Sign-in service
     participant B as Broker
     participant V as Service sign-in
@@ -1185,7 +1185,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
     participant P as Person's browser
     participant B as Broker
     participant A as Service sign-in
-    participant G as Gateway
+    participant G as MCP gateway
     participant M as Service MCP server
 
     B-&gt;&gt;P: redirect to authorize, resource = MCP server URL

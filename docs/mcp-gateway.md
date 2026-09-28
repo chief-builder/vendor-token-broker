@@ -51,7 +51,7 @@ The assistant only talks to the gateway and the sign-in service. The service tok
 sequenceDiagram
     autonumber
     participant C as AI assistant
-    participant G as Gateway
+    participant G as MCP gateway
     participant H as Sign-in service
     participant B as Broker
     participant M as Service MCP server
@@ -182,7 +182,7 @@ Saying yes only means the person chose to open the link. The gateway then waits 
 sequenceDiagram
     autonumber
     participant C as AI assistant
-    participant G as Gateway
+    participant G as MCP gateway
     participant H as Sign-in service
     participant B as Broker
     participant V as Service sign-in
@@ -322,7 +322,7 @@ sequenceDiagram
     participant P as Person's browser
     participant B as Broker
     participant A as Service sign-in
-    participant G as Gateway
+    participant G as MCP gateway
     participant M as Service MCP server
 
     B->>P: redirect to authorize, resource = MCP server URL
