@@ -73,11 +73,11 @@ Each row shows a standard and what the broker must do to meet it.
 | Getting tokens | RFC 7636 PKCE | Create the verifier and keep it on the server, one per transaction |
 | Discovery | RFC 8414 AS metadata | Find vendor endpoints from `.well-known`. Hardcoding is forbidden where metadata exists (the registry schema enforces `auth_metadata_url` xor `endpoints`) |
 | Getting tokens | RFC 9207 issuer identification | When a recorded issuer exists, the callback checks `iss` against the issuer recorded when the transaction started. Use strict string comparison, no URI normalization. If the AS advertises support but sends no `iss`, reject the callback as a mix-up signal |
-| Getting tokens | RFC 8707 resource indicators | For a vendor whose tokens are bound to one MCP server (registry `resource`), send `resource` on the vendor authorize request and on every token request: code exchange and refresh |
+| Getting tokens | RFC 8707 resource indicators | For a vendor whose tokens are bound to one MCP server (registry `resource`), send `resource` on the vendor authorize request and on every token request: code exchange and refresh (refresh only if `resource_on_refresh` is not false, §2.1) |
 | Client auth | RFC 7523 `private_key_jwt` | Prefer it where the vendor supports it. Otherwise use `client_secret_basic` or `client_secret_post` (set per vendor in the registry, default `client_secret_post`) |
 | Hardening | RFC 9700 OAuth 2.0 Security BCP | Used as the review basis. [Known limitations](security.md#known-limitations) prevent a blanket conformance claim |
 | Lifecycle | RFC 6749 §6 refresh | Only one refresh at a time per entry (single-flight, §8) |
-| Lifecycle | RFC 7009 revocation | When a user removes a grant, call the vendor revocation endpoint before deleting the stored entry |
+| Lifecycle | RFC 7009 revocation | When a user removes a grant, call the vendor revocation endpoint before deleting the stored entry: the access token, then the refresh token. A 4xx on the access token is ignored (a server may not support revoking it); the refresh token's answer decides |
 | Exchange (future) | MCP EMA: ID-JAG via RFC 8693 token exchange + RFC 7523 grant | Possible future migration only. No exchange is implemented here |
 
 **`private_key_jwt` assertions** (`client_auth.py`): `iss` = `sub` = the
@@ -94,13 +94,15 @@ the reviewed registry and handled in `vendors.py`:
 
 | Deviation | Vendor | What the broker does |
 |---|---|---|
-| No RFC 8414 metadata | GitHub, Linear | The registry lists `endpoints` explicitly. Allowed only where no metadata exists |
+| No RFC 8414 metadata | GitHub | The registry lists `endpoints` explicitly. Allowed only where no metadata exists |
 | Revocation by grant deletion, not RFC 7009 | GitHub (`revocation.type: github_grant`) | `DELETE https://api.github.com/applications/{client_id}/grant` with HTTP Basic (client id and secret) and the access token in the JSON body. 204, 404 and 422 count as revoked. Any other status is a vendor outage. An entry with no access token (a blanked STALE entry) needs no call. This deletes the whole user-to-app grant, which is why re-consent never revokes an ACTIVE or STALE predecessor (§4.3) |
 | Token errors in a 200 response | GitHub | Any `error` field is a failure, whatever the HTTP status |
 | `bad_refresh_token` instead of `invalid_grant` | GitHub | Treated exactly like `invalid_grant` (the entry goes STALE) |
 | Scopes set by the vendor, not the request | GitHub App (empty `scope_ceiling`) | The broker requests no scopes and ignores `required_scopes` (§4.1) |
 | Tokens that never expire | GitHub App with expiry turned off | Stored with a far-future expiry and never refreshed (§5) |
-| Tokens bound to one MCP server | Atlassian, Cloudflare (registry `resource`) | RFC 8707 `resource` on authorize, code exchange and every refresh |
+| Tokens bound to one MCP server | Linear, Atlassian, Cloudflare (registry `resource`) | RFC 8707 `resource` on authorize, code exchange and every refresh |
+| `resource` refused on refresh | Linear (`resource_on_refresh: false`) | Sent on authorize and code exchange only. Linear keeps the refreshed token bound to the same MCP server |
+| Revoking the refresh token leaves the access token alive | Linear | Why every RFC 7009 revocation also revokes the access token (§2 Lifecycle) |
 
 ## 3. Architecture and trust boundaries
 

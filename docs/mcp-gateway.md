@@ -15,7 +15,7 @@ The gateway is a separate service (`src/mcp_gateway/`). The broker keeps its sev
 | Service | Its MCP server | Tools | Read-only by |
 |---|---|---|---|
 | GitHub | `https://api.githubcopilot.com/mcp/` | 7: `github_get_me`, `github_search_repositories`, `github_get_file_contents`, `github_list_issues`, `github_issue_read`, `github_list_pull_requests`, `github_pull_request_read` | `X-MCP-Readonly: true` header, plus the tool list |
-| Linear | `https://mcp.linear.app/mcp/readonly` | 13: `linear_list_issues`, `linear_get_issue`, `linear_list_comments`, `linear_list_projects`, `linear_get_project`, `linear_list_cycles`, `linear_list_teams`, `linear_get_team`, `linear_list_issue_statuses`, `linear_list_users`, `linear_get_user`, `linear_list_documents`, `linear_get_document` | Linear's read-only URL, the `read` scope, plus the tool list |
+| Linear | `https://mcp.linear.app/mcp/readonly` | 13: `linear_list_issues`, `linear_get_issue`, `linear_list_comments`, `linear_list_projects`, `linear_get_project`, `linear_list_cycles`, `linear_list_teams`, `linear_get_team`, `linear_list_issue_statuses`, `linear_list_users`, `linear_get_user`, `linear_list_documents`, `linear_get_document` | Tokens are bound to Linear's read-only MCP server (its full MCP server refuses them), the `read` scope, plus the tool list |
 | Atlassian | `https://mcp.atlassian.com/v2/mcp` | 8: `atlassian_getJiraIssue`, `atlassian_searchJiraIssuesUsingJql`, `atlassian_getConfluenceContent`, `atlassian_searchConfluence`, `atlassian_executeRead`, `atlassian_discover`, `atlassian_atlassianUserInfo`, `atlassian_getAccessibleAtlassianResources` | Read and search scopes only, plus the tool list |
 | Cloudflare | `https://mcp.cloudflare.com/mcp` | 3: `cloudflare_search`, `cloudflare_docs`, `cloudflare_execute` | **Scopes only.** `execute` runs code against the whole Cloudflare API. What stops it writing is that the token only has 12 read scopes, plus `offline_access` |
 
@@ -299,7 +299,7 @@ The gateway is built from `Dockerfile.gateway`. Its dependencies come from its o
 
 ## Add another server
 
-Services whose MCP server accepts an ordinary token from that service's own OAuth app work like GitHub and Linear. Sentry, GitLab, Azure DevOps, Slack, and PagerDuty are in this group.
+Services whose MCP server accepts an ordinary token from that service's own OAuth app work like GitHub. Sentry, GitLab, Azure DevOps, Slack, and PagerDuty are in this group.
 
 1. **Register an OAuth app** with the service. Use callback `https://<broker>/v1/callback/<vendor>` and read-only scopes.
 2. **Add a broker registry entry** (`registry.example.json`) with the service's OAuth endpoints, `scope_ceiling`, and `enabled_env`. Store the app's client ID and secret in custody at `vendor-clients/<vendor>`. See [Deploy and operate](operations.md).
@@ -307,14 +307,15 @@ Services whose MCP server accepts an ordinary token from that service's own OAut
 4. **Save its tool list:** `UPSTREAM_TOKEN=… .venv/bin/python tools/refresh-tool-snapshot.py <name>`.
 5. **Test it:** add the service to the stand-in (`tests/stack/mock-mcp`) for CI, and to `tests/integration/test_external_mcp_servers.py` for a real-account check.
 
-Services that run their own MCP sign-in (Atlassian, Cloudflare, Notion, and many others) need two more steps; see the next section.
+Services that run their own MCP sign-in (Linear, Atlassian, Cloudflare, Notion, and many others) need two more steps; see the next section.
 
 ## Servers with their own sign-in
 
-Atlassian's and Cloudflare's MCP servers don't accept a token from an ordinary OAuth app. They run their own OAuth sign-in, and the token is only valid at that one MCP server. So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:
+Linear's, Atlassian's, and Cloudflare's MCP servers run their own OAuth sign-in, and the token it issues is only valid at that one MCP server. (Atlassian's and Cloudflare's accept no other kind of token.) So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:
 
 - **It registers itself once**, with dynamic client registration. There is no developer console to create an app in.
 - **It names the MCP server on every request** with the `resource` parameter: when the person connects, when it swaps the code for a token, and on every refresh. The registry entry's `resource` field holds that address.
+- **Except where refresh refuses it.** Linear rejects `resource` on refresh, and keeps the refreshed token bound to the same server anyway. Its registry entry sets `resource_on_refresh: false`.
 
 ```mermaid
 sequenceDiagram
@@ -338,13 +339,13 @@ sequenceDiagram
     Note over M: any other server refuses this token
 ```
 
-Notice that `resource` goes on all three requests. The token that comes back works only at the MCP server it names.
+Notice that `resource` goes on all three requests (on the first two only, for Linear). The token that comes back works only at the MCP server it names.
 
 Standards: dynamic client registration is RFC 7591. The `resource` parameter is RFC 8707.
 
 To add one:
 
-1. **Add a registry entry** with `auth_metadata_url` (the sign-in service's metadata), `resource` (the MCP server's URL), `scope_ceiling` (only read scopes), and `enabled_env`.
+1. **Add a registry entry** with `auth_metadata_url` (the sign-in service's metadata), `resource` (the MCP server's URL), `scope_ceiling` (only read scopes), and `enabled_env`. Add `resource_on_refresh: false` if the service refuses `resource` on refresh.
 2. **Register the broker, once:**
 
    ```sh
@@ -369,12 +370,13 @@ To add one:
 
 What each service needs:
 
-| | Atlassian | Cloudflare |
-|---|---|---|
-| Before registering | An org admin allows the broker's callback address: in Atlassian Administration, under **Rovo → MCP → Domain settings** | Nothing |
-| Scopes the broker asks for | `read:me`, `read:account`, `offline_access`, and read and search for Jira and Confluence (`…:agent-interface`) | 12 read scopes plus `offline_access`: `user:read`, `account:read`, `workers-scripts.read`, `workers-routes.read`, `workers-observability.read`, `workers-tail.read`, `workers-ci.read`, `workers-kv-storage.read`, `workers-r2.read`, `workers-r2-bucket-item.read`, `logs.read`, `account-logs.read`. Asked without a `scope`, Cloudflare granted 194 read scopes |
-| Tokens | 8 hours, refresh token rotates | 1 hour, refresh token rotates |
-| Client secret | The script warns if the registration sets an expiry date | **Expires after about 3 months.** The test registration expires on 2026-12-26. There's no way to renew it: register again, update custody, and everyone reconnects |
+| | Linear | Atlassian | Cloudflare |
+|---|---|---|---|
+| Before registering | Nothing | An org admin allows the broker's callback address: in Atlassian Administration, under **Rovo → MCP → Domain settings** | Nothing |
+| MCP server the token is bound to | `https://mcp.linear.app/mcp/readonly` | `https://mcp.atlassian.com/v2/mcp` | `https://mcp.cloudflare.com/mcp` |
+| Scopes the broker asks for | `read` | `read:me`, `read:account`, `offline_access`, and read and search for Jira and Confluence (`…:agent-interface`) | 12 read scopes plus `offline_access`: `user:read`, `account:read`, `workers-scripts.read`, `workers-routes.read`, `workers-observability.read`, `workers-tail.read`, `workers-ci.read`, `workers-kv-storage.read`, `workers-r2.read`, `workers-r2-bucket-item.read`, `logs.read`, `account-logs.read`. Asked without a `scope`, Cloudflare granted 194 read scopes |
+| Tokens | 24 hours, refresh token rotates, reusing an old one fails. `resource` is left off refresh | 8 hours, refresh token rotates | 1 hour, refresh token rotates |
+| Client secret | **Expires after 90 days.** The test registration expires on 2026-12-27. Register again, update custody, and everyone reconnects | The script warns if the registration sets an expiry date | **Expires after about 3 months.** The test registration expires on 2026-12-26. There's no way to renew it: register again, update custody, and everyone reconnects |
 
 Cloudflare's separate observability and builds MCP servers each have their own sign-in and would need their own registration. The main server covers the same read APIs through `execute`.
 

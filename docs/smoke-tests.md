@@ -459,7 +459,7 @@ sequenceDiagram
     end
     U->>B: DELETE /v1/grants/mockhub/wf-smoke (hub JWT)
     Note over B: sub in path MUST match JWT sub<br/>(anyone else → 403 forbidden)<br/>then hold the refresh lock until done
-    B->>M: POST /revoke (RFC 7009, refresh token)
+    B->>M: POST /revoke (RFC 7009): access token, then refresh token
     M-->>B: 200, family revoked at the vendor
     B->>V: re-read (unchanged), then delete<br/>vendor-tokens/mockhub/sub-b64.{encoded subject}
     B-->>U: {"revoked": true}

@@ -90,30 +90,29 @@ If sign-in later fails with an error that names an old address, run `claude mcp 
    - Repository permissions, all **read-only**: Contents, Issues, Pull requests, Metadata
 
    Then generate a client secret, and install the App on the repositories you want to use.
-2. **Linear:** in Linear, go to **Settings → API → OAuth applications** and create an app with callback URL `http://localhost:8600/v1/callback/linear`. You need to be a workspace admin.
-3. **Atlassian and Cloudflare:** these register the broker with a script instead of a developer console ([why](mcp-gateway.md#servers-with-their-own-sign-in)).
+2. **Linear, Atlassian, and Cloudflare:** these register the broker with a script instead of a developer console ([why](mcp-gateway.md#servers-with-their-own-sign-in)).
    - For Atlassian, first ask an org admin to allow `http://localhost:*/**` in Atlassian Administration, under **Rovo → MCP → Domain settings**.
    - Then register once per service. The script writes the ID and secret into `tests/stack/.env`:
 
      ```sh
+     .venv/bin/python tools/register-mcp-client.py linear \
+         --redirect-base http://localhost:8600 --env-file tests/stack/.env
      .venv/bin/python tools/register-mcp-client.py atlassian \
          --redirect-base http://localhost:8600 --env-file tests/stack/.env
      .venv/bin/python tools/register-mcp-client.py cloudflare \
          --redirect-base http://localhost:8600 --env-file tests/stack/.env
      ```
 
-     Don't run it again later: a new registration disconnects every account connected with the old one. Cloudflare's secret expires after about 3 months, and the script prints the date.
-4. Put the GitHub and Linear IDs and secrets in `tests/stack/.env` too (git ignores this file):
+     Don't run it again later: a new registration disconnects every account connected with the old one. Linear's and Cloudflare's secrets expire after about 3 months, and the script prints the date.
+3. Put the GitHub App's ID and secret in `tests/stack/.env` too (git ignores this file):
 
    ```sh
    GITHUB_CLIENT_ID=...
    GITHUB_CLIENT_SECRET=...
-   LINEAR_CLIENT_ID=...
-   LINEAR_CLIENT_SECRET=...
    ```
 
    Run the `up` command from step 1 again, so the broker gets them. You can set up any subset of the services.
-5. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:
+4. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:
 
    ```sh
    GATEWAY_UPSTREAMS= GATEWAY_CONSENT_WAIT_S=120 GATEWAY_HTTP_TIMEOUT_S=15 \
@@ -121,7 +120,7 @@ If sign-in later fails with an error that names an old address, run `claude mcp 
    ```
 
    To serve only some services, add for example `GATEWAY_ENABLED_UPSTREAMS=github,atlassian`.
-6. Use the demo client or Claude Code as before. `github_get_me` returns your own GitHub account, `linear_list_teams` your Linear teams, and `atlassian_getAccessibleAtlassianResources` your Atlassian sites. `connect_cloudflare` connects Cloudflare. To check them all automatically, run `.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external`.
+5. Use the demo client or Claude Code as before. `github_get_me` returns your own GitHub account, `linear_list_teams` your Linear teams, and `atlassian_getAccessibleAtlassianResources` your Atlassian sites. `connect_cloudflare` connects Cloudflare. To check them all automatically, run `.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external`.
 
 To go back to the stand-ins, run the `up` command for `mcp-gateway` again without those variables.
 

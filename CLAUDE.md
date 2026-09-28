@@ -109,7 +109,10 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
   `auth_metadata_url` + `resource` (RFC 8707, sent on authorize, code
   exchange and refresh); the broker is registered with them once via
   `tools/register-mcp-client.py` — never re-register (orphans every
-  connection). Cloudflare's client secret expires (2026-12-26).
+  connection). Linear (tokens bound to /mcp/readonly, `resource_on_refresh:
+  false`), Atlassian, and Cloudflare use this path. Linear's and
+  Cloudflare's client secrets expire (2026-12-27, 2026-12-26). RFC 7009
+  revocation revokes the access token, then the refresh token.
 
 ## Gotchas
 

@@ -218,22 +218,22 @@
 <p>The link only works for the person it was made for, in the browser that opened it. See <a href="#connecting-a-service-during-a-tool-call">Connecting a service during a tool call</a>.</p>
 <h2 id="two-ways-services-sign-in">Two ways services sign in</h2>
 <pre class="mermaid">flowchart TB
-    subgraph A[&quot;GitHub and Linear&quot;]
+    subgraph A[&quot;GitHub&quot;]
         direction LR
         A1[&quot;An admin creates an app&lt;br/&gt;in the service's console&quot;] --&gt; A2[&quot;The app's client ID and&lt;br/&gt;secret stored in Vault&quot;]
         A2 --&gt; A4[&quot;Each person signs in and&lt;br/&gt;approves, in their browser&quot;]
         A4 --&gt; A3[&quot;A token for that person,&lt;br/&gt;used at the MCP server&quot;]
     end
-    subgraph M[&quot;Atlassian and Cloudflare&quot;]
+    subgraph M[&quot;Own MCP sign-in&quot;]
         direction LR
-        M1[&quot;register-mcp-client.py&lt;br/&gt;registers the app once&quot;] --&gt; M2[&quot;The app's client ID and&lt;br/&gt;secret stored in Vault&quot;]
+        M1[&quot;Linear, Atlassian, Cloudflare:&lt;br/&gt;register-mcp-client.py&lt;br/&gt;registers the app once&quot;] --&gt; M2[&quot;The app's client ID and&lt;br/&gt;secret stored in Vault&quot;]
         M2 --&gt; M5[&quot;Each person signs in and&lt;br/&gt;approves, in their browser&quot;]
         M5 --&gt; M4[&quot;A token for that person,&lt;br/&gt;for one MCP server only&quot;]
     end
     A ~~~ M
 </pre>
 <p>Either way, the client ID and secret only identify the broker as an OAuth app. Only a person signing in and approving produces a token, and it acts as that person. The broker uses no system-to-system (client credentials) grant.</p>
-<p>Atlassian and Cloudflare run their own sign-in for their MCP servers. The broker is registered with each of them once, and names the MCP server on every request (the <code>resource</code> parameter, RFC 8707). Registering again would disconnect everyone. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
+<p>Linear, Atlassian, and Cloudflare run their own sign-in for their MCP servers. The broker is registered with each of them once, and names the MCP server when the person connects (the <code>resource</code> parameter, RFC 8707). The token then only works at that server: Linear's only at its read-only server. Registering again would disconnect everyone. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
 <h2 id="what-keeps-each-service-read-only">What keeps each service read-only</h2>
 <p>Each service has several layers. If one fails, the others still hold.</p>
 <table>
@@ -255,7 +255,7 @@
 <tr>
 <td>Linear</td>
 <td>13 read tools</td>
-<td>the <code>/mcp/readonly</code> address</td>
+<td>tokens only work at its read-only MCP server</td>
 <td><code>read</code></td>
 </tr>
 <tr>
@@ -524,34 +524,33 @@
 <li>Repository permissions, all <strong>read-only</strong>: Contents, Issues, Pull requests, Metadata</li>
 </ol>
 <p>Then generate a client secret, and install the App on the repositories you want to use.
-2. <strong>Linear:</strong> in Linear, go to <strong>Settings → API → OAuth applications</strong> and create an app with callback URL <code>http://localhost:8600/v1/callback/linear</code>. You need to be a workspace admin.
-3. <strong>Atlassian and Cloudflare:</strong> these register the broker with a script instead of a developer console (<a href="#servers-with-their-own-sign-in">why</a>).
+2. <strong>Linear, Atlassian, and Cloudflare:</strong> these register the broker with a script instead of a developer console (<a href="#servers-with-their-own-sign-in">why</a>).
    - For Atlassian, first ask an org admin to allow <code>http://localhost:*/**</code> in Atlassian Administration, under <strong>Rovo → MCP → Domain settings</strong>.
    - Then register once per service. The script writes the ID and secret into <code>tests/stack/.env</code>:</p>
 <pre><code> ```sh
+ .venv/bin/python tools/register-mcp-client.py linear \
+     --redirect-base http://localhost:8600 --env-file tests/stack/.env
  .venv/bin/python tools/register-mcp-client.py atlassian \
      --redirect-base http://localhost:8600 --env-file tests/stack/.env
  .venv/bin/python tools/register-mcp-client.py cloudflare \
      --redirect-base http://localhost:8600 --env-file tests/stack/.env
  ```
 
- Don't run it again later: a new registration disconnects every account connected with the old one. Cloudflare's secret expires after about 3 months, and the script prints the date.
+ Don't run it again later: a new registration disconnects every account connected with the old one. Linear's and Cloudflare's secrets expire after about 3 months, and the script prints the date.
 </code></pre>
 <ol>
-<li>Put the GitHub and Linear IDs and secrets in <code>tests/stack/.env</code> too (git ignores this file):</li>
+<li>Put the GitHub App's ID and secret in <code>tests/stack/.env</code> too (git ignores this file):</li>
 </ol>
 <p><code>sh
    GITHUB_CLIENT_ID=...
-   GITHUB_CLIENT_SECRET=...
-   LINEAR_CLIENT_ID=...
-   LINEAR_CLIENT_SECRET=...</code></p>
+   GITHUB_CLIENT_SECRET=...</code></p>
 <p>Run the <code>up</code> command from step 1 again, so the broker gets them. You can set up any subset of the services.
-5. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:</p>
+4. Point the gateway at the real services. Give people two minutes to finish connecting, and give slow calls 15 seconds:</p>
 <p><code>sh
    GATEWAY_UPSTREAMS= GATEWAY_CONSENT_WAIT_S=120 GATEWAY_HTTP_TIMEOUT_S=15 \
      docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --no-deps --wait mcp-gateway</code></p>
 <p>To serve only some services, add for example <code>GATEWAY_ENABLED_UPSTREAMS=github,atlassian</code>.
-6. Use the demo client or Claude Code as before. <code>github_get_me</code> returns your own GitHub account, <code>linear_list_teams</code> your Linear teams, and <code>atlassian_getAccessibleAtlassianResources</code> your Atlassian sites. <code>connect_cloudflare</code> connects Cloudflare. To check them all automatically, run <code>.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external</code>.</p>
+5. Use the demo client or Claude Code as before. <code>github_get_me</code> returns your own GitHub account, <code>linear_list_teams</code> your Linear teams, and <code>atlassian_getAccessibleAtlassianResources</code> your Atlassian sites. <code>connect_cloudflare</code> connects Cloudflare. To check them all automatically, run <code>.venv/bin/pytest tests/integration/test_external_mcp_servers.py -m external</code>.</p>
 <p>To go back to the stand-ins, run the <code>up</code> command for <code>mcp-gateway</code> again without those variables.</p>
 <h2 id="look-under-the-hood-the-broker-on-its-own">Look under the hood: the broker on its own</h2>
 <p>The gateway gets tokens from the broker. You can talk to the broker directly, the way a gateway does. Step 1 also started a second broker on port 8300, with a simple sign-in stub instead of Keycloak. This section uses that one. If you skipped step 1, start it with:</p>
@@ -668,7 +667,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <td>Linear</td>
 <td><code>https://mcp.linear.app/mcp/readonly</code></td>
 <td>13: <code>linear_list_issues</code>, <code>linear_get_issue</code>, <code>linear_list_comments</code>, <code>linear_list_projects</code>, <code>linear_get_project</code>, <code>linear_list_cycles</code>, <code>linear_list_teams</code>, <code>linear_get_team</code>, <code>linear_list_issue_statuses</code>, <code>linear_list_users</code>, <code>linear_get_user</code>, <code>linear_list_documents</code>, <code>linear_get_document</code></td>
-<td>Linear's read-only URL, the <code>read</code> scope, plus the tool list</td>
+<td>Tokens are bound to Linear's read-only MCP server (its full MCP server refuses them), the <code>read</code> scope, plus the tool list</td>
 </tr>
 <tr>
 <td>Atlassian</td>
@@ -1169,7 +1168,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 </ul>
 <p>The gateway is built from <code>Dockerfile.gateway</code>. Its dependencies come from its own checked lock file, <code>requirements-gateway.lock</code>, so FastMCP never ends up in the broker's image.</p>
 <h2 id="add-another-server">Add another server</h2>
-<p>Services whose MCP server accepts an ordinary token from that service's own OAuth app work like GitHub and Linear. Sentry, GitLab, Azure DevOps, Slack, and PagerDuty are in this group.</p>
+<p>Services whose MCP server accepts an ordinary token from that service's own OAuth app work like GitHub. Sentry, GitLab, Azure DevOps, Slack, and PagerDuty are in this group.</p>
 <ol>
 <li><strong>Register an OAuth app</strong> with the service. Use callback <code>https://&lt;broker&gt;/v1/callback/&lt;vendor&gt;</code> and read-only scopes.</li>
 <li><strong>Add a broker registry entry</strong> (<code>registry.example.json</code>) with the service's OAuth endpoints, <code>scope_ceiling</code>, and <code>enabled_env</code>. Store the app's client ID and secret in custody at <code>vendor-clients/&lt;vendor&gt;</code>. See <a href="#operations">Deploy and operate</a>.</li>
@@ -1177,12 +1176,13 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <li><strong>Save its tool list:</strong> <code>UPSTREAM_TOKEN=… .venv/bin/python tools/refresh-tool-snapshot.py &lt;name&gt;</code>.</li>
 <li><strong>Test it:</strong> add the service to the stand-in (<code>tests/stack/mock-mcp</code>) for CI, and to <code>tests/integration/test_external_mcp_servers.py</code> for a real-account check.</li>
 </ol>
-<p>Services that run their own MCP sign-in (Atlassian, Cloudflare, Notion, and many others) need two more steps; see the next section.</p>
+<p>Services that run their own MCP sign-in (Linear, Atlassian, Cloudflare, Notion, and many others) need two more steps; see the next section.</p>
 <h2 id="servers-with-their-own-sign-in">Servers with their own sign-in</h2>
-<p>Atlassian's and Cloudflare's MCP servers don't accept a token from an ordinary OAuth app. They run their own OAuth sign-in, and the token is only valid at that one MCP server. So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:</p>
+<p>Linear's, Atlassian's, and Cloudflare's MCP servers run their own OAuth sign-in, and the token it issues is only valid at that one MCP server. (Atlassian's and Cloudflare's accept no other kind of token.) So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:</p>
 <ul>
 <li><strong>It registers itself once</strong>, with dynamic client registration. There is no developer console to create an app in.</li>
 <li><strong>It names the MCP server on every request</strong> with the <code>resource</code> parameter: when the person connects, when it swaps the code for a token, and on every refresh. The registry entry's <code>resource</code> field holds that address.</li>
+<li><strong>Except where refresh refuses it.</strong> Linear rejects <code>resource</code> on refresh, and keeps the refreshed token bound to the same server anyway. Its registry entry sets <code>resource_on_refresh: false</code>.</li>
 </ul>
 <pre class="mermaid">sequenceDiagram
     autonumber
@@ -1204,11 +1204,11 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
     G-&gt;&gt;M: tool call with the token
     Note over M: any other server refuses this token
 </pre>
-<p>Notice that <code>resource</code> goes on all three requests. The token that comes back works only at the MCP server it names.</p>
+<p>Notice that <code>resource</code> goes on all three requests (on the first two only, for Linear). The token that comes back works only at the MCP server it names.</p>
 <p>Standards: dynamic client registration is RFC 7591. The <code>resource</code> parameter is RFC 8707.</p>
 <p>To add one:</p>
 <ol>
-<li><strong>Add a registry entry</strong> with <code>auth_metadata_url</code> (the sign-in service's metadata), <code>resource</code> (the MCP server's URL), <code>scope_ceiling</code> (only read scopes), and <code>enabled_env</code>.</li>
+<li><strong>Add a registry entry</strong> with <code>auth_metadata_url</code> (the sign-in service's metadata), <code>resource</code> (the MCP server's URL), <code>scope_ceiling</code> (only read scopes), and <code>enabled_env</code>. Add <code>resource_on_refresh: false</code> if the service refuses <code>resource</code> on refresh.</li>
 <li><strong>Register the broker, once:</strong></li>
 </ol>
 <p>```sh
@@ -1233,6 +1233,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <thead>
 <tr>
 <th></th>
+<th>Linear</th>
 <th>Atlassian</th>
 <th>Cloudflare</th>
 </tr>
@@ -1240,21 +1241,31 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <tbody>
 <tr>
 <td>Before registering</td>
+<td>Nothing</td>
 <td>An org admin allows the broker's callback address: in Atlassian Administration, under <strong>Rovo → MCP → Domain settings</strong></td>
 <td>Nothing</td>
 </tr>
 <tr>
+<td>MCP server the token is bound to</td>
+<td><code>https://mcp.linear.app/mcp/readonly</code></td>
+<td><code>https://mcp.atlassian.com/v2/mcp</code></td>
+<td><code>https://mcp.cloudflare.com/mcp</code></td>
+</tr>
+<tr>
 <td>Scopes the broker asks for</td>
+<td><code>read</code></td>
 <td><code>read:me</code>, <code>read:account</code>, <code>offline_access</code>, and read and search for Jira and Confluence (<code>…:agent-interface</code>)</td>
 <td>12 read scopes plus <code>offline_access</code>: <code>user:read</code>, <code>account:read</code>, <code>workers-scripts.read</code>, <code>workers-routes.read</code>, <code>workers-observability.read</code>, <code>workers-tail.read</code>, <code>workers-ci.read</code>, <code>workers-kv-storage.read</code>, <code>workers-r2.read</code>, <code>workers-r2-bucket-item.read</code>, <code>logs.read</code>, <code>account-logs.read</code>. Asked without a <code>scope</code>, Cloudflare granted 194 read scopes</td>
 </tr>
 <tr>
 <td>Tokens</td>
+<td>24 hours, refresh token rotates, reusing an old one fails. <code>resource</code> is left off refresh</td>
 <td>8 hours, refresh token rotates</td>
 <td>1 hour, refresh token rotates</td>
 </tr>
 <tr>
 <td>Client secret</td>
+<td><strong>Expires after 90 days.</strong> The test registration expires on 2026-12-27. Register again, update custody, and everyone reconnects</td>
 <td>The script warns if the registration sets an expiry date</td>
 <td><strong>Expires after about 3 months.</strong> The test registration expires on 2026-12-26. There's no way to renew it: register again, update custody, and everyone reconnects</td>
 </tr>
@@ -2014,11 +2025,10 @@ bao token create -policy=broker -period=24h -orphan -display-name=broker
 <h3 id="vendor-client-credentials">Vendor client credentials</h3>
 <p>Write each vendor's confidential client credential on the admin path:</p>
 <pre><code class="language-sh">bao kv put vendor-clients/github  client_id=… client_secret=…
-bao kv put vendor-clients/linear  client_id=… client_secret=…
 bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 </code></pre>
 <p>A vendor with <code>enabled_env</code> in the registry (for example GitHub: <code>GITHUB_CLIENT_ID</code>, Atlassian: <code>ATLASSIAN_CLIENT_ID</code>) is only active when that variable is set on the broker.</p>
-<p>Atlassian and Cloudflare have no developer console: <code>tools/register-mcp-client.py &lt;vendor&gt; --redirect-base &lt;broker URL&gt; --vault</code> registers the broker once and writes <code>vendor-clients/&lt;vendor&gt;</code> itself. Never register again: it disconnects everyone. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
+<p>Linear, Atlassian, and Cloudflare (their MCP servers' own sign-in) have no developer console: <code>tools/register-mcp-client.py &lt;vendor&gt; --redirect-base &lt;broker URL&gt; --vault</code> registers the broker once and writes <code>vendor-clients/&lt;vendor&gt;</code> itself. Never register again: it disconnects everyone. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
 <p>The credential must match the vendor's <code>token_endpoint_auth_method</code> in the registry:</p>
 <table>
 <thead>
@@ -2181,7 +2191,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <li>Check it against <code>schemas/vendor-registry.schema.json</code> with <code>jsonschema</code>. CI does this on every push. Do the same locally.</li>
 <li>Get the same sign-off for a <code>scope_ceiling</code> change as for a token-contract change. The ceiling is a security boundary: a caller can never go past it at runtime.</li>
 <li>Hardcode endpoints <strong>only</strong> when the vendor publishes no authorization server metadata (e.g. GitHub). When metadata exists, use <code>auth_metadata_url</code>. (Standards: RFC 8414.)</li>
-<li>Set <code>resource</code> only for a vendor whose tokens are bound to one MCP server (Atlassian, Cloudflare). The broker sends it on authorize, code exchange, and every refresh (RFC 8707). Changing it later can break existing connections at their next refresh.</li>
+<li>Set <code>resource</code> only for a vendor whose tokens are bound to one MCP server (Linear, Atlassian, Cloudflare). The broker sends it on authorize, code exchange, and every refresh (RFC 8707), unless <code>resource_on_refresh</code> is false (Linear, which refuses it on refresh). Changing either later can break existing connections at their next refresh.</li>
 <li>Never put credentials in the registry. They live only in <code>vendor-clients/*</code>.</li>
 </ol>
 <h2 id="gateway-contract">Gateway contract</h2>
@@ -2363,7 +2373,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Revocation</td>
 <td>Implemented with exceptions / broker + vendor</td>
-<td><code>main.py</code>, <code>vendors.py</code>, <code>sweeper.py</code>; <code>tests/integration/test_grants.py</code></td>
+<td>Vendor first, then the broker's copy. For RFC 7009 vendors the broker revokes the access token and then the refresh token, because not every vendor revokes the access tokens with the refresh token (Linear's live on for up to 24 hours). <code>main.py</code>, <code>vendors.py</code>, <code>sweeper.py</code>; <code>tests/unit/test_storage_hygiene.py</code>, <code>tests/integration/test_grants.py</code></td>
 </tr>
 <tr>
 <td>No access-token issuance endpoint</td>
@@ -2423,7 +2433,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Read-only tool allowlist</td>
 <td>Partial / gateway + broker policy</td>
-<td>Per-service allowlist, plus each service's read-only control: <code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code> for GitHub, the <code>/mcp/readonly</code> URL and <code>read</code> scope for Linear, read and search scopes for Atlassian. Write tools stay hidden (tested against the stand-ins). The <code>disconnect_&lt;service&gt;</code> tools change only the person's own broker connection, never data at the service. <strong>Cloudflare relies on scopes alone:</strong> <code>cloudflare_execute</code> runs code against the whole API, and only the scope ceiling (12 read scopes plus <code>offline_access</code>) stops writes</td>
+<td>Per-service allowlist, plus each service's read-only control: <code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code> for GitHub, the <code>read</code> scope and tokens bound to the read-only MCP server for Linear (its full MCP server refuses them), read and search scopes for Atlassian. Write tools stay hidden (tested against the stand-ins). The <code>disconnect_&lt;service&gt;</code> tools change only the person's own broker connection, never data at the service. <strong>Cloudflare relies on scopes alone:</strong> <code>cloudflare_execute</code> runs code against the whole API, and only the scope ceiling (12 read scopes plus <code>offline_access</code>) stops writes</td>
 </tr>
 <tr>
 <td>Shared tool list never taken from one user</td>
@@ -2659,7 +2669,7 @@ application needs. This repo does not implement it. See
 <tr>
 <td>Getting tokens</td>
 <td>RFC 8707 resource indicators</td>
-<td>For a vendor whose tokens are bound to one MCP server (registry <code>resource</code>), send <code>resource</code> on the vendor authorize request and on every token request: code exchange and refresh</td>
+<td>For a vendor whose tokens are bound to one MCP server (registry <code>resource</code>), send <code>resource</code> on the vendor authorize request and on every token request: code exchange and refresh (refresh only if <code>resource_on_refresh</code> is not false, §2.1)</td>
 </tr>
 <tr>
 <td>Client auth</td>
@@ -2679,7 +2689,7 @@ application needs. This repo does not implement it. See
 <tr>
 <td>Lifecycle</td>
 <td>RFC 7009 revocation</td>
-<td>When a user removes a grant, call the vendor revocation endpoint before deleting the stored entry</td>
+<td>When a user removes a grant, call the vendor revocation endpoint before deleting the stored entry: the access token, then the refresh token. A 4xx on the access token is ignored (a server may not support revoking it); the refresh token's answer decides</td>
 </tr>
 <tr>
 <td>Exchange (future)</td>
@@ -2708,7 +2718,7 @@ the reviewed registry and handled in <code>vendors.py</code>:</p>
 <tbody>
 <tr>
 <td>No RFC 8414 metadata</td>
-<td>GitHub, Linear</td>
+<td>GitHub</td>
 <td>The registry lists <code>endpoints</code> explicitly. Allowed only where no metadata exists</td>
 </tr>
 <tr>
@@ -2738,8 +2748,18 @@ the reviewed registry and handled in <code>vendors.py</code>:</p>
 </tr>
 <tr>
 <td>Tokens bound to one MCP server</td>
-<td>Atlassian, Cloudflare (registry <code>resource</code>)</td>
+<td>Linear, Atlassian, Cloudflare (registry <code>resource</code>)</td>
 <td>RFC 8707 <code>resource</code> on authorize, code exchange and every refresh</td>
+</tr>
+<tr>
+<td><code>resource</code> refused on refresh</td>
+<td>Linear (<code>resource_on_refresh: false</code>)</td>
+<td>Sent on authorize and code exchange only. Linear keeps the refreshed token bound to the same MCP server</td>
+</tr>
+<tr>
+<td>Revoking the refresh token leaves the access token alive</td>
+<td>Linear</td>
+<td>Why every RFC 7009 revocation also revokes the access token (§2 Lifecycle)</td>
 </tr>
 </tbody>
 </table>
@@ -4782,7 +4802,7 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
     end
     U-&gt;&gt;B: DELETE /v1/grants/mockhub/wf-smoke (hub JWT)
     Note over B: sub in path MUST match JWT sub&lt;br/&gt;(anyone else → 403 forbidden)&lt;br/&gt;then hold the refresh lock until done
-    B-&gt;&gt;M: POST /revoke (RFC 7009, refresh token)
+    B-&gt;&gt;M: POST /revoke (RFC 7009): access token, then refresh token
     M--&gt;&gt;B: 200, family revoked at the vendor
     B-&gt;&gt;V: re-read (unchanged), then delete&lt;br/&gt;vendor-tokens/mockhub/sub-b64.{encoded subject}
     B--&gt;&gt;U: {&quot;revoked&quot;: true}

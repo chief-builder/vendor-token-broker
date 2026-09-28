@@ -119,6 +119,15 @@ working unchanged: every wire change below is additive.
   a re-consent while it was revoking (the new vendor token was then never
   revoked). It now holds the entry lock, deletes only the version it
   revoked, and consent writes under the same lock
+- **Linear moves to its MCP server's own sign-in**: the broker registers
+  with `mcp.linear.app` (DCR), and tokens are bound to the read-only MCP
+  server (`resource`), which the full server refuses. New registry field
+  `resource_on_refresh` (Linear refuses `resource` on refresh). The client
+  secret expires after 90 days
+- **Revocation cancels the access token too**: RFC 7009 vendors get the
+  access token, then the refresh token (Linear keeps an access token alive
+  for up to 24 h after its refresh token is revoked). A refused
+  access-token revocation is ignored; the refresh token's answer decides
 - Tests: the 20-parallel single-flight tests switch the mock vendor to
   long-lived tokens for the burst, so they no longer see a legitimate
   second refresh (an occasional CI failure)

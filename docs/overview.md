@@ -106,15 +106,15 @@ The link only works for the person it was made for, in the browser that opened i
 
 ```mermaid
 flowchart TB
-    subgraph A["GitHub and Linear"]
+    subgraph A["GitHub"]
         direction LR
         A1["An admin creates an app<br/>in the service's console"] --> A2["The app's client ID and<br/>secret stored in Vault"]
         A2 --> A4["Each person signs in and<br/>approves, in their browser"]
         A4 --> A3["A token for that person,<br/>used at the MCP server"]
     end
-    subgraph M["Atlassian and Cloudflare"]
+    subgraph M["Own MCP sign-in"]
         direction LR
-        M1["register-mcp-client.py<br/>registers the app once"] --> M2["The app's client ID and<br/>secret stored in Vault"]
+        M1["Linear, Atlassian, Cloudflare:<br/>register-mcp-client.py<br/>registers the app once"] --> M2["The app's client ID and<br/>secret stored in Vault"]
         M2 --> M5["Each person signs in and<br/>approves, in their browser"]
         M5 --> M4["A token for that person,<br/>for one MCP server only"]
     end
@@ -123,7 +123,7 @@ flowchart TB
 
 Either way, the client ID and secret only identify the broker as an OAuth app. Only a person signing in and approving produces a token, and it acts as that person. The broker uses no system-to-system (client credentials) grant.
 
-Atlassian and Cloudflare run their own sign-in for their MCP servers. The broker is registered with each of them once, and names the MCP server on every request (the `resource` parameter, RFC 8707). Registering again would disconnect everyone. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in).
+Linear, Atlassian, and Cloudflare run their own sign-in for their MCP servers. The broker is registered with each of them once, and names the MCP server when the person connects (the `resource` parameter, RFC 8707). The token then only works at that server: Linear's only at its read-only server. Registering again would disconnect everyone. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in).
 
 ## What keeps each service read-only
 
@@ -132,7 +132,7 @@ Each service has several layers. If one fails, the others still hold.
 | Service | Tool list | At the service | Scopes the token gets |
 |---|---|---|---|
 | GitHub | 7 read tools | `X-MCP-Readonly` and `X-MCP-Lockdown` headers | Read-only App permissions |
-| Linear | 13 read tools | the `/mcp/readonly` address | `read` |
+| Linear | 13 read tools | tokens only work at its read-only MCP server | `read` |
 | Atlassian | 8 read and search tools | none | read and search scopes only |
 | Cloudflare | `search`, `docs`, `execute` | none | **The only layer:** 12 read scopes plus `offline_access` |
 
