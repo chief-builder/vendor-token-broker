@@ -198,7 +198,6 @@ TEMPLATE = """<!DOCTYPE html>
 <nav>
   <span class="brand">vendor-token-broker</span>
   {{NAV}}
-  <a href="https://github.com/chief-builder/vendor-token-broker">repo</a>
 </nav>
 <main id="content">
 {{SECTIONS}}

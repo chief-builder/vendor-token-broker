@@ -23,7 +23,7 @@ flowchart LR
   G --> M["Vendor MCP servers"]
 ```
 
-The gateway is the only caller of the broker. Every replica shares one Redis and one secrets store. No session affinity is needed. The gateway talks to the vendors' MCP servers, and the broker talks to the vendors' OAuth endpoints. A single replica can run without Redis (`COORD_BACKEND=memory`).
+The gateway is the only caller of the token routes. Browsers call the consent routes, and admins call `/v1/admin`. Every replica shares one Redis and one secrets store. No session affinity is needed. The gateway talks to the vendors' MCP servers, and the broker talks to the vendors' OAuth endpoints. A single replica can run without Redis (`COORD_BACKEND=memory`).
 
 ## Set up token storage (OpenBao / Vault, KV v2)
 
@@ -77,7 +77,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 
 A vendor with `enabled_env` in the registry (for example GitHub: `GITHUB_CLIENT_ID`, Atlassian: `ATLASSIAN_CLIENT_ID`) is only active when that variable is set on the broker.
 
-Linear, Atlassian, and Cloudflare (their MCP servers' own sign-in) have no developer console: `tools/register-mcp-client.py <vendor> --redirect-base <broker URL> --vault` registers the broker once and writes `vendor-clients/<vendor>` itself. Never register again: it disconnects everyone. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in).
+Linear, Atlassian, and Cloudflare (their MCP servers' own sign-in) have no developer console: `tools/register-mcp-client.py <vendor> --redirect-base <broker URL> --vault` registers the broker once and writes `vendor-clients/<vendor>` itself. Register again only when you must: it disconnects everyone. Linear and Cloudflare secrets expire (see [Client secret expiring](#client-secret-expiring-linear-cloudflare)). See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in).
 
 The credential must match the vendor's `token_endpoint_auth_method` in the registry:
 
@@ -133,7 +133,7 @@ If both `VAULT_TOKEN_FILE` and `VAULT_TOKEN` are set, the file wins. If the file
 
 ## Hub login client (consent)
 
-When a user connects a vendor ("consent"), they must sign in at the hub in the same browser that opened the authorize link (design §6). For this, register the broker at the hub as an OIDC client:
+When a user connects a vendor ("consent"), they must sign in at the hub in the same browser that opened the authorize link ([consent](design.md#6-consent-dance-first-time)). For this, register the broker at the hub as an OIDC client:
 
 - **Redirect URI:** `{BROKER_PUBLIC_URL}/v1/callback/_hub` (exact match).
 - **Grant:** authorization code, with PKCE (S256) required. Scope `openid`.
@@ -164,7 +164,7 @@ Gateways that call the broker depend on a frozen contract. That includes the shi
 - Problem `title` slugs. Only the URN prefix in `type` is configurable (`PROBLEM_URN_PREFIX`).
 - Audit event names (below).
 
-For the fields and titles in detail, see the [API reference](api.md) and the [legacy gateway mapping](api.md#legacy-gateway-mapping). For the protocol boundaries and how a gateway asks the user to connect during a tool call, see [Integrate with MCP](mcp-integration.md).
+For the fields and titles in detail, see the [API reference](api.md) and the [legacy gateway mapping](api.md#legacy-gateway-mapping). For the protocol boundaries and how a gateway asks the user to connect during a tool call, see [Connect your own MCP server](mcp-integration.md).
 
 Frozen audit event names: `broker.resolve`, `broker.consent.start`,
 `broker.consent.complete`, `broker.consent.fail`, `broker.refresh`,
@@ -272,6 +272,25 @@ The sweeper refreshes tokens before they expire. With the redis backend, only th
 - With the redis backend each interval is jittered by ±20%. In the worst case (every interval 20% longer) the bound is `SWEEP_MAX_ENTRIES × 600 / (1.2 × SWEEP_INTERVAL_S)`, about 4,166 with the defaults.
 - Past that, some entries miss the proactive refresh. They are refreshed on their next resolve instead.
 
+### 502 `revoke-pending` on disconnect
+
+The service was down when someone disconnected. The broker marked the connection `REVOKE_PENDING` and kept its tokens, so it can revoke them later.
+
+- Meanwhile, resolve answers 409 `revoke-pending` for that connection.
+- The sweeper retries the revoke on each pass. It takes the entry's lock, reads the entry again, and revokes at the service. It then deletes only the version it revoked.
+- A repeated DELETE from the person also retries the revoke.
+
+**Do this:** check that the broker can reach the service's revocation endpoint. The `broker.revoke` event with `outcome: pending` carries the error. The sweeper does not run when `SWEEP_INTERVAL_S` is `0`.
+
+### Client secret expiring (Linear, Cloudflare)
+
+`tools/register-mcp-client.py` registers the broker with Linear's and Cloudflare's MCP sign-in. Their client secrets expire after about 90 days. The test registrations expire on 2026-12-27 (Linear) and 2026-12-26 (Cloudflare). The script prints the expiry date when it registers.
+
+**Do this before that date:**
+
+1. Register again: `tools/register-mcp-client.py <vendor> --redirect-base <broker URL> --vault --force`. It writes the new credential to `vendor-clients/<vendor>`.
+2. Tell people to reconnect. Every connection made with the old client stops working.
+
 ### Slow requests while storage is frozen
 
 Storage (hvac) and hub JWKS calls run in worker threads, never on the event loop. A frozen storage backend holds one thread per in-flight uncached request for up to `VAULT_TIMEOUT_S`. Cache hits and `/healthz` keep answering.
@@ -280,13 +299,13 @@ Storage (hvac) and hub JWKS calls run in worker threads, never on the event loop
 
 Grant entries live at `vendor-tokens/{vendor}/sub-b64.{base64url(sub)}`. There is one key per subject, whatever characters the hub puts in `sub` (including URIs with `/`).
 
-Older entries sit at `vendor-tokens/{vendor}/{sub}`:
+Entries may also sit at the unencoded key `vendor-tokens/{vendor}/{sub}`:
 
-- The broker still reads them there.
-- It moves each one to the encoded key on its next write (a refresh, re-consent, or delete).
+- The broker reads both keys.
+- It moves an entry to the encoded key on its next refresh or re-consent. A delete removes both keys.
 - You need no migration job.
 
-**Upgrade all replicas together.** An older replica cannot see entries a newer one has already moved. It answers needs-consent for them until you replace it.
+**Run one broker version across all replicas.** A replica without encoded-key support answers needs-consent for moved entries.
 
 What stays in storage:
 

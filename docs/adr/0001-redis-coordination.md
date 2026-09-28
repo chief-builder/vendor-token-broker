@@ -31,10 +31,11 @@ How each job maps to Redis (with the default settings):
 - **Lock:** `SET vtb:lock:{vendor}:{sub} <token> NX PX 20000`.
   - The PX TTL is `LOCK_TTL_MS` (default 20000). Startup fails if it is shorter than `(VENDOR_TIMEOUT_S + 2 × VAULT_TIMEOUT_S) × 1000`, so the lock outlives the slowest refresh it protects.
   - Waiters retry every 200ms ± 25%, for up to `LOCK_TIMEOUT_S` (10s).
-  - On each retry they re-read the entry. Once the generation moves forward, they serve it without taking the lock.
+  - On each retry, a waiting resolve re-reads the entry. Once the generation moves forward, it serves that token without taking the lock.
   - Release uses a compare-and-DEL Lua script, so only the holder ever releases a lock. If the release fails, the PX TTL frees the lock.
   - The sweeper takes the lock without waiting and skips a held entry.
-- **Consent transactions and states:** `SETEX` (`TXN_TTL_S`, 600), consumed once with atomic `GETDEL`.
+  - DELETE and the consent write also wait for this lock. The sweeper's revoke retry takes it without waiting.
+- **Consent transactions and states:** `SETEX` (`TXN_TTL_S`, 600), consumed once with atomic `GETDEL`. An authorize link must be used within 300 s (`AUTHORIZE_LINK_TTL_S` in `main.py`).
   - For states, the order is peek, check, then consume. So a rejection for an issuer (iss) mismatch does not burn the state the real callback needs.
 - **Persisted `REFRESHING`:** lives in the storage (custody) entry, not in redis, with `refresh_owner` and `refresh_started_at`. The broker writes it with CAS before calling the vendor. If the vendor is unreachable or errors, the broker CAS-writes the entry back to ACTIVE at once. The next lock holder takes over markers older than `REFRESHING_TTL_S` (30s), and never refreshes over a younger one.
 - **Mass-STALE window:** a per-vendor ZSET, plus `SET NX PX` to send each page only once.

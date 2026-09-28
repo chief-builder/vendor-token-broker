@@ -4,7 +4,7 @@ Use this page if you are writing your own gateway that calls the broker. It is t
 
 - This is not the MCP protocol. MCP clients never talk to the broker directly.
 - The shipped [MCP gateway](mcp-gateway.md) serves GitHub's, Linear's, Atlassian's, and Cloudflare's MCP servers and already calls this API for you. Use it if those are the servers you need.
-- [Integrate with MCP](mcp-integration.md) explains how an MCP server or gateway sits in front of the broker.
+- [Connect your own MCP server](mcp-integration.md) explains how an MCP server or gateway sits in front of the broker.
 
 ## Authentication and routes
 
@@ -100,7 +100,7 @@ When the ceiling is **not empty**:
 
 - It caps both requested and recorded scopes.
 - A request for any scope outside the ceiling fails with 403 `scope-exceeds-ceiling`.
-- If a caller sends no `required_scopes`, first-time consent asks for the whole ceiling. This keeps older callers working.
+- If a caller sends no `required_scopes`, first-time consent asks for the whole ceiling, so callers need not send scopes.
 - When the broker asks for more scopes, it asks for the scopes already held plus the new required ones, within the ceiling.
 
 When the ceiling is **empty**, the vendor decides the scopes (GitHub works this way: the app's permissions are set at GitHub):
@@ -231,7 +231,7 @@ See [the runbook](operations.md#runbook) for what to do next.
 
 ## Legacy gateway mapping
 
-This table shows how the source lab's gateway translated broker results. `tests/integration/test_wire_compat.py` covers the broker side. The source lab's gateway plugin is not in this repository.
+Some existing gateway plugins translate broker results as shown below. It is an adapter convention, not part of this repository. `tests/integration/test_wire_compat.py` covers the broker side.
 
 | Broker result | Legacy gateway behavior |
 |---|---|

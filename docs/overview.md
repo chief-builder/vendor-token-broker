@@ -32,7 +32,7 @@ flowchart LR
     end
     C -->|"sign in once"| H
     C -->|"tool calls"| G
-    G -->|"who is this?"| H
+    G -->|"swap the sign-in token"| H
     G -->|"their token for this service"| B
     B <--> V
     G --> GH
@@ -41,7 +41,7 @@ flowchart LR
     G --> CF
 ```
 
-- **One sign-in.** People sign in with your company's sign-in service (the "hub"), then connect each service once in their browser.
+- **One sign-in.** People sign in with your company's sign-in service, then connect each service once in their browser.
 - **Tokens stay in one place.** The broker keeps each person's service tokens in Vault and refreshes them before they expire. The laptop only holds the sign-in token for the gateway.
 - **Used once, then forgotten.** On every call, the gateway gets the person's token from the broker, uses it for that one call, and throws it away.
 
@@ -66,7 +66,7 @@ sequenceDiagram
     G-->>C: result, with no token in it
 ```
 
-Claude Code gets the sign-in token when the person signs in at the sign-in service, once (`/mcp`, then **Authenticate**). It is issued for the MCP gateway only. Each hop after that uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See [Security](security.md).
+The person signs in once (`/mcp`, then **Authenticate**). After that, each hop uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See [Security](security.md).
 
 ## The first time someone uses a service
 
@@ -93,7 +93,7 @@ sequenceDiagram
     P->>A: sign in to Atlassian and approve
     A-->>B: a one-time code, via the browser
     Note over B: swap the code for the person's<br/>tokens and store them in Vault
-    G->>B: connected now?
+    G->>B: connected yet?
     B-->>G: yes, and the token
     G->>A: search issues as this person
     A-->>G: results
@@ -110,13 +110,13 @@ Later calls skip steps 4 to 14: the broker answers step 3 with the token straigh
 
 The link only works for the person it was made for, in the browser that opened it: that is the sign-in check in steps 8 and 9. See [Connecting a service during a tool call](mcp-gateway.md#connecting-a-service-during-a-tool-call).
 
-## Two ways services sign in
+## Two ways the broker gets an app
 
 ```mermaid
 flowchart TB
-    subgraph A["GitHub"]
+    subgraph A["Admin-created app"]
         direction LR
-        A1["An admin creates an app<br/>in the service's console"] --> A2["The app's client ID and<br/>secret stored in Vault"]
+        A1["GitHub: an admin creates<br/>an app in GitHub's settings"] --> A2["The app's client ID and<br/>secret stored in Vault"]
         A2 --> A4["Each person signs in and<br/>approves, in their browser"]
         A4 --> A3["A token for that person,<br/>used at the MCP server"]
     end
@@ -139,7 +139,7 @@ Each service has several layers. If one fails, the others still hold.
 
 | Service | Tool list | At the service | Scopes the token gets |
 |---|---|---|---|
-| GitHub | 7 read tools | `X-MCP-Readonly` and `X-MCP-Lockdown` headers | Read-only App permissions |
+| GitHub | 7 read tools | `X-MCP-Readonly` header | Read-only App permissions |
 | Linear | 13 read tools | tokens only work at its read-only MCP server | `read` |
 | Atlassian | 8 read and search tools | none | read and search scopes only |
 | Cloudflare | `search`, `docs`, `execute` | none | **The only layer:** 12 read scopes plus `offline_access` |
@@ -160,7 +160,7 @@ stateDiagram-v2
 ```
 
 - **Refresh.** When many calls need a new token at once, only one refresh happens, even across several broker replicas (through Redis). A compare-and-swap write in Vault is the final safeguard.
-- **Disconnect.** `disconnect_<service>` asks the service to cancel the token first, then deletes the broker's copy. If the service is down, the broker keeps retrying and the service can't be used until the cancel succeeds.
+- **Disconnect.** `disconnect_<service>` asks the service to cancel the tokens first, then deletes the broker's copy. If the service is down, the broker keeps retrying and the service can't be used until the cancel succeeds.
 - **Needs reconnect.** The next tool call asks the person to connect again.
 
 [Token lifecycle](token-lifecycle.md) walks through every path step by step.
@@ -193,7 +193,7 @@ stateDiagram-v2
 
 Software **1.1.0**, marked **unreleased** in the changelog. Tested end to end with Keycloak as the sign-in service, Claude Code 2.1.283 as the assistant, and the real GitHub, Linear, Atlassian, and Cloudflare MCP servers.
 
-These docs describe MCP **2026-07-28** (the MCP specification version) and were checked against the code on **2026-09-27**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
+These docs describe MCP **2026-07-28** (the MCP specification version) and were reviewed against the code on **2026-09-28**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
 
 ## Words used in these docs
 

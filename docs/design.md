@@ -77,7 +77,7 @@ Each row shows a standard and what the broker must do to meet it.
 | Client auth | RFC 7523 `private_key_jwt` | Prefer it where the vendor supports it. Otherwise use `client_secret_basic` or `client_secret_post` (set per vendor in the registry, default `client_secret_post`) |
 | Hardening | RFC 9700 OAuth 2.0 Security BCP | Used as the review basis. [Known limitations](security.md#known-limitations) prevent a blanket conformance claim |
 | Lifecycle | RFC 6749 §6 refresh | Only one refresh at a time per entry (single-flight, §8) |
-| Lifecycle | RFC 7009 revocation | When a user removes a grant, call the vendor revocation endpoint before deleting the stored entry: the access token, then the refresh token. A 4xx on the access token is ignored (a server may not support revoking it); the refresh token's answer decides |
+| Lifecycle | RFC 7009 revocation | When a user removes a grant, call the vendor revocation endpoint before deleting the stored entry: the access token, then the refresh token. A 4xx on the access token is ignored (a server may not support revoking it); the last token's answer decides (the access token when there is no refresh token) |
 | Exchange (future) | MCP EMA: ID-JAG via RFC 8693 token exchange + RFC 7523 grant | Possible future migration only. No exchange is implemented here |
 
 **`private_key_jwt` assertions** (`client_auth.py`): `iss` = `sub` = the
@@ -100,7 +100,7 @@ the reviewed registry and handled in `vendors.py`:
 | `bad_refresh_token` instead of `invalid_grant` | GitHub | Treated exactly like `invalid_grant` (the entry goes STALE) |
 | Scopes set by the vendor, not the request | GitHub App (empty `scope_ceiling`) | The broker requests no scopes and ignores `required_scopes` (§4.1) |
 | Tokens that never expire | GitHub App with expiry turned off | Stored with a far-future expiry and never refreshed (§5) |
-| Tokens bound to one MCP server | Linear, Atlassian, Cloudflare (registry `resource`) | RFC 8707 `resource` on authorize, code exchange and every refresh |
+| Tokens bound to one MCP server | Linear, Atlassian, Cloudflare (registry `resource`) | RFC 8707 `resource` on authorize, code exchange and refresh (not on refresh for Linear, next row) |
 | `resource` refused on refresh | Linear (`resource_on_refresh: false`) | Sent on authorize and code exchange only. Linear keeps the refreshed token bound to the same MCP server |
 | Revoking the refresh token leaves the access token alive | Linear | Why every RFC 7009 revocation also revokes the access token (§2 Lifecycle) |
 
@@ -345,8 +345,11 @@ unreachable or no client credential), `vault-unavailable`, or
 7. Exchanges the code + PKCE verifier for tokens, with client auth and
    `resource` when set (failure: 502 "Token exchange failed.").
 8. Looks up the vendor user id (best effort, below).
-9. Writes the entry: fresh generation 1, overwriting any entry
-   (`cas=None`). Granted scopes are capped to the ceiling (§5).
+9. Waits for the entry's refresh lock (up to `LOCK_TIMEOUT_S`), then
+   writes the entry: fresh generation 1, overwriting any entry
+   (`cas=None`). Granted scopes are capped to the ceiling (§5). If the
+   lock never frees, or Redis is unavailable, it writes anyway: the code
+   is spent, and losing the new grant would be worse.
 10. Drops the cached entry on every replica (§7) and shows "Connected —
     return to your client."
 
@@ -407,18 +410,27 @@ Under the lock, in this order:
 5. Audit `broker.revoke` with `outcome` and `hub_jti`.
 6. Answer `{"revoked": true}`.
 
-What the vendor revoke sends: the refresh token (`token_type_hint:
-refresh_token`, its access tokens go with it), else the access token for a
-non-expiring grant. A STALE entry has no tokens (§5), so it needs no
-vendor call.
+What the vendor revoke sends (RFC 7009):
+
+- the access token (`token_type_hint: access_token`), then the refresh
+  token (`token_type_hint: refresh_token`). Some vendors keep access
+  tokens alive after their refresh token is revoked (§2.1),
+- a 4xx on the access token is ignored (a server may not support revoking
+  it). The last token sent decides: the refresh token, or the access token
+  for a non-expiring grant with no refresh token,
+- any 5xx, on either call, fails the revoke.
+
+GitHub uses grant deletion instead (§2.1). A STALE entry has no tokens
+(§5), so it needs no vendor call.
 
 If something goes wrong:
 
-- **Vendor revoke fails** (unreachable, 4xx or 5xx): the broker CAS-writes
+- **Vendor revoke fails** (unreachable, any 5xx, or a 4xx on the last
+  token sent): the broker CAS-writes
   the entry it read, whatever its state, as `REVOKE_PENDING`. If the entry
-  moved since the read, it re-reads once and parks the newer pair (that is
-  the refresh token the sweeper must revoke). If the entry is gone: 404
-  `no-grant`. If it still keeps moving: 503 `vendor-unavailable`. Once
+  moved since the read, it re-reads once and parks the newer pair (the
+  pair the sweeper must revoke). If the entry is gone: 404
+  `no-grant`. If it keeps moving: 503 `vendor-unavailable`. Once
   parked, the response is 502 `revoke-pending` and the audit line has
   `outcome: "pending"`. Resolve cannot use the entry. The sweeper retries
   (§8.1). Re-consent revokes it first (§4.3).
@@ -479,8 +491,8 @@ relies on it. The KV-v2 version is the CAS handle.
 **Key encoding.** The `sub` is stored as one KV key: `sub-b64.` plus the
 unpadded base64url of the `sub`. So any subject (URIs with `/`, dots,
 spaces) is exactly one key, never a nested folder the sweeper cannot list.
-Entries at the older raw path `vendor-tokens/{vendor}/{sub}` are still
-read. They move to the encoded path on their next write:
+Entries at the raw path `vendor-tokens/{vendor}/{sub}` are read too, and
+move to the encoded path on their next write:
 
 - a CAS write against a raw-path entry creates the encoded entry only if
   none exists (`cas=0`, so a replica that migrated first wins), then
@@ -529,10 +541,8 @@ browser. (Full sequence diagram: `token-lifecycle.md` §1. Route details:
 6. The browser returns to `/v1/callback/{vendor}?code&state&iss`.
 7. The broker checks state, iss, and binding, uses up the state, and
    redeems the code on the server (with `resource` when set).
-8. The broker writes the entry as `ACTIVE gen=1`, holding the entry's
-   refresh lock for that write. If the lock doesn't free within
-   `LOCK_TIMEOUT_S`, it writes anyway: the code is spent, and losing the
-   new grant would be worse.
+8. The broker writes the entry as `ACTIVE gen=1` under the entry's
+   refresh lock, or without it if the lock never frees (§4.3 step 9).
 9. The browser shows a "connected" page.
 10. The caller retries, and resolve returns 200.
 
@@ -591,13 +601,14 @@ replica and, in the redis profile, broadcasts the drop to the others
 - deletes an entry (DELETE or sweeper retry).
 
 It also drops the local copy before every re-read under the refresh lock.
-A successful refresh replaces the local copy. Other replicas keep the
-older, still-valid token until their `CACHE_TTL_S` runs out.
+A successful refresh replaces the local copy. Other replicas keep serving
+their cached copy (the previous token, which has not expired) until their
+`CACHE_TTL_S` runs out.
 
 ## 8. Refresh state machine and race defense
 
-Each entry moves between four states. Only one refresh may run per entry
-at a time.
+Each entry moves between four states. `NoGrant` means no stored entry.
+Only one refresh may run per entry at a time.
 
 ```mermaid
 stateDiagram-v2
@@ -605,18 +616,21 @@ stateDiagram-v2
     classDef transient fill:#6366f122,stroke:#6366f1
     classDef dead fill:#ef444422,stroke:#ef4444
 
-    [*] --> ACTIVE : consent (§6)<br/>gen=1
-    ACTIVE --> ACTIVE : refresh ok, memory profile gen+1<br/>or scope re-consent gen=1
+    [*] --> NoGrant
+    NoGrant --> ACTIVE : consent, gen=1
+    ACTIVE --> ACTIVE : refresh ok (memory profile), gen+1<br/>or scope re-consent, gen=1
     ACTIVE --> REFRESHING : refresh starts<br/>(redis profile)
-    REFRESHING --> ACTIVE : success CAS gen+1<br/>or vendor down, restored
+    REFRESHING --> ACTIVE : refresh ok, CAS gen+1<br/>or vendor down, restored
     REFRESHING --> STALE : invalid_grant
     ACTIVE --> STALE : invalid_grant (memory profile)<br/>or no refresh token
-    STALE --> ACTIVE : re-consent (§6)<br/>fresh gen=1
-    ACTIVE --> REVOKE_PENDING : DELETE, vendor down (§4.4)
-    REFRESHING --> REVOKE_PENDING : DELETE, vendor down
+    STALE --> ACTIVE : re-consent, fresh gen=1
+    ACTIVE --> REVOKE_PENDING : DELETE, vendor revoke fails
+    REFRESHING --> REVOKE_PENDING : DELETE, vendor revoke fails
     REVOKE_PENDING --> ACTIVE : re-consent, old grant<br/>revoked first, gen=1
-    REVOKE_PENDING --> [*] : sweeper retry<br/>revokes + deletes
-    ACTIVE --> [*] : DELETE, revoked<br/>or unsupported
+    ACTIVE --> NoGrant : DELETE, revoked<br/>or unsupported
+    REFRESHING --> NoGrant : DELETE, revoked<br/>or unsupported
+    STALE --> NoGrant : DELETE, nothing to revoke
+    REVOKE_PENDING --> NoGrant : sweeper retry<br/>or repeated DELETE
 
     class ACTIVE live
     class REFRESHING transient
@@ -625,9 +639,9 @@ stateDiagram-v2
 
 What to notice:
 
-- DELETE parks whatever state it read. In practice that is ACTIVE or an
-  abandoned REFRESHING marker. A STALE entry has no tokens, so DELETE
-  removes it without a vendor call.
+- If the vendor revoke fails, DELETE parks whatever state it read as
+  REVOKE_PENDING (in practice ACTIVE or an abandoned REFRESHING marker). A
+  STALE entry has no tokens, so DELETE removes it without a vendor call.
 - Both lazy (resolve) and proactive (sweeper) refreshes can end in STALE.
 - Re-consent overwrites any state with a fresh `gen=1`.
 
@@ -726,10 +740,12 @@ flowchart TD
     LIST --> BATCH["take up to SWEEP_MAX_ENTRIES<br/>from the round-robin cursor"]
     BATCH --> READ["read each entry"]
     READ --> RP{"state?"}
-    RP -- REVOKE_PENDING --> REV["revoke at vendor,<br/>then delete"]
+    RP -- REVOKE_PENDING --> RTRY{"refresh lock<br/>free now?"}
+    RTRY -- yes --> REV["re-read, revoke,<br/>delete if version unchanged"]
+    RTRY -- no --> NEXT["skip entry"]
     RP -- "ACTIVE in band, or<br/>abandoned REFRESHING" --> TRY{"refresh lock<br/>free now?"}
     TRY -- yes --> REF["re-read, then one refresh<br/>path: proactive"]
-    TRY -- no --> NEXT["skip entry"]
+    TRY -- no --> NEXT
     RP -- "anything else" --> NEXT
 ```
 
@@ -766,7 +782,8 @@ consecutive passes.
 ## 9. Failure modes
 
 The broker fails closed, and callers can tell the failures apart.
-(Outage sequences: `token-lifecycle.md` §9. Replica-death recovery: §5.)
+(Outage sequences: `token-lifecycle.md` §9. Replica-death recovery:
+[Token lifecycle §5](token-lifecycle.md#5-multi-replica-refresh-persisted-refreshing-takeover-cas-backstop).)
 
 | Failure | How it is detected | What the broker does |
 |---|---|---|

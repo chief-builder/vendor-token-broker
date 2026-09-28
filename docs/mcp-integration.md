@@ -1,6 +1,6 @@
-# Integrate with MCP
+# Connect your own MCP server
 
-**Baseline: MCP 2026-07-28 · reviewed 2026-09-27.**
+**Reviewed 2026-09-28 · MCP 2026-07-28.**
 
 Use this page to connect **your own** MCP server or gateway to the broker.
 
@@ -14,7 +14,7 @@ Three separate credentials are in play. Keep them apart.
 | Boundary | Credential and validator | Owner |
 |---|---|---|
 | MCP client → MCP server | Access token issued for that MCP resource; checked by the MCP server | Your MCP client and authorization server; the shipped gateway checks it |
-| Gateway → broker | Internal hub JWT, checked again by `HubValidator` | Your identity handoff and this broker |
+| Gateway → broker | Internal hub JWT, checked again by the broker | Your identity handoff and this broker |
 | Gateway → vendor API | Vendor access token obtained through broker consent | Gateway, broker, vendor |
 
 **The hub** is your company's sign-in service (identity provider). The **hub JWT** is the internal token it issues, which the broker accepts.
@@ -45,7 +45,7 @@ For each tool call that needs a vendor:
 2. Map the operation to an approved vendor and the vendor scopes it needs.
 3. Have the trusted gateway call [resolve](api.md#resolve-a-token) with the internal hub JWT.
 4. On success, use the token only for the approved vendor API call. Keep it out of tool results, model context, browser storage, and logs.
-5. Return business data to the MCP client. Remove the hub JWT from the vendor request.
+5. Return business data to the MCP client. Never send the hub JWT to the vendor.
 
 The broker gives a token to any caller that passes its internal authentication. So you must isolate the network and authenticate the gateway workload when you deploy. The REST response cannot enforce this for you.
 
@@ -154,9 +154,7 @@ The shipped gateway never sends `required_scopes`, so it never asks for extra sc
 
 Existing gateway plugins can keep calling the internal broker API as they are: its statuses, fields, and problem titles are frozen.
 
-- The source lab's Kong plugin turned broker 404/409 consent results into custom client-facing `401 authorization_required` and 401 step-up responses.
-- That is an adapter convention. It is not a tested MCP wire flow.
-- The plugin is not in this repository.
+Some existing gateway plugins turn broker 404/409 consent results into custom `401 authorization_required` and 401 step-up responses. That is an adapter convention, not a tested MCP flow.
 
 If you are keeping an existing deployment, see [the legacy mapping](api.md#legacy-gateway-mapping).
 

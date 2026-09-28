@@ -12,7 +12,7 @@ Work through these steps for every docs change.
 
 1. Update the page that owns the behavior. Link to the API reference instead of copying its response tables into walkthroughs.
 2. If an MCP claim changes, record these in `security.md`: the exact MCP revision, review date, owner, implementation status, and evidence.
-3. When the software revision or review baseline changes, update `docs/site.json`. The generator does not read that file, so also update the baseline lines in `overview.md`, `security.md`, and `mcp-integration.md`.
+3. When the software revision or review baseline changes, update `docs/site.json`. The generator does not read that file, so also update the review date and revision lines in `overview.md` (Status), `security.md` (top line and Verification record), and `mcp-integration.md` (top line).
 4. Rebuild and check the static artifact:
 
    ```sh

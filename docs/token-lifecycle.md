@@ -25,8 +25,9 @@ shows what happens when things fail.
 
 ## 0. Orientation — the states and which diagram covers each transition
 
-A grant is always in one of these states. The numbers (§1 to §8) point to
-the diagram that shows each change.
+A grant is always in one of these states (`NoGrant` means no stored
+entry). The table below the diagram points to the diagram that shows each
+change.
 
 ```mermaid
 stateDiagram-v2
@@ -35,18 +36,20 @@ stateDiagram-v2
     classDef dead fill:#ef444422,stroke:#ef4444
 
     [*] --> NoGrant
-    NoGrant --> ACTIVE : §1 consent
-    ACTIVE --> ACTIVE : §3–§4 refresh gen+1<br/>§6 step-up gen=1
-    ACTIVE --> REFRESHING : §5 marker (redis)
-    REFRESHING --> ACTIVE : §5 CAS ok<br/>or vendor down
-    REFRESHING --> STALE : §5 replay
-    ACTIVE --> STALE : §7 invalid_grant<br/>or no refresh token
-    STALE --> ACTIVE : §7 re-consent
-    ACTIVE --> NoGrant : §8 revoke
-    ACTIVE --> REVOKE_PENDING : §8 vendor down
-    REFRESHING --> REVOKE_PENDING : §8 vendor down
-    REVOKE_PENDING --> NoGrant : §8 sweep retry
-    REVOKE_PENDING --> ACTIVE : §1 re-consent,<br/>old grant revoked first
+    NoGrant --> ACTIVE : consent, gen=1
+    ACTIVE --> ACTIVE : refresh ok (memory profile), gen+1<br/>or scope re-consent, gen=1
+    ACTIVE --> REFRESHING : refresh starts<br/>(redis profile)
+    REFRESHING --> ACTIVE : refresh ok, CAS gen+1<br/>or vendor down, restored
+    REFRESHING --> STALE : invalid_grant
+    ACTIVE --> STALE : invalid_grant (memory profile)<br/>or no refresh token
+    STALE --> ACTIVE : re-consent, fresh gen=1
+    ACTIVE --> REVOKE_PENDING : DELETE, vendor revoke fails
+    REFRESHING --> REVOKE_PENDING : DELETE, vendor revoke fails
+    REVOKE_PENDING --> ACTIVE : re-consent, old grant<br/>revoked first, gen=1
+    ACTIVE --> NoGrant : DELETE, revoked<br/>or unsupported
+    REFRESHING --> NoGrant : DELETE, revoked<br/>or unsupported
+    STALE --> NoGrant : DELETE, nothing to revoke
+    REVOKE_PENDING --> NoGrant : sweeper retry<br/>or repeated DELETE
 
     class ACTIVE live
     class REFRESHING transient
@@ -56,8 +59,9 @@ stateDiagram-v2
 What to notice:
 
 - A refresh can go STALE from a resolve (§3) or from the sweeper (§4).
-- DELETE parks whatever state it read as `REVOKE_PENDING`. A STALE entry
-  holds no tokens, so DELETE removes it with no vendor call.
+- If the vendor revoke fails, DELETE parks whatever state it read as
+  `REVOKE_PENDING` (in practice ACTIVE or an abandoned REFRESHING marker).
+  A STALE entry holds no tokens, so DELETE removes it with no vendor call.
 - Consent overwrites any state with a fresh `gen=1`. Only a
   `REVOKE_PENDING` predecessor is revoked at the vendor first.
 
@@ -68,7 +72,7 @@ What to notice:
 | §5 | Multi-replica | A stored `REFRESHING` marker, takeover by another replica, and the CAS backstop. |
 | §6 | Scope step-up | Re-consent for the combined scopes writes a fresh `gen=1`. |
 | §7 | STALE | `invalid_grant`, or no refresh token, leads to re-consent. A burst of `invalid_grant` pages on-call. |
-| §8 | Revocation | The broker revokes at the vendor first, then deletes. If the vendor is down, the entry waits in `REVOKE_PENDING`. |
+| §8 | Revocation | The broker revokes at the vendor first, then deletes. If the vendor revoke fails, the entry waits in `REVOKE_PENDING` until the sweeper retry or a repeated DELETE removes it. |
 
 `REFRESHING` exists only in the redis profile. Callers never see it:
 `/v1/grants` reports it as `ACTIVE`.
@@ -116,7 +120,7 @@ sequenceDiagram
     B->>H: POST /token (code + PKCE verifier)
     H-->>B: ID token
     Note over B: check ID token: signature, iss, aud, exp, nonce<br/>signed-in sub MUST equal the link's sub<br/>(else 403 + security event, no vendor step)
-    Note over B: create vendor PKCE verifier (S256) and<br/>single-use state {sub, vendor, issuer,<br/>scopes ≤ registry ceiling, binding}<br/>record if the AS supports RFC 9207 iss
+    Note over B: create vendor PKCE verifier (S256) and<br/>single-use state {sub, vendor, issuer,<br/>scopes ≤ registry ceiling, binding}<br/>+ iss_required if the AS advertises RFC 9207
     B-->>UA: 307 → vendor authorize<br/>(client_id, code_challenge, state,<br/>resource if the registry sets one)
     UA->>V: user consents as themself
     V-->>UA: 302 → /v1/callback/{vendor}?code&state&iss
@@ -125,6 +129,7 @@ sequenceDiagram
     B->>V: POST /token (code + PKCE verifier<br/>+ client auth¹ + resource if set)
     V-->>B: access token + refresh token (rotating)
     B->>V: GET user endpoint → vendor_user_id<br/>(best effort, "unknown" on failure)
+    Note over B: take the entry's refresh lock,<br/>write anyway on timeout
     B->>K: write entry state=ACTIVE gen=1 (cas=None, re-consent overwrites)
     Note over B: drop cached entry on every replica
     B-->>UA: "Connected — return to your client."
@@ -139,9 +144,11 @@ sequenceDiagram
 endpoint and it lives 300 seconds.
 
 The `resource` parameter (RFC 8707) is for vendors whose tokens are bound
-to one MCP server, such as Atlassian and Cloudflare. When the registry
-entry sets `resource`, the broker sends it on the vendor authorize
-redirect, on the code exchange, and on every refresh (§3, §4).
+to one MCP server, such as Linear, Atlassian and Cloudflare. When the
+registry entry sets `resource`, the broker sends it on the vendor authorize
+redirect, on the code exchange, and on every refresh (§3, §4), unless the
+registry sets `resource_on_refresh: false` (Linear refuses it on refresh,
+design §2.1).
 
 If the custody write fails after the code was redeemed, the broker
 revokes the new grant at the vendor (best effort) and shows a 503 page.
@@ -202,7 +209,7 @@ sequenceDiagram
 ## 3. Lazy refresh — single-flight inside the buffer
 
 This runs when the entry is ACTIVE but close to expiry:
-`expires_at − now < max(min_ttl, 300)`.
+`expires_at − now < max(min_ttl_s, REFRESH_BUFFER_S=300)`.
 
 Some vendors rotate refresh tokens. If a used refresh token is sent again,
 they revoke the whole token family. So when many resolves arrive at once,
@@ -303,7 +310,8 @@ sequenceDiagram
         S->>K: read entry
         alt state REVOKE_PENDING
             S->>B: try_lock (no waiting, skip if held)
-            S->>V: re-read under lock, retry revoke
+            S->>K: re-read under lock
+            S->>V: retry revoke
             Note over S: success or unsupported: delete only if<br/>the version is unchanged, audit broker.revoke<br/>{path: sweep-retry}. Vendor still down: next pass
         else REFRESHING abandoned (≥ REFRESHING_TTL_S) or ACTIVE and 300 < remaining ≤ 900
             S->>B: try_lock (no waiting, a resolve may hold it)
@@ -520,14 +528,14 @@ sequenceDiagram
     Note over B,L: timeout → 503 vendor-unavailable<br/>Redis down → 503 coordination-unavailable
     B->>K: read entry (version v)
     loop up to 3 rounds
-        B->>V: revoke (refresh token)²
+        B->>V: revoke: access token, then refresh token²
         B->>K: re-read
         Note over B,K: same version v → done.<br/>A newer pair landed → revoke that one too
     end
     alt revoked, or vendor has no revocation endpoint
         B->>K: delete entry (all versions + metadata)
         B-->>U: 200 {revoked: true} (+ vendor_revocation: unsupported)
-    else vendor down
+    else vendor revoke fails
         B->>K: CAS write the read entry as REVOKE_PENDING (cas = v)
         B-->>U: 502 revoke-pending (will retry)
     end
@@ -571,9 +579,10 @@ again later.
 
 ² GitHub does this differently. It uses its grant-deletion API with basic
 auth instead of RFC 7009 (`revocation.type: github_grant` in the registry).
-Other vendors get the refresh token, or the access token for a grant that
-never expires. A STALE entry holds no tokens, so it is deleted with no
-vendor call.
+Other vendors get RFC 7009 calls for the access token, then the refresh
+token. The refresh token's answer decides (for a grant that never expires
+and has no refresh token, the access token's answer). A STALE entry holds
+no tokens, so it is deleted with no vendor call.
 
 ---
 
@@ -647,7 +656,7 @@ How to link events together:
 | Event | Emitted in | Joins on |
 |---|---|---|
 | `broker.resolve` {decision, path} | §§2,3,6,7,9 | `hub_jti`, `sub`, `vendor` |
-| `broker.consent.start` / `.complete` / `.fail` | §1, §6 | `sub`, `vendor`, `vendor_user_id` |
+| `broker.consent.start` / `.complete` / `.fail` | §1, §6 | `sub` (when known), `vendor`. Only `.complete` carries `vendor_user_id` |
 | `broker.refresh` {generation_from → to, path?: proactive} | §§3,4,5 | `sub`, `vendor` |
 | `broker.stale` / `broker.stale.mass` | §§3,4,7 | `sub`/`vendor`. Mass carries `page: true` |
 | `broker.revoke` {outcome: revoked\|unsupported\|pending, path?: sweep-retry\|reconsent} | §8 | `sub`, `vendor`. `hub_jti` only on a self-service DELETE that finished (`revoked` or `unsupported`), not on `pending` |

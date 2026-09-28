@@ -82,7 +82,6 @@
 <a href="#lifecycle">Token Lifecycle</a>
 <a href="#smoke-tests">Smoke Tests</a>
 <a href="#adr">Redis Decision</a>
-  <a href="https://github.com/chief-builder/vendor-token-broker">repo</a>
 </nav>
 <main id="content">
 <section id="overview">
@@ -139,7 +138,7 @@
     end
     C --&gt;|&quot;sign in once&quot;| H
     C --&gt;|&quot;tool calls&quot;| G
-    G --&gt;|&quot;who is this?&quot;| H
+    G --&gt;|&quot;swap the sign-in token&quot;| H
     G --&gt;|&quot;their token for this service&quot;| B
     B &lt;--&gt; V
     G --&gt; GH
@@ -148,7 +147,7 @@
     G --&gt; CF
 </pre>
 <ul>
-<li><strong>One sign-in.</strong> People sign in with your company's sign-in service (the "hub"), then connect each service once in their browser.</li>
+<li><strong>One sign-in.</strong> People sign in with your company's sign-in service, then connect each service once in their browser.</li>
 <li><strong>Tokens stay in one place.</strong> The broker keeps each person's service tokens in Vault and refreshes them before they expire. The laptop only holds the sign-in token for the gateway.</li>
 <li><strong>Used once, then forgotten.</strong> On every call, the gateway gets the person's token from the broker, uses it for that one call, and throws it away.</li>
 </ul>
@@ -170,7 +169,7 @@
     S--&gt;&gt;G: result
     G--&gt;&gt;C: result, with no token in it
 </pre>
-<p>Claude Code gets the sign-in token when the person signs in at the sign-in service, once (<code>/mcp</code>, then <strong>Authenticate</strong>). It is issued for the MCP gateway only. Each hop after that uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See <a href="#security">Security</a>.</p>
+<p>The person signs in once (<code>/mcp</code>, then <strong>Authenticate</strong>). After that, each hop uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See <a href="#security">Security</a>.</p>
 <h2 id="the-first-time-someone-uses-a-service">The first time someone uses a service</h2>
 <pre class="mermaid">sequenceDiagram
     autonumber
@@ -194,7 +193,7 @@
     P-&gt;&gt;A: sign in to Atlassian and approve
     A--&gt;&gt;B: a one-time code, via the browser
     Note over B: swap the code for the person's&lt;br/&gt;tokens and store them in Vault
-    G-&gt;&gt;B: connected now?
+    G-&gt;&gt;B: connected yet?
     B--&gt;&gt;G: yes, and the token
     G-&gt;&gt;A: search issues as this person
     A--&gt;&gt;G: results
@@ -224,11 +223,11 @@
 </tbody>
 </table>
 <p>The link only works for the person it was made for, in the browser that opened it: that is the sign-in check in steps 8 and 9. See <a href="#connecting-a-service-during-a-tool-call">Connecting a service during a tool call</a>.</p>
-<h2 id="two-ways-services-sign-in">Two ways services sign in</h2>
+<h2 id="two-ways-the-broker-gets-an-app">Two ways the broker gets an app</h2>
 <pre class="mermaid">flowchart TB
-    subgraph A[&quot;GitHub&quot;]
+    subgraph A[&quot;Admin-created app&quot;]
         direction LR
-        A1[&quot;An admin creates an app&lt;br/&gt;in the service's console&quot;] --&gt; A2[&quot;The app's client ID and&lt;br/&gt;secret stored in Vault&quot;]
+        A1[&quot;GitHub: an admin creates&lt;br/&gt;an app in GitHub's settings&quot;] --&gt; A2[&quot;The app's client ID and&lt;br/&gt;secret stored in Vault&quot;]
         A2 --&gt; A4[&quot;Each person signs in and&lt;br/&gt;approves, in their browser&quot;]
         A4 --&gt; A3[&quot;A token for that person,&lt;br/&gt;used at the MCP server&quot;]
     end
@@ -257,7 +256,7 @@
 <tr>
 <td>GitHub</td>
 <td>7 read tools</td>
-<td><code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code> headers</td>
+<td><code>X-MCP-Readonly</code> header</td>
 <td>Read-only App permissions</td>
 </tr>
 <tr>
@@ -293,7 +292,7 @@
 </pre>
 <ul>
 <li><strong>Refresh.</strong> When many calls need a new token at once, only one refresh happens, even across several broker replicas (through Redis). A compare-and-swap write in Vault is the final safeguard.</li>
-<li><strong>Disconnect.</strong> <code>disconnect_&lt;service&gt;</code> asks the service to cancel the token first, then deletes the broker's copy. If the service is down, the broker keeps retrying and the service can't be used until the cancel succeeds.</li>
+<li><strong>Disconnect.</strong> <code>disconnect_&lt;service&gt;</code> asks the service to cancel the tokens first, then deletes the broker's copy. If the service is down, the broker keeps retrying and the service can't be used until the cancel succeeds.</li>
 <li><strong>Needs reconnect.</strong> The next tool call asks the person to connect again.</li>
 </ul>
 <p><a href="#lifecycle">Token lifecycle</a> walks through every path step by step.</p>
@@ -377,7 +376,7 @@
 </table>
 <h2 id="status">Status</h2>
 <p>Software <strong>1.1.0</strong>, marked <strong>unreleased</strong> in the changelog. Tested end to end with Keycloak as the sign-in service, Claude Code 2.1.283 as the assistant, and the real GitHub, Linear, Atlassian, and Cloudflare MCP servers.</p>
-<p>These docs describe MCP <strong>2026-07-28</strong> (the MCP specification version) and were checked against the code on <strong>2026-09-27</strong>. <a href="#security">Security</a> lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.</p>
+<p>These docs describe MCP <strong>2026-07-28</strong> (the MCP specification version) and were reviewed against the code on <strong>2026-09-28</strong>. <a href="#security">Security</a> lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.</p>
 <h2 id="words-used-in-these-docs">Words used in these docs</h2>
 <table>
 <thead>
@@ -505,9 +504,9 @@
 </code></pre>
 <ol>
 <li>A browser tab opens on Keycloak. Sign in as <code>alice</code>.</li>
-<li>The first time you use a service, the gateway asks you to connect it, and a second tab opens. Finish there. With the stand-ins, this happens by itself.</li>
+<li>The first time you use a service, the gateway asks you to connect it, and a second tab opens. Finish there. With the stand-ins, the tab approves by itself.</li>
 <li>The client prints the list of tools and the result.</li>
-<li><code>disconnect_github</code> cancels the GitHub token and deletes the broker's copy. The next GitHub tool asks you to connect again.</li>
+<li><code>disconnect_github</code> cancels the GitHub tokens and deletes the broker's copy. The next GitHub tool asks you to connect again.</li>
 </ol>
 <p>Tool names start with the service: <code>github_…</code>, <code>linear_…</code>, <code>atlassian_…</code>, or <code>cloudflare_…</code>. The demo client signs in as the pre-registered app <code>mcp-demo-cli</code> and listens for the sign-in result on port 33418.</p>
 <h3 id="3-try-claude-code">3. Try Claude Code</h3>
@@ -544,7 +543,7 @@
      --redirect-base http://localhost:8600 --env-file tests/stack/.env
  ```
 
- Don't run it again later: a new registration disconnects every account connected with the old one. Linear's and Cloudflare's secrets expire after about 3 months, and the script prints the date.
+ Don't run it again later: a new registration disconnects every account connected with the old one. Linear's and Cloudflare's secrets expire after about 90 days, and the script prints the date.
 </code></pre>
 <ol>
 <li>Put the GitHub App's ID and secret in <code>tests/stack/.env</code> too (git ignores this file):</li>
@@ -617,7 +616,7 @@ PY
 <li><code>{"revoked": true}</code>: disconnected.</li>
 <li><code>404 needs-consent</code> again.</li>
 </ol>
-<p>The test vendor widens scopes when it refreshes, so step 3 may list both <code>issues:read</code> and <code>issues:write</code> (see <a href="#scope-policy">scope policy</a>). For a guided tour with a browser, including attack attempts, see <a href="#smoke-tests">Smoke tests</a>.</p>
+<p>The test service widens scopes when it refreshes, so step 3 may list both <code>issues:read</code> and <code>issues:write</code> (see <a href="#scope-policy">scope policy</a>). For a guided tour with a browser, including attack attempts, see <a href="#smoke-tests">Smoke tests</a>.</p>
 <h2 id="run-the-automated-checks">Run the automated checks</h2>
 <pre><code class="language-sh">.venv/bin/pytest tests/unit -q
 .venv/bin/pytest tests/integration -m &quot;not external and not multi and not gateway&quot; -q
@@ -646,14 +645,14 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <hr class='sep'/>
 <section id="gateway">
 <div class="section-head"><h1>MCP Gateway</h1><p class="blurb">How the gateway works, what your sign-in service must do, and how to configure it.</p><p class="src">source: <code>docs/mcp-gateway.md</code></p></div>
-<p><strong>Checked on 2026-09-27 with MCP 2026-07-28, FastMCP 4.0.10, Keycloak 26.7.4, and Claude Code 2.1.283.</strong></p>
+<p><strong>Reviewed 2026-09-28 · MCP 2026-07-28 · tested with FastMCP 4.0.10, Keycloak 26.7.4, and Claude Code 2.1.283.</strong></p>
 <p>The MCP gateway lets AI assistants such as Claude Code use tools from several services, each as the signed-in person. It serves <strong>GitHub</strong>, <strong>Linear</strong>, <strong>Atlassian</strong> (Jira and Confluence), and <strong>Cloudflare</strong>.</p>
 <ul>
 <li>To the assistant, it looks like one ordinary MCP server, protected by your company's sign-in service (the "hub").</li>
 <li>Behind it, it is an MCP client of each service's own MCP server.</li>
 <li>On every tool call, it gets that person's token for that service from the <a href="#api">token broker</a>, uses it once, and throws it away.</li>
 </ul>
-<p>The gateway is a separate service (<code>src/mcp_gateway/</code>). The broker keeps its seven routes and issues no tokens of its own.</p>
+<p>The gateway is a separate service (<code>src/mcp_gateway/</code>). The broker has exactly seven routes and issues no tokens of its own.</p>
 <h2 id="supported-servers">Supported servers</h2>
 <table>
 <thead>
@@ -669,7 +668,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 <td>GitHub</td>
 <td><code>https://api.githubcopilot.com/mcp/</code></td>
 <td>7: <code>github_get_me</code>, <code>github_search_repositories</code>, <code>github_get_file_contents</code>, <code>github_list_issues</code>, <code>github_issue_read</code>, <code>github_list_pull_requests</code>, <code>github_pull_request_read</code></td>
-<td><code>X-MCP-Readonly: true</code> header, plus the tool list</td>
+<td><code>X-MCP-Readonly: true</code> header (plus lockdown mode and a fixed toolset list), plus the tool list</td>
 </tr>
 <tr>
 <td>Linear</td>
@@ -691,6 +690,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 </tr>
 </tbody>
 </table>
+<p>For GitHub, only <code>X-MCP-Readonly</code> blocks writes. Lockdown mode (<code>X-MCP-Lockdown</code>) is a defence against prompt injection: in public repositories, it only returns content from people with push access. <code>X-MCP-Toolsets</code> limits which tool groups the server offers.</p>
 <p>Each service also has two account tools:</p>
 <table>
 <thead>
@@ -711,7 +711,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
 </tbody>
 </table>
 <p>Each person connects each service separately: connecting GitHub doesn't connect Linear.</p>
-<p>Atlassian and Cloudflare run their own sign-in for their MCP servers, so the broker is registered with each of them once. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
+<p>Linear, Atlassian, and Cloudflare run their own sign-in for their MCP servers, so the broker is registered with each of them once. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
 <h2 id="what-happens-on-a-tool-call">What happens on a tool call</h2>
 <pre class="mermaid">flowchart LR
     C[&quot;AI assistant&lt;br/&gt;(Claude Code, demo client)&quot;] --&gt;|&quot;sign-in token for the gateway&quot;| G[&quot;MCP gateway&quot;]
@@ -825,7 +825,7 @@ BROKER_URL=http://localhost:8400 BROKER_CONTAINERS=vtb-broker-a,vtb-broker-b \
     R --&gt; MI[&quot;missing: logged,&lt;br/&gt;stays listed&quot;]
 </pre>
 <p>Notice that a tool with a saved copy always keeps it. Only a tool with no saved copy takes its description from the live list.</p>
-<p>Why keep saved copies? The newest MCP version (2026-07-28) only lets servers announce a changed tool list over a separate subscription channel, which FastMCP 4.0.10 doesn't support. Without the saved copies, Claude Code would only see the <code>connect_…</code> and <code>disconnect_…</code> tools until it reconnected.</p>
+<p>Why keep saved copies? MCP 2026-07-28 only lets servers announce a changed tool list over a separate subscription channel, which FastMCP 4.0.10 doesn't support. Without the saved copies, Claude Code would only see the <code>connect_…</code> and <code>disconnect_…</code> tools until it reconnected.</p>
 <p>Protocol details:</p>
 <ul>
 <li>From 2026-07-28, <code>notifications/tools/list_changed</code> may only be sent on the <code>subscriptions/listen</code> stream. The gateway still sends it when it adds a tool, which only older clients act on.</li>
@@ -886,13 +886,13 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
     G-&gt;&gt;H: swap the sign-in token for an internal token
     H--&gt;&gt;G: internal token
     G-&gt;&gt;B: DELETE /v1/grants/github/sub
-    B-&gt;&gt;V: revoke the token first
+    B-&gt;&gt;V: revoke the tokens first
     V--&gt;&gt;B: revoked
     Note over B: delete the broker's copy
     B--&gt;&gt;G: 200
     G--&gt;&gt;C: GitHub is disconnected
 </pre>
-<p>Notice that the service is asked to cancel the token before the broker deletes its copy. The gateway never calls the service's MCP server here.</p>
+<p>Notice that the service is asked to cancel the tokens before the broker deletes its copy. The gateway never calls the service's MCP server here.</p>
 <p>How it works:</p>
 <ul>
 <li>The gateway calls the broker's self-service <code>DELETE /v1/grants/{vendor}/{sub}</code> with the internal token. It takes <code>sub</code> from that token, so a person can only disconnect themselves.</li>
@@ -911,7 +911,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <tr>
 <td><code>revoked</code></td>
 <td>200</td>
-<td>Disconnected: the service was asked to cancel the token, and the broker deleted its copy. Run <code>connect_&lt;service&gt;</code> to connect again</td>
+<td>Disconnected: the service was asked to cancel the tokens, and the broker deleted its copy. Run <code>connect_&lt;service&gt;</code> to connect again</td>
 </tr>
 <tr>
 <td><code>unsupported</code></td>
@@ -926,7 +926,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <tr>
 <td><code>pending</code></td>
 <td>502 <code>revoke-pending</code></td>
-<td>The service could not be reached to cancel the token. The broker keeps retrying, and until it succeeds the service can't be used here</td>
+<td>The service could not be reached to cancel the tokens. The broker keeps retrying, and until it succeeds the service can't be used here</td>
 </tr>
 </tbody>
 </table>
@@ -1155,7 +1155,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 </tr>
 <tr>
 <td><code>protocol</code></td>
-<td>Optional. How the gateway, as a client, picks the MCP revision. <code>legacy</code> (default): the classic handshake, for servers that stop at MCP 2025-11-25, like GitHub and Linear. <code>auto</code>: try the newest revision (2026-07-28) first, and fall back to the classic handshake for servers that don't show they support it. <code>2026-07-28</code>: use that revision without trying. All four bundled services use <code>legacy</code></td>
+<td>Optional. How the gateway, as a client, picks the MCP revision. <code>legacy</code> (default): the classic handshake, for servers that stop at MCP 2025-11-25, like GitHub and Linear. <code>auto</code>: try revision 2026-07-28 first, and fall back to the classic handshake for servers that don't show they support it. <code>2026-07-28</code>: use that revision without trying. All four bundled services use <code>legacy</code></td>
 </tr>
 <tr>
 <td><code>snapshot</code></td>
@@ -1186,7 +1186,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 </ol>
 <p>Services that run their own MCP sign-in (Linear, Atlassian, Cloudflare, Notion, and many others) need two more steps; see the next section.</p>
 <h2 id="servers-with-their-own-sign-in">Servers with their own sign-in</h2>
-<p>Linear's, Atlassian's, and Cloudflare's MCP servers run their own OAuth sign-in, and the token it issues is only valid at that one MCP server. (Atlassian's and Cloudflare's accept no other kind of token.) So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:</p>
+<p>Linear's, Atlassian's, and Cloudflare's MCP servers run their own OAuth sign-in, and the token it issues is only valid at that one MCP server. (Atlassian's and Cloudflare's accept no other kind of token. Linear's read-only server also accepts a personal API key, which the snapshot script can use.) So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:</p>
 <ul>
 <li><strong>It registers itself once</strong>, with dynamic client registration. There is no developer console to create an app in.</li>
 <li><strong>It names the MCP server on every request</strong> with the <code>resource</code> parameter: when the person connects, when it swaps the code for a token, and on every refresh. The registry entry's <code>resource</code> field holds that address.</li>
@@ -1206,13 +1206,13 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
     B-&gt;&gt;A: swap the code, resource = MCP server URL
     A--&gt;&gt;B: token for that MCP server only
     Note over B: later, before the token runs out
-    B-&gt;&gt;A: refresh, resource = MCP server URL
+    B-&gt;&gt;A: refresh (resource too, except Linear)
     A--&gt;&gt;B: new token pair
     B--&gt;&gt;G: resolve answers with the token
     G-&gt;&gt;M: tool call with the token
     Note over M: any other server refuses this token
 </pre>
-<p>Notice that <code>resource</code> goes on all three requests (on the first two only, for Linear). The token that comes back works only at the MCP server it names.</p>
+<p><code>resource</code> goes on the authorize, code-swap, and refresh requests (Linear: only the first two). The token that comes back works only at that MCP server.</p>
 <p>Standards: dynamic client registration is RFC 7591. The <code>resource</code> parameter is RFC 8707.</p>
 <p>To add one:</p>
 <ol>
@@ -1273,14 +1273,14 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 </tr>
 <tr>
 <td>Client secret</td>
-<td><strong>Expires after 90 days.</strong> The test registration expires on 2026-12-27. Register again, update custody, and everyone reconnects</td>
+<td><strong>Expires after about 90 days.</strong> The test registration expires on 2026-12-27. Register again, update custody, and everyone reconnects</td>
 <td>The script warns if the registration sets an expiry date</td>
-<td><strong>Expires after about 3 months.</strong> The test registration expires on 2026-12-26. There's no way to renew it: register again, update custody, and everyone reconnects</td>
+<td><strong>Expires after about 90 days.</strong> The test registration expires on 2026-12-26. There's no way to renew it: register again, update custody, and everyone reconnects</td>
 </tr>
 </tbody>
 </table>
 <p>Cloudflare's separate observability and builds MCP servers each have their own sign-in and would need their own registration. The main server covers the same read APIs through <code>execute</code>.</p>
-<p>The test stack stands in for both services: mock-vendor plays their sign-in (it refuses a code exchange or refresh that doesn't name the right server), and the stand-ins at <code>/atlassian/mcp</code> and <code>/cloudflare/mcp</code> refuse tokens issued for any other server.</p>
+<p>The test stack stands in for Atlassian's and Cloudflare's sign-in: mock-vendor plays it, and refuses a code exchange or refresh that doesn't name the right server. The stand-ins at <code>/atlassian/mcp</code> and <code>/cloudflare/mcp</code> refuse tokens issued for any other server. Linear's stand-in uses an ordinary test app (vendor <code>mockhub-jwt</code>), and its <code>resource_on_refresh: false</code> rule is covered by unit tests (<code>tests/unit/test_vendor_client.py</code>).</p>
 <p>Figma's MCP server also runs its own sign-in, but only lets clients from its approved list register. It refused the broker's registration.</p>
 <h2 id="run-it-locally">Run it locally</h2>
 <p>The <a href="#run-the-mcp-gateway">Quickstart</a> walks through it step by step. In short:</p>
@@ -1323,10 +1323,9 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <li><strong>Many dependencies.</strong> <code>requirements-gateway.lock</code> pins 80 packages with checksums, including FastMCP 4.0.10 and the broker's own dependencies. Review updates to that file like any other supply-chain change.</li>
 <li><strong>One swap and one service session per call.</strong> This is simple and keeps nothing between calls, but it adds some delay. The gateway doesn't reuse connections.</li>
 <li><strong>Read-only.</strong> Write tools are blocked by the tool lists, and by each service's read-only header, URL, or scope. For Cloudflare, only the scopes do this, because <code>execute</code> can call any Cloudflare API. <code>disconnect_&lt;service&gt;</code> changes only the person's own connection in the broker, never data at the service.</li>
-<li><strong>Cloudflare's client secret expires.</strong> See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>. Put the date in your calendar.</li>
+<li><strong>Linear's and Cloudflare's client secrets expire</strong> after about 90 days. The test registrations expire on 2026-12-27 and 2026-12-26. Register again, update custody, and everyone reconnects. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>. Put the date in your calendar.</li>
 <li><strong>Saved tool lists win.</strong> If a service changes a tool, the gateway keeps listing the saved copy until you refresh it. Cloudflare's <code>execute</code> is always reported as <code>changed</code> when someone runs <code>connect_cloudflare</code>, because its live description is personalized.</li>
 <li><strong>Linear account IDs aren't recorded.</strong> Linear's API only speaks GraphQL, so the broker logs Linear connections with <code>vendor_user_id</code> <code>unknown</code>. This only affects audit joins.</li>
-<li><strong>Timeouts.</strong> The test setup uses a 5-second <code>HTTP_TIMEOUT_S</code> so outage tests run quickly. Against the real services, use the default 15 seconds: some Linear calls take longer than 5.</li>
 <li><strong>Signing keys are cached for an hour.</strong> New keys from the sign-in service are picked up on first use. But a key the sign-in service removes (for example after a leak) stays trusted by the gateway until the cache runs out. Restart the gateway when you revoke a signing key. (The broker doesn't have this gap, because it never caches single keys.)</li>
 <li><strong>What we saw with Claude Code 2.1.283.</strong> After the sign-in service moved to a new address, Claude Code kept using the old token endpoint. After a failed token refresh, its next tool call arrived with no usable sign-in (logged as <code>gateway.auth</code>). In both cases, removing and re-adding the server, then signing in once, fixed it. It also registered itself even when a pre-registered app ID was set.</li>
 </ul>
@@ -1334,7 +1333,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <hr class='sep'/>
 <section id="mcp">
 <div class="section-head"><h1>Connect Your Own MCP Server</h1><p class="blurb">Use the token broker from an MCP server or gateway you build yourself.</p><p class="src">source: <code>docs/mcp-integration.md</code></p></div>
-<p><strong>Baseline: MCP 2026-07-28 · reviewed 2026-09-27.</strong></p>
+<p><strong>Reviewed 2026-09-28 · MCP 2026-07-28.</strong></p>
 <p>Use this page to connect <strong>your own</strong> MCP server or gateway to the broker.</p>
 <ul>
 <li><strong>Just want GitHub, Linear, Atlassian, or Cloudflare?</strong> You do not need this page. The shipped <a href="#gateway">MCP gateway</a> already connects their MCP servers to the broker and handles all the MCP work described here.</li>
@@ -1358,7 +1357,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 </tr>
 <tr>
 <td>Gateway → broker</td>
-<td>Internal hub JWT, checked again by <code>HubValidator</code></td>
+<td>Internal hub JWT, checked again by the broker</td>
 <td>Your identity handoff and this broker</td>
 </tr>
 <tr>
@@ -1392,7 +1391,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <li>Map the operation to an approved vendor and the vendor scopes it needs.</li>
 <li>Have the trusted gateway call <a href="#resolve-a-token">resolve</a> with the internal hub JWT.</li>
 <li>On success, use the token only for the approved vendor API call. Keep it out of tool results, model context, browser storage, and logs.</li>
-<li>Return business data to the MCP client. Remove the hub JWT from the vendor request.</li>
+<li>Return business data to the MCP client. Never send the hub JWT to the vendor.</li>
 </ol>
 <p>The broker gives a token to any caller that passes its internal authentication. So you must isolate the network and authenticate the gateway workload when you deploy. The REST response cannot enforce this for you.</p>
 <h2 id="connecting-a-vendor-during-a-tool-call">Connecting a vendor during a tool call</h2>
@@ -1540,11 +1539,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <p><strong>List all tools from the start.</strong> Do not count on <code>notifications/tools/list_changed</code> to reveal tools after a connection. From 2026-07-28, servers may only send it on <code>subscriptions/listen</code>. The <a href="#tools">gateway's pinned tool list</a> shows this approach.</p>
 <h2 id="existing-gateway-compatibility">Existing gateway compatibility</h2>
 <p>Existing gateway plugins can keep calling the internal broker API as they are: its statuses, fields, and problem titles are frozen.</p>
-<ul>
-<li>The source lab's Kong plugin turned broker 404/409 consent results into custom client-facing <code>401 authorization_required</code> and 401 step-up responses.</li>
-<li>That is an adapter convention. It is not a tested MCP wire flow.</li>
-<li>The plugin is not in this repository.</li>
-</ul>
+<p>Some existing gateway plugins turn broker 404/409 consent results into custom <code>401 authorization_required</code> and 401 step-up responses. That is an adapter convention, not a tested MCP flow.</p>
 <p>If you are keeping an existing deployment, see <a href="#legacy-gateway-mapping">the legacy mapping</a>.</p>
 <h2 id="protocol-revision-and-enterprise-authorization">Protocol revision and enterprise authorization</h2>
 <p><strong>Use the revision your MCP implementation negotiated</strong> for capabilities and message envelopes. The 2026-07-28 release:</p>
@@ -1568,7 +1563,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <ul>
 <li>This is not the MCP protocol. MCP clients never talk to the broker directly.</li>
 <li>The shipped <a href="#gateway">MCP gateway</a> serves GitHub's, Linear's, Atlassian's, and Cloudflare's MCP servers and already calls this API for you. Use it if those are the servers you need.</li>
-<li><a href="#mcp">Integrate with MCP</a> explains how an MCP server or gateway sits in front of the broker.</li>
+<li><a href="#mcp">Connect your own MCP server</a> explains how an MCP server or gateway sits in front of the broker.</li>
 </ul>
 <h2 id="authentication-and-routes">Authentication and routes</h2>
 <p>The broker has exactly seven routes. Most of them need a hub JWT.</p>
@@ -1711,7 +1706,7 @@ Content-Type: application/json
 <ul>
 <li>It caps both requested and recorded scopes.</li>
 <li>A request for any scope outside the ceiling fails with 403 <code>scope-exceeds-ceiling</code>.</li>
-<li>If a caller sends no <code>required_scopes</code>, first-time consent asks for the whole ceiling. This keeps older callers working.</li>
+<li>If a caller sends no <code>required_scopes</code>, first-time consent asks for the whole ceiling, so callers need not send scopes.</li>
 <li>When the broker asks for more scopes, it asks for the scopes already held plus the new required ones, within the ceiling.</li>
 </ul>
 <p>When the ceiling is <strong>empty</strong>, the vendor decides the scopes (GitHub works this way: the app's permissions are set at GitHub):</p>
@@ -1921,7 +1916,7 @@ Content-Type: application/json
 </ul>
 <p>See <a href="#runbook">the runbook</a> for what to do next.</p>
 <h2 id="legacy-gateway-mapping">Legacy gateway mapping</h2>
-<p>This table shows how the source lab's gateway translated broker results. <code>tests/integration/test_wire_compat.py</code> covers the broker side. The source lab's gateway plugin is not in this repository.</p>
+<p>Some existing gateway plugins translate broker results as shown below. It is an adapter convention, not part of this repository. <code>tests/integration/test_wire_compat.py</code> covers the broker side.</p>
 <table>
 <thead>
 <tr>
@@ -1977,7 +1972,7 @@ Content-Type: application/json
   B1 &amp; B2 --&gt; V[&quot;Vendors&lt;br/&gt;OAuth endpoints&quot;]
   G --&gt; M[&quot;Vendor MCP servers&quot;]
 </pre>
-<p>The gateway is the only caller of the broker. Every replica shares one Redis and one secrets store. No session affinity is needed. The gateway talks to the vendors' MCP servers, and the broker talks to the vendors' OAuth endpoints. A single replica can run without Redis (<code>COORD_BACKEND=memory</code>).</p>
+<p>The gateway is the only caller of the token routes. Browsers call the consent routes, and admins call <code>/v1/admin</code>. Every replica shares one Redis and one secrets store. No session affinity is needed. The gateway talks to the vendors' MCP servers, and the broker talks to the vendors' OAuth endpoints. A single replica can run without Redis (<code>COORD_BACKEND=memory</code>).</p>
 <h2 id="set-up-token-storage-openbao-vault-kv-v2">Set up token storage (OpenBao / Vault, KV v2)</h2>
 <p>The broker keeps vendor tokens in a secrets store (OpenBao or Vault, KV v2 engine). You create two storage paths ("mounts"), each with its own access rules:</p>
 <table>
@@ -2036,7 +2031,7 @@ bao token create -policy=broker -period=24h -orphan -display-name=broker
 bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 </code></pre>
 <p>A vendor with <code>enabled_env</code> in the registry (for example GitHub: <code>GITHUB_CLIENT_ID</code>, Atlassian: <code>ATLASSIAN_CLIENT_ID</code>) is only active when that variable is set on the broker.</p>
-<p>Linear, Atlassian, and Cloudflare (their MCP servers' own sign-in) have no developer console: <code>tools/register-mcp-client.py &lt;vendor&gt; --redirect-base &lt;broker URL&gt; --vault</code> registers the broker once and writes <code>vendor-clients/&lt;vendor&gt;</code> itself. Never register again: it disconnects everyone. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
+<p>Linear, Atlassian, and Cloudflare (their MCP servers' own sign-in) have no developer console: <code>tools/register-mcp-client.py &lt;vendor&gt; --redirect-base &lt;broker URL&gt; --vault</code> registers the broker once and writes <code>vendor-clients/&lt;vendor&gt;</code> itself. Register again only when you must: it disconnects everyone. Linear and Cloudflare secrets expire (see <a href="#client-secret-expiring-linear-cloudflare">Client secret expiring</a>). See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
 <p>The credential must match the vendor's <code>token_endpoint_auth_method</code> in the registry:</p>
 <table>
 <thead>
@@ -2183,7 +2178,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 </tbody>
 </table>
 <h2 id="hub-login-client-consent">Hub login client (consent)</h2>
-<p>When a user connects a vendor ("consent"), they must sign in at the hub in the same browser that opened the authorize link (design §6). For this, register the broker at the hub as an OIDC client:</p>
+<p>When a user connects a vendor ("consent"), they must sign in at the hub in the same browser that opened the authorize link (<a href="#6-consent-dance-first-time">consent</a>). For this, register the broker at the hub as an OIDC client:</p>
 <ul>
 <li><strong>Redirect URI:</strong> <code>{BROKER_PUBLIC_URL}/v1/callback/_hub</code> (exact match).</li>
 <li><strong>Grant:</strong> authorization code, with PKCE (S256) required. Scope <code>openid</code>.</li>
@@ -2210,7 +2205,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <li>Problem <code>title</code> slugs. Only the URN prefix in <code>type</code> is configurable (<code>PROBLEM_URN_PREFIX</code>).</li>
 <li>Audit event names (below).</li>
 </ul>
-<p>For the fields and titles in detail, see the <a href="#api">API reference</a> and the <a href="#legacy-gateway-mapping">legacy gateway mapping</a>. For the protocol boundaries and how a gateway asks the user to connect during a tool call, see <a href="#mcp">Integrate with MCP</a>.</p>
+<p>For the fields and titles in detail, see the <a href="#api">API reference</a> and the <a href="#legacy-gateway-mapping">legacy gateway mapping</a>. For the protocol boundaries and how a gateway asks the user to connect during a tool call, see <a href="#mcp">Connect your own MCP server</a>.</p>
 <p>Frozen audit event names: <code>broker.resolve</code>, <code>broker.consent.start</code>,
 <code>broker.consent.complete</code>, <code>broker.consent.fail</code>, <code>broker.refresh</code>,
 <code>broker.stale</code>, <code>broker.stale.mass</code>, <code>broker.revoke</code>, <code>broker.admin.deny</code>,
@@ -2288,17 +2283,32 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <li>With the redis backend each interval is jittered by ±20%. In the worst case (every interval 20% longer) the bound is <code>SWEEP_MAX_ENTRIES × 600 / (1.2 × SWEEP_INTERVAL_S)</code>, about 4,166 with the defaults.</li>
 <li>Past that, some entries miss the proactive refresh. They are refreshed on their next resolve instead.</li>
 </ul>
+<h3 id="502-revoke-pending-on-disconnect">502 <code>revoke-pending</code> on disconnect</h3>
+<p>The service was down when someone disconnected. The broker marked the connection <code>REVOKE_PENDING</code> and kept its tokens, so it can revoke them later.</p>
+<ul>
+<li>Meanwhile, resolve answers 409 <code>revoke-pending</code> for that connection.</li>
+<li>The sweeper retries the revoke on each pass. It takes the entry's lock, reads the entry again, and revokes at the service. It then deletes only the version it revoked.</li>
+<li>A repeated DELETE from the person also retries the revoke.</li>
+</ul>
+<p><strong>Do this:</strong> check that the broker can reach the service's revocation endpoint. The <code>broker.revoke</code> event with <code>outcome: pending</code> carries the error. The sweeper does not run when <code>SWEEP_INTERVAL_S</code> is <code>0</code>.</p>
+<h3 id="client-secret-expiring-linear-cloudflare">Client secret expiring (Linear, Cloudflare)</h3>
+<p><code>tools/register-mcp-client.py</code> registers the broker with Linear's and Cloudflare's MCP sign-in. Their client secrets expire after about 90 days. The test registrations expire on 2026-12-27 (Linear) and 2026-12-26 (Cloudflare). The script prints the expiry date when it registers.</p>
+<p><strong>Do this before that date:</strong></p>
+<ol>
+<li>Register again: <code>tools/register-mcp-client.py &lt;vendor&gt; --redirect-base &lt;broker URL&gt; --vault --force</code>. It writes the new credential to <code>vendor-clients/&lt;vendor&gt;</code>.</li>
+<li>Tell people to reconnect. Every connection made with the old client stops working.</li>
+</ol>
 <h3 id="slow-requests-while-storage-is-frozen">Slow requests while storage is frozen</h3>
 <p>Storage (hvac) and hub JWKS calls run in worker threads, never on the event loop. A frozen storage backend holds one thread per in-flight uncached request for up to <code>VAULT_TIMEOUT_S</code>. Cache hits and <code>/healthz</code> keep answering.</p>
 <h2 id="storage-layout-and-upgrades">Storage layout and upgrades</h2>
 <p>Grant entries live at <code>vendor-tokens/{vendor}/sub-b64.{base64url(sub)}</code>. There is one key per subject, whatever characters the hub puts in <code>sub</code> (including URIs with <code>/</code>).</p>
-<p>Older entries sit at <code>vendor-tokens/{vendor}/{sub}</code>:</p>
+<p>Entries may also sit at the unencoded key <code>vendor-tokens/{vendor}/{sub}</code>:</p>
 <ul>
-<li>The broker still reads them there.</li>
-<li>It moves each one to the encoded key on its next write (a refresh, re-consent, or delete).</li>
+<li>The broker reads both keys.</li>
+<li>It moves an entry to the encoded key on its next refresh or re-consent. A delete removes both keys.</li>
 <li>You need no migration job.</li>
 </ul>
-<p><strong>Upgrade all replicas together.</strong> An older replica cannot see entries a newer one has already moved. It answers needs-consent for them until you replace it.</p>
+<p><strong>Run one broker version across all replicas.</strong> A replica without encoded-key support answers needs-consent for moved entries.</p>
 <p>What stays in storage:</p>
 <ul>
 <li>A current STALE entry holds no tokens (both are blanked). Older retained KV versions may still hold credentials.</li>
@@ -2323,7 +2333,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <hr class='sep'/>
 <section id="security">
 <div class="section-head"><h1>Security</h1><p class="blurb">Which protections are built in, which are partial, and what we tested.</p><p class="src">source: <code>docs/security.md</code></p></div>
-<p><strong>Reviewed 2026-09-27 · software 1.1.0 (unreleased) · MCP 2026-07-28.</strong></p>
+<p><strong>Reviewed 2026-09-28 · software 1.1.0 (unreleased) · MCP 2026-07-28.</strong></p>
 <p>This page lists which security controls the broker and gateway have, where the proof lives, and what is still missing.</p>
 <ul>
 <li>The broker stores each user's vendor tokens and runs the vendor sign-in (OAuth) flows. It is one part of a larger MCP deployment.</li>
@@ -2338,7 +2348,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <li><strong>External</strong>: another component must provide it.</li>
 <li><strong>Planned</strong>: not available here.</li>
 </ul>
-<p>Source and test paths refer to the private repository available to maintainers. The hub is your company's sign-in service (identity provider).</p>
+<p>Source and test paths refer to the private repository available to maintainers.</p>
 <table>
 <thead>
 <tr>
@@ -2361,7 +2371,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Hub JWT revalidation</td>
 <td>Implemented / broker</td>
-<td><code>hub.py</code>; <code>tests/unit/test_hub.py</code>, <code>tests/integration/test_security.py</code></td>
+<td>The hub is your company's sign-in service. <code>hub.py</code>; <code>tests/unit/test_hub.py</code>, <code>tests/integration/test_security.py</code></td>
 </tr>
 <tr>
 <td>Hub signature algorithms</td>
@@ -2381,7 +2391,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Revocation</td>
 <td>Implemented with exceptions / broker + vendor</td>
-<td>Vendor first, then the broker's copy. For RFC 7009 vendors the broker revokes the access token and then the refresh token, because not every vendor revokes the access tokens with the refresh token (Linear's live on for up to 24 hours). <code>main.py</code>, <code>vendors.py</code>, <code>sweeper.py</code>; <code>tests/unit/test_storage_hygiene.py</code>, <code>tests/integration/test_grants.py</code></td>
+<td>Vendor first, then the broker's copy. For RFC 7009 vendors the broker revokes the access token and then the refresh token. Not every vendor revokes the access tokens with the refresh token (Linear's live on for up to 24 hours). A 4xx on the access token is ignored; the refresh token's answer decides. GitHub: grant deletion. <code>main.py</code>, <code>vendors.py</code>, <code>sweeper.py</code>; <code>tests/unit/test_storage_hygiene.py</code>, <code>tests/integration/test_grants.py</code></td>
 </tr>
 <tr>
 <td>No access-token issuance endpoint</td>
@@ -2421,7 +2431,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Resource indicators to vendor MCP servers</td>
 <td>Implemented / broker</td>
-<td>The registry <code>resource</code> goes on authorize, code exchange, and every refresh (RFC 8707). <code>tests/unit/test_resource_indicator.py</code>, <code>test_vendor_client.py</code>; <code>tests/integration/test_mcp_resource.py</code> against a mock that refuses a missing or wrong resource; accepted by the real Atlassian and Cloudflare servers</td>
+<td>The registry <code>resource</code> goes on authorize, code exchange, and every refresh (RFC 8707), unless <code>resource_on_refresh</code> is false (Linear). <code>tests/unit/test_resource_indicator.py</code>, <code>test_vendor_client.py</code>; <code>tests/integration/test_mcp_resource.py</code> against a mock that refuses a missing or wrong resource; accepted by the real Atlassian and Cloudflare servers</td>
 </tr>
 <tr>
 <td>Identity handoff without token passthrough</td>
@@ -2441,7 +2451,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Read-only tool allowlist</td>
 <td>Partial / gateway + broker policy</td>
-<td>Per-service allowlist, plus each service's read-only control: <code>X-MCP-Readonly</code> and <code>X-MCP-Lockdown</code> for GitHub, the <code>read</code> scope and tokens bound to the read-only MCP server for Linear (its full MCP server refuses them), read and search scopes for Atlassian. Write tools stay hidden (tested against the stand-ins). The <code>disconnect_&lt;service&gt;</code> tools change only the person's own broker connection, never data at the service. <strong>Cloudflare relies on scopes alone:</strong> <code>cloudflare_execute</code> runs code against the whole API, and only the scope ceiling (12 read scopes plus <code>offline_access</code>) stops writes</td>
+<td>Per-service allowlist, plus each service's read-only control: <code>X-MCP-Readonly</code> for GitHub, the <code>read</code> scope and tokens bound to the read-only MCP server for Linear (its full MCP server refuses them), read and search scopes for Atlassian. Write tools stay hidden (tested against the stand-ins). The gateway also sends GitHub <code>X-MCP-Lockdown</code>. That is GitHub MCP's lockdown mode: it limits content from untrusted users in public repositories. It does not block writes. The <code>disconnect_&lt;service&gt;</code> tools change only the person's own broker connection, never data at the service. <strong>Cloudflare relies on scopes alone:</strong> <code>cloudflare_execute</code> runs code against the whole API, and only the scope ceiling (12 read scopes plus <code>offline_access</code>) stops writes</td>
 </tr>
 <tr>
 <td>Shared tool list never taken from one user</td>
@@ -2531,7 +2541,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <p>The broker can sign <code>private_key_jwt</code> client-authentication assertions. It does not issue access tokens. Treat vendor client signing keys as credential material.</p>
 <p><code>broker.stale.mass</code> carries <code>page: true</code>, but that does not contact an alert service. Route the event to monitoring if you need an on-call notification. Availability and latency values in the design are targets, not measured guarantees.</p>
 <h2 id="verification-record">Verification record</h2>
-<p>Review baseline: application commit <code>811965f</code> (the gateway serving GitHub, Linear, Atlassian, and Cloudflare, with <code>disconnect_&lt;service&gt;</code>). Checks on 2026-09-27:</p>
+<p>Review baseline: application commit <code>e6c7f65</code> (the gateway serving GitHub, Linear, Atlassian, and Cloudflare, Linear through its own MCP sign-in). Checks on 2026-09-28:</p>
 <table>
 <thead>
 <tr>
@@ -2542,7 +2552,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tbody>
 <tr>
 <td>Unit suite</td>
-<td>422 passed</td>
+<td>433 passed</td>
 </tr>
 <tr>
 <td>Docker integration / memory</td>
@@ -2550,23 +2560,26 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 </tr>
 <tr>
 <td>Gateway profile (Keycloak hub, broker-kc, gateway, stand-ins for all four services)</td>
-<td>47 passed, including disconnect through the broker with a vendor revoke</td>
+<td>47 passed, including disconnect through the broker with a two-token vendor revoke</td>
 </tr>
 <tr>
-<td>Real Atlassian and Cloudflare through the gateway (<code>test_external_mcp_servers.py</code>)</td>
+<td>Real Linear through the gateway (<code>test_external_mcp_servers.py</code>)</td>
+<td>Passed, through Linear's own MCP sign-in</td>
+</tr>
+<tr>
+<td>Linear, checked by hand against the real service</td>
+<td>Consent at <code>mcp.linear.app</code> for <code>read</code> only. A forced broker refresh (no <code>resource</code>) moved the entry from generation 1 to 2 and rotated the refresh token. The token works at the read-only MCP server and is refused by the full one. After <code>disconnect_linear</code>, Linear refuses the last access token</td>
+</tr>
+<tr>
+<td>Real Atlassian and Cloudflare (at <code>41e7aab</code>, before <code>disconnect_&lt;service&gt;</code>)</td>
 <td>2 passed, with the broker registered by <code>tools/register-mcp-client.py</code></td>
 </tr>
 <tr>
-<td>Demo client (<code>tools/mcp-demo-client.py</code>) against the real services</td>
-<td><code>connect_atlassian</code> and <code>connect_cloudflare</code> connected through each service's own sign-in, and listed 8 and 3 tools</td>
-</tr>
-<tr>
-<td>Claude Code 2.1.283 against the gateway</td>
-<td>One session used all four real services: the Atlassian account and open Jira issues, the Cloudflare Worker's settings, Linear issues, and the GitHub profile</td>
+<td>Claude Code 2.1.283 against the gateway (at <code>41e7aab</code>)</td>
+<td>One session used all four real services: the Atlassian account and open Jira issues, the Cloudflare Worker's settings, Linear issues, and the GitHub profile. Linear then used an admin-created OAuth app</td>
 </tr>
 </tbody>
 </table>
-<p>The real-service checks ran against the gateway before <code>disconnect_&lt;service&gt;</code> existed. Disconnect is covered by the unit suite and the gateway profile, against the stand-ins.</p>
 <h3 id="how-the-single-flight-tests-stay-exact">How the single-flight tests stay exact</h3>
 <p>The 20-parallel single-flight tests (single replica and through the load balancer) expect exactly one vendor refresh. Mock tokens normally last 60 seconds, inside <code>REFRESH_BUFFER_S</code> (300), so a request that starts after the first refresh finished would correctly refresh again. For the burst, the tests switch the mock vendor to 1-hour tokens: the consent's 60-second token forces the one refresh, and every later request is served the new token.</p>
 <p>A multi-replica run right after a standalone Redis broker can fail if that broker still holds its 120-second sweep lease, longer than the test's 60-second deadline. The documented <a href="#run-the-automated-checks">test isolation</a> avoids this.</p>
@@ -2697,7 +2710,7 @@ application needs. This repo does not implement it. See
 <tr>
 <td>Lifecycle</td>
 <td>RFC 7009 revocation</td>
-<td>When a user removes a grant, call the vendor revocation endpoint before deleting the stored entry: the access token, then the refresh token. A 4xx on the access token is ignored (a server may not support revoking it); the refresh token's answer decides</td>
+<td>When a user removes a grant, call the vendor revocation endpoint before deleting the stored entry: the access token, then the refresh token. A 4xx on the access token is ignored (a server may not support revoking it); the last token's answer decides (the access token when there is no refresh token)</td>
 </tr>
 <tr>
 <td>Exchange (future)</td>
@@ -2757,7 +2770,7 @@ the reviewed registry and handled in <code>vendors.py</code>:</p>
 <tr>
 <td>Tokens bound to one MCP server</td>
 <td>Linear, Atlassian, Cloudflare (registry <code>resource</code>)</td>
-<td>RFC 8707 <code>resource</code> on authorize, code exchange and every refresh</td>
+<td>RFC 8707 <code>resource</code> on authorize, code exchange and refresh (not on refresh for Linear, next row)</td>
 </tr>
 <tr>
 <td><code>resource</code> refused on refresh</td>
@@ -3034,8 +3047,11 @@ unreachable or no client credential), <code>vault-unavailable</code>, or
 <li>Exchanges the code + PKCE verifier for tokens, with client auth and
    <code>resource</code> when set (failure: 502 "Token exchange failed.").</li>
 <li>Looks up the vendor user id (best effort, below).</li>
-<li>Writes the entry: fresh generation 1, overwriting any entry
-   (<code>cas=None</code>). Granted scopes are capped to the ceiling (§5).</li>
+<li>Waits for the entry's refresh lock (up to <code>LOCK_TIMEOUT_S</code>), then
+   writes the entry: fresh generation 1, overwriting any entry
+   (<code>cas=None</code>). Granted scopes are capped to the ceiling (§5). If the
+   lock never frees, or Redis is unavailable, it writes anyway: the code
+   is spent, and losing the new grant would be worse.</li>
 <li>Drops the cached entry on every replica (§7) and shows "Connected —
     return to your client."</li>
 </ol>
@@ -3094,17 +3110,26 @@ the token pair between the vendor revoke and the custody delete.</p>
 <li>Audit <code>broker.revoke</code> with <code>outcome</code> and <code>hub_jti</code>.</li>
 <li>Answer <code>{"revoked": true}</code>.</li>
 </ol>
-<p>What the vendor revoke sends: the refresh token (<code>token_type_hint:
-refresh_token</code>, its access tokens go with it), else the access token for a
-non-expiring grant. A STALE entry has no tokens (§5), so it needs no
-vendor call.</p>
+<p>What the vendor revoke sends (RFC 7009):</p>
+<ul>
+<li>the access token (<code>token_type_hint: access_token</code>), then the refresh
+  token (<code>token_type_hint: refresh_token</code>). Some vendors keep access
+  tokens alive after their refresh token is revoked (§2.1),</li>
+<li>a 4xx on the access token is ignored (a server may not support revoking
+  it). The last token sent decides: the refresh token, or the access token
+  for a non-expiring grant with no refresh token,</li>
+<li>any 5xx, on either call, fails the revoke.</li>
+</ul>
+<p>GitHub uses grant deletion instead (§2.1). A STALE entry has no tokens
+(§5), so it needs no vendor call.</p>
 <p>If something goes wrong:</p>
 <ul>
-<li><strong>Vendor revoke fails</strong> (unreachable, 4xx or 5xx): the broker CAS-writes
+<li><strong>Vendor revoke fails</strong> (unreachable, any 5xx, or a 4xx on the last
+  token sent): the broker CAS-writes
   the entry it read, whatever its state, as <code>REVOKE_PENDING</code>. If the entry
-  moved since the read, it re-reads once and parks the newer pair (that is
-  the refresh token the sweeper must revoke). If the entry is gone: 404
-  <code>no-grant</code>. If it still keeps moving: 503 <code>vendor-unavailable</code>. Once
+  moved since the read, it re-reads once and parks the newer pair (the
+  pair the sweeper must revoke). If the entry is gone: 404
+  <code>no-grant</code>. If it keeps moving: 503 <code>vendor-unavailable</code>. Once
   parked, the response is 502 <code>revoke-pending</code> and the audit line has
   <code>outcome: "pending"</code>. Resolve cannot use the entry. The sweeper retries
   (§8.1). Re-consent revokes it first (§4.3).</li>
@@ -3160,8 +3185,8 @@ relies on it. The KV-v2 version is the CAS handle.</p>
 <p><strong>Key encoding.</strong> The <code>sub</code> is stored as one KV key: <code>sub-b64.</code> plus the
 unpadded base64url of the <code>sub</code>. So any subject (URIs with <code>/</code>, dots,
 spaces) is exactly one key, never a nested folder the sweeper cannot list.
-Entries at the older raw path <code>vendor-tokens/{vendor}/{sub}</code> are still
-read. They move to the encoded path on their next write:</p>
+Entries at the raw path <code>vendor-tokens/{vendor}/{sub}</code> are read too, and
+move to the encoded path on their next write:</p>
 <ul>
 <li>a CAS write against a raw-path entry creates the encoded entry only if
   none exists (<code>cas=0</code>, so a replica that migrated first wins), then
@@ -3227,10 +3252,8 @@ browser. (Full sequence diagram: <code>token-lifecycle.md</code> §1. Route deta
 <li>The browser returns to <code>/v1/callback/{vendor}?code&amp;state&amp;iss</code>.</li>
 <li>The broker checks state, iss, and binding, uses up the state, and
    redeems the code on the server (with <code>resource</code> when set).</li>
-<li>The broker writes the entry as <code>ACTIVE gen=1</code>, holding the entry's
-   refresh lock for that write. If the lock doesn't free within
-   <code>LOCK_TIMEOUT_S</code>, it writes anyway: the code is spent, and losing the
-   new grant would be worse.</li>
+<li>The broker writes the entry as <code>ACTIVE gen=1</code> under the entry's
+   refresh lock, or without it if the lock never frees (§4.3 step 9).</li>
 <li>The browser shows a "connected" page.</li>
 <li>The caller retries, and resolve returns 200.</li>
 </ol>
@@ -3293,28 +3316,32 @@ replica and, in the redis profile, broadcasts the drop to the others
 <li>deletes an entry (DELETE or sweeper retry).</li>
 </ul>
 <p>It also drops the local copy before every re-read under the refresh lock.
-A successful refresh replaces the local copy. Other replicas keep the
-older, still-valid token until their <code>CACHE_TTL_S</code> runs out.</p>
+A successful refresh replaces the local copy. Other replicas keep serving
+their cached copy (the previous token, which has not expired) until their
+<code>CACHE_TTL_S</code> runs out.</p>
 <h2 id="8-refresh-state-machine-and-race-defense">8. Refresh state machine and race defense</h2>
-<p>Each entry moves between four states. Only one refresh may run per entry
-at a time.</p>
+<p>Each entry moves between four states. <code>NoGrant</code> means no stored entry.
+Only one refresh may run per entry at a time.</p>
 <pre class="mermaid">stateDiagram-v2
     classDef live fill:#10b98122,stroke:#10b981
     classDef transient fill:#6366f122,stroke:#6366f1
     classDef dead fill:#ef444422,stroke:#ef4444
 
-    [*] --&gt; ACTIVE : consent (§6)&lt;br/&gt;gen=1
-    ACTIVE --&gt; ACTIVE : refresh ok, memory profile gen+1&lt;br/&gt;or scope re-consent gen=1
+    [*] --&gt; NoGrant
+    NoGrant --&gt; ACTIVE : consent, gen=1
+    ACTIVE --&gt; ACTIVE : refresh ok (memory profile), gen+1&lt;br/&gt;or scope re-consent, gen=1
     ACTIVE --&gt; REFRESHING : refresh starts&lt;br/&gt;(redis profile)
-    REFRESHING --&gt; ACTIVE : success CAS gen+1&lt;br/&gt;or vendor down, restored
+    REFRESHING --&gt; ACTIVE : refresh ok, CAS gen+1&lt;br/&gt;or vendor down, restored
     REFRESHING --&gt; STALE : invalid_grant
     ACTIVE --&gt; STALE : invalid_grant (memory profile)&lt;br/&gt;or no refresh token
-    STALE --&gt; ACTIVE : re-consent (§6)&lt;br/&gt;fresh gen=1
-    ACTIVE --&gt; REVOKE_PENDING : DELETE, vendor down (§4.4)
-    REFRESHING --&gt; REVOKE_PENDING : DELETE, vendor down
+    STALE --&gt; ACTIVE : re-consent, fresh gen=1
+    ACTIVE --&gt; REVOKE_PENDING : DELETE, vendor revoke fails
+    REFRESHING --&gt; REVOKE_PENDING : DELETE, vendor revoke fails
     REVOKE_PENDING --&gt; ACTIVE : re-consent, old grant&lt;br/&gt;revoked first, gen=1
-    REVOKE_PENDING --&gt; [*] : sweeper retry&lt;br/&gt;revokes + deletes
-    ACTIVE --&gt; [*] : DELETE, revoked&lt;br/&gt;or unsupported
+    ACTIVE --&gt; NoGrant : DELETE, revoked&lt;br/&gt;or unsupported
+    REFRESHING --&gt; NoGrant : DELETE, revoked&lt;br/&gt;or unsupported
+    STALE --&gt; NoGrant : DELETE, nothing to revoke
+    REVOKE_PENDING --&gt; NoGrant : sweeper retry&lt;br/&gt;or repeated DELETE
 
     class ACTIVE live
     class REFRESHING transient
@@ -3322,9 +3349,9 @@ at a time.</p>
 </pre>
 <p>What to notice:</p>
 <ul>
-<li>DELETE parks whatever state it read. In practice that is ACTIVE or an
-  abandoned REFRESHING marker. A STALE entry has no tokens, so DELETE
-  removes it without a vendor call.</li>
+<li>If the vendor revoke fails, DELETE parks whatever state it read as
+  REVOKE_PENDING (in practice ACTIVE or an abandoned REFRESHING marker). A
+  STALE entry has no tokens, so DELETE removes it without a vendor call.</li>
 <li>Both lazy (resolve) and proactive (sweeper) refreshes can end in STALE.</li>
 <li>Re-consent overwrites any state with a fresh <code>gen=1</code>.</li>
 </ul>
@@ -3456,10 +3483,12 @@ refreshes tokens before callers need them. It runs every
     LIST --&gt; BATCH[&quot;take up to SWEEP_MAX_ENTRIES&lt;br/&gt;from the round-robin cursor&quot;]
     BATCH --&gt; READ[&quot;read each entry&quot;]
     READ --&gt; RP{&quot;state?&quot;}
-    RP -- REVOKE_PENDING --&gt; REV[&quot;revoke at vendor,&lt;br/&gt;then delete&quot;]
+    RP -- REVOKE_PENDING --&gt; RTRY{&quot;refresh lock&lt;br/&gt;free now?&quot;}
+    RTRY -- yes --&gt; REV[&quot;re-read, revoke,&lt;br/&gt;delete if version unchanged&quot;]
+    RTRY -- no --&gt; NEXT[&quot;skip entry&quot;]
     RP -- &quot;ACTIVE in band, or&lt;br/&gt;abandoned REFRESHING&quot; --&gt; TRY{&quot;refresh lock&lt;br/&gt;free now?&quot;}
     TRY -- yes --&gt; REF[&quot;re-read, then one refresh&lt;br/&gt;path: proactive&quot;]
-    TRY -- no --&gt; NEXT[&quot;skip entry&quot;]
+    TRY -- no --&gt; NEXT
     RP -- &quot;anything else&quot; --&gt; NEXT
 </pre>
 <p>The pass cost is bounded, and every entry is still reached over
@@ -3494,7 +3523,8 @@ consecutive passes.</p>
 </ul>
 <h2 id="9-failure-modes">9. Failure modes</h2>
 <p>The broker fails closed, and callers can tell the failures apart.
-(Outage sequences: <code>token-lifecycle.md</code> §9. Replica-death recovery: §5.)</p>
+(Outage sequences: <code>token-lifecycle.md</code> §9. Replica-death recovery:
+<a href="#5-multi-replica-refresh-persisted-refreshing-takeover-cas-backstop">Token lifecycle §5</a>.)</p>
 <table>
 <thead>
 <tr>
@@ -3779,26 +3809,29 @@ shows what happens when things fail.</p>
 </tbody>
 </table>
 <h2 id="0-orientation-the-states-and-which-diagram-covers-each-transition">0. Orientation — the states and which diagram covers each transition</h2>
-<p>A grant is always in one of these states. The numbers (§1 to §8) point to
-the diagram that shows each change.</p>
+<p>A grant is always in one of these states (<code>NoGrant</code> means no stored
+entry). The table below the diagram points to the diagram that shows each
+change.</p>
 <pre class="mermaid">stateDiagram-v2
     classDef live fill:#10b98122,stroke:#10b981
     classDef transient fill:#6366f122,stroke:#6366f1
     classDef dead fill:#ef444422,stroke:#ef4444
 
     [*] --&gt; NoGrant
-    NoGrant --&gt; ACTIVE : §1 consent
-    ACTIVE --&gt; ACTIVE : §3–§4 refresh gen+1&lt;br/&gt;§6 step-up gen=1
-    ACTIVE --&gt; REFRESHING : §5 marker (redis)
-    REFRESHING --&gt; ACTIVE : §5 CAS ok&lt;br/&gt;or vendor down
-    REFRESHING --&gt; STALE : §5 replay
-    ACTIVE --&gt; STALE : §7 invalid_grant&lt;br/&gt;or no refresh token
-    STALE --&gt; ACTIVE : §7 re-consent
-    ACTIVE --&gt; NoGrant : §8 revoke
-    ACTIVE --&gt; REVOKE_PENDING : §8 vendor down
-    REFRESHING --&gt; REVOKE_PENDING : §8 vendor down
-    REVOKE_PENDING --&gt; NoGrant : §8 sweep retry
-    REVOKE_PENDING --&gt; ACTIVE : §1 re-consent,&lt;br/&gt;old grant revoked first
+    NoGrant --&gt; ACTIVE : consent, gen=1
+    ACTIVE --&gt; ACTIVE : refresh ok (memory profile), gen+1&lt;br/&gt;or scope re-consent, gen=1
+    ACTIVE --&gt; REFRESHING : refresh starts&lt;br/&gt;(redis profile)
+    REFRESHING --&gt; ACTIVE : refresh ok, CAS gen+1&lt;br/&gt;or vendor down, restored
+    REFRESHING --&gt; STALE : invalid_grant
+    ACTIVE --&gt; STALE : invalid_grant (memory profile)&lt;br/&gt;or no refresh token
+    STALE --&gt; ACTIVE : re-consent, fresh gen=1
+    ACTIVE --&gt; REVOKE_PENDING : DELETE, vendor revoke fails
+    REFRESHING --&gt; REVOKE_PENDING : DELETE, vendor revoke fails
+    REVOKE_PENDING --&gt; ACTIVE : re-consent, old grant&lt;br/&gt;revoked first, gen=1
+    ACTIVE --&gt; NoGrant : DELETE, revoked&lt;br/&gt;or unsupported
+    REFRESHING --&gt; NoGrant : DELETE, revoked&lt;br/&gt;or unsupported
+    STALE --&gt; NoGrant : DELETE, nothing to revoke
+    REVOKE_PENDING --&gt; NoGrant : sweeper retry&lt;br/&gt;or repeated DELETE
 
     class ACTIVE live
     class REFRESHING transient
@@ -3807,8 +3840,9 @@ the diagram that shows each change.</p>
 <p>What to notice:</p>
 <ul>
 <li>A refresh can go STALE from a resolve (§3) or from the sweeper (§4).</li>
-<li>DELETE parks whatever state it read as <code>REVOKE_PENDING</code>. A STALE entry
-  holds no tokens, so DELETE removes it with no vendor call.</li>
+<li>If the vendor revoke fails, DELETE parks whatever state it read as
+  <code>REVOKE_PENDING</code> (in practice ACTIVE or an abandoned REFRESHING marker).
+  A STALE entry holds no tokens, so DELETE removes it with no vendor call.</li>
 <li>Consent overwrites any state with a fresh <code>gen=1</code>. Only a
   <code>REVOKE_PENDING</code> predecessor is revoked at the vendor first.</li>
 </ul>
@@ -3849,7 +3883,7 @@ the diagram that shows each change.</p>
 <tr>
 <td>§8</td>
 <td>Revocation</td>
-<td>The broker revokes at the vendor first, then deletes. If the vendor is down, the entry waits in <code>REVOKE_PENDING</code>.</td>
+<td>The broker revokes at the vendor first, then deletes. If the vendor revoke fails, the entry waits in <code>REVOKE_PENDING</code> until the sweeper retry or a repeated DELETE removes it.</td>
 </tr>
 </tbody>
 </table>
@@ -3894,7 +3928,7 @@ the diagram that shows each change.</p>
     B-&gt;&gt;H: POST /token (code + PKCE verifier)
     H--&gt;&gt;B: ID token
     Note over B: check ID token: signature, iss, aud, exp, nonce&lt;br/&gt;signed-in sub MUST equal the link's sub&lt;br/&gt;(else 403 + security event, no vendor step)
-    Note over B: create vendor PKCE verifier (S256) and&lt;br/&gt;single-use state {sub, vendor, issuer,&lt;br/&gt;scopes ≤ registry ceiling, binding}&lt;br/&gt;record if the AS supports RFC 9207 iss
+    Note over B: create vendor PKCE verifier (S256) and&lt;br/&gt;single-use state {sub, vendor, issuer,&lt;br/&gt;scopes ≤ registry ceiling, binding}&lt;br/&gt;+ iss_required if the AS advertises RFC 9207
     B--&gt;&gt;UA: 307 → vendor authorize&lt;br/&gt;(client_id, code_challenge, state,&lt;br/&gt;resource if the registry sets one)
     UA-&gt;&gt;V: user consents as themself
     V--&gt;&gt;UA: 302 → /v1/callback/{vendor}?code&amp;state&amp;iss
@@ -3903,6 +3937,7 @@ the diagram that shows each change.</p>
     B-&gt;&gt;V: POST /token (code + PKCE verifier&lt;br/&gt;+ client auth¹ + resource if set)
     V--&gt;&gt;B: access token + refresh token (rotating)
     B-&gt;&gt;V: GET user endpoint → vendor_user_id&lt;br/&gt;(best effort, &quot;unknown&quot; on failure)
+    Note over B: take the entry's refresh lock,&lt;br/&gt;write anyway on timeout
     B-&gt;&gt;K: write entry state=ACTIVE gen=1 (cas=None, re-consent overwrites)
     Note over B: drop cached entry on every replica
     B--&gt;&gt;UA: &quot;Connected — return to your client.&quot;
@@ -3915,9 +3950,11 @@ the diagram that shows each change.</p>
 <code>vendor-clients/{vendor}</code> (RFC 7523). Its audience is the vendor's token
 endpoint and it lives 300 seconds.</p>
 <p>The <code>resource</code> parameter (RFC 8707) is for vendors whose tokens are bound
-to one MCP server, such as Atlassian and Cloudflare. When the registry
-entry sets <code>resource</code>, the broker sends it on the vendor authorize
-redirect, on the code exchange, and on every refresh (§3, §4).</p>
+to one MCP server, such as Linear, Atlassian and Cloudflare. When the
+registry entry sets <code>resource</code>, the broker sends it on the vendor authorize
+redirect, on the code exchange, and on every refresh (§3, §4), unless the
+registry sets <code>resource_on_refresh: false</code> (Linear refuses it on refresh,
+design §2.1).</p>
 <p>If the custody write fails after the code was redeemed, the broker
 revokes the new grant at the vendor (best effort) and shows a 503 page.
 The user connects again.</p>
@@ -3969,7 +4006,7 @@ The user connects again.</p>
 <hr />
 <h2 id="3-lazy-refresh-single-flight-inside-the-buffer">3. Lazy refresh — single-flight inside the buffer</h2>
 <p>This runs when the entry is ACTIVE but close to expiry:
-<code>expires_at − now &lt; max(min_ttl, 300)</code>.</p>
+<code>expires_at − now &lt; max(min_ttl_s, REFRESH_BUFFER_S=300)</code>.</p>
 <p>Some vendors rotate refresh tokens. If a used refresh token is sent again,
 they revoke the whole token family. So when many resolves arrive at once,
 the broker must make exactly one vendor call ("single-flight").</p>
@@ -4061,7 +4098,8 @@ them.</p>
         S-&gt;&gt;K: read entry
         alt state REVOKE_PENDING
             S-&gt;&gt;B: try_lock (no waiting, skip if held)
-            S-&gt;&gt;V: re-read under lock, retry revoke
+            S-&gt;&gt;K: re-read under lock
+            S-&gt;&gt;V: retry revoke
             Note over S: success or unsupported: delete only if&lt;br/&gt;the version is unchanged, audit broker.revoke&lt;br/&gt;{path: sweep-retry}. Vendor still down: next pass
         else REFRESHING abandoned (≥ REFRESHING_TTL_S) or ACTIVE and 300 &lt; remaining ≤ 900
             S-&gt;&gt;B: try_lock (no waiting, a resolve may hold it)
@@ -4263,14 +4301,14 @@ from custody.</p>
     Note over B,L: timeout → 503 vendor-unavailable&lt;br/&gt;Redis down → 503 coordination-unavailable
     B-&gt;&gt;K: read entry (version v)
     loop up to 3 rounds
-        B-&gt;&gt;V: revoke (refresh token)²
+        B-&gt;&gt;V: revoke: access token, then refresh token²
         B-&gt;&gt;K: re-read
         Note over B,K: same version v → done.&lt;br/&gt;A newer pair landed → revoke that one too
     end
     alt revoked, or vendor has no revocation endpoint
         B-&gt;&gt;K: delete entry (all versions + metadata)
         B--&gt;&gt;U: 200 {revoked: true} (+ vendor_revocation: unsupported)
-    else vendor down
+    else vendor revoke fails
         B-&gt;&gt;K: CAS write the read entry as REVOKE_PENDING (cas = v)
         B--&gt;&gt;U: 502 revoke-pending (will retry)
     end
@@ -4309,9 +4347,10 @@ vendor is still down, consent stops with a 503 page and the user tries
 again later.</p>
 <p>² GitHub does this differently. It uses its grant-deletion API with basic
 auth instead of RFC 7009 (<code>revocation.type: github_grant</code> in the registry).
-Other vendors get the refresh token, or the access token for a grant that
-never expires. A STALE entry holds no tokens, so it is deleted with no
-vendor call.</p>
+Other vendors get RFC 7009 calls for the access token, then the refresh
+token. The refresh token's answer decides (for a grant that never expires
+and has no refresh token, the access token's answer). A STALE entry holds
+no tokens, so it is deleted with no vendor call.</p>
 <hr />
 <h2 id="9-outages-fail-closed-distinguishably">9. Outages — fail closed, distinguishably</h2>
 <p>When a backend is down, the broker refuses rather than guesses ("fails
@@ -4410,7 +4449,7 @@ refresh logs both <code>broker.refresh</code> and <code>broker.resolve</code>. E
 <tr>
 <td><code>broker.consent.start</code> / <code>.complete</code> / <code>.fail</code></td>
 <td>§1, §6</td>
-<td><code>sub</code>, <code>vendor</code>, <code>vendor_user_id</code></td>
+<td><code>sub</code> (when known), <code>vendor</code>. Only <code>.complete</code> carries <code>vendor_user_id</code></td>
 </tr>
 <tr>
 <td><code>broker.refresh</code> {generation_from → to, path?: proactive}</td>
@@ -4790,7 +4829,7 @@ then deletes the stored entry.</p>
 <pre><code class="language-sh">curl -s localhost:8310/_test/state | grep -o '&quot;revoke&quot;:[0-9]*'   # &quot;revoke&quot;:0
 curl -s -X DELETE localhost:8300/v1/grants/mockhub/wf-smoke \
      -H &quot;Authorization: Bearer $(cat /tmp/tok)&quot;                   # {&quot;revoked&quot;:true}
-curl -s localhost:8310/_test/state | grep -o '&quot;revoke&quot;:[0-9]*'   # &quot;revoke&quot;:1
+curl -s localhost:8310/_test/state | grep -o '&quot;revoke&quot;:[0-9]*'   # &quot;revoke&quot;:2
 curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
      -H &quot;Authorization: Bearer $(cat /tmp/tok)&quot;                   # needs-consent again
 </code></pre>
@@ -4810,8 +4849,10 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
     end
     U-&gt;&gt;B: DELETE /v1/grants/mockhub/wf-smoke (hub JWT)
     Note over B: sub in path MUST match JWT sub&lt;br/&gt;(anyone else → 403 forbidden)&lt;br/&gt;then hold the refresh lock until done
-    B-&gt;&gt;M: POST /revoke (RFC 7009): access token, then refresh token
+    B-&gt;&gt;M: POST /revoke (RFC 7009): access token
     M--&gt;&gt;B: 200, family revoked at the vendor
+    B-&gt;&gt;M: POST /revoke (RFC 7009): refresh token
+    M--&gt;&gt;B: 200, this answer decides
     B-&gt;&gt;V: re-read (unchanged), then delete&lt;br/&gt;vendor-tokens/mockhub/sub-b64.{encoded subject}
     B--&gt;&gt;U: {&quot;revoked&quot;: true}
     Note over B,M: if the vendor were down: entry waits as&lt;br/&gt;REVOKE_PENDING (502), cannot be resolved,&lt;br/&gt;sweeper retries until the vendor recovers
@@ -4831,27 +4872,30 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
     classDef dead fill:#ef444422,stroke:#ef4444
 
     [*] --&gt; NoGrant
-    NoGrant --&gt; ACTIVE : consent dance (test 3)&lt;br/&gt;gen=1
-    ACTIVE --&gt; ACTIVE : single-flight refresh (test 4)&lt;br/&gt;gen+1, CAS-guarded
-    ACTIVE --&gt; REFRESHING : refresh marker&lt;br/&gt;(redis profile)
-    REFRESHING --&gt; ACTIVE : refresh done&lt;br/&gt;or vendor down
-    ACTIVE --&gt; STALE : invalid_grant&lt;br/&gt;or no refresh token
+    NoGrant --&gt; ACTIVE : consent, gen=1
+    ACTIVE --&gt; ACTIVE : refresh ok (memory profile), gen+1&lt;br/&gt;or scope re-consent, gen=1
+    ACTIVE --&gt; REFRESHING : refresh starts&lt;br/&gt;(redis profile)
+    REFRESHING --&gt; ACTIVE : refresh ok, CAS gen+1&lt;br/&gt;or vendor down, restored
     REFRESHING --&gt; STALE : invalid_grant
+    ACTIVE --&gt; STALE : invalid_grant (memory profile)&lt;br/&gt;or no refresh token
     STALE --&gt; ACTIVE : re-consent, fresh gen=1
-    ACTIVE --&gt; REVOKE_PENDING : DELETE grant, vendor down
-    REFRESHING --&gt; REVOKE_PENDING : DELETE grant, vendor down
-    REVOKE_PENDING --&gt; NoGrant : sweeper retry succeeds
-    REVOKE_PENDING --&gt; ACTIVE : re-consent,&lt;br/&gt;old grant revoked first
-    ACTIVE --&gt; NoGrant : DELETE grant (test 7)&lt;br/&gt;revoke at vendor FIRST
+    ACTIVE --&gt; REVOKE_PENDING : DELETE, vendor revoke fails
+    REFRESHING --&gt; REVOKE_PENDING : DELETE, vendor revoke fails
+    REVOKE_PENDING --&gt; ACTIVE : re-consent, old grant&lt;br/&gt;revoked first, gen=1
+    ACTIVE --&gt; NoGrant : DELETE, revoked&lt;br/&gt;or unsupported
+    REFRESHING --&gt; NoGrant : DELETE, revoked&lt;br/&gt;or unsupported
+    STALE --&gt; NoGrant : DELETE, nothing to revoke
+    REVOKE_PENDING --&gt; NoGrant : sweeper retry&lt;br/&gt;or repeated DELETE
 
     class ACTIVE live
     class REFRESHING transient
     class STALE,REVOKE_PENDING dead
 </pre>
-<p>The tests walked the ACTIVE, refresh and DELETE paths. STALE happens on a
-lazy refresh or a sweeper refresh, and also when an entry has no refresh
-token left (no vendor call). DELETE parks whatever state it read as
-<code>REVOKE_PENDING</code>.</p>
+<p>The tests walked consent (Test 3), refresh (Test 4) and DELETE (Test 7).
+STALE happens on a lazy refresh or a sweeper refresh, and also when an
+entry has no refresh token left (no vendor call). If the vendor revoke
+fails, DELETE parks whatever state it read as <code>REVOKE_PENDING</code> (in
+practice ACTIVE or an abandoned REFRESHING marker).</p>
 <p>For every path in detail, see <a href="#lifecycle">the token lifecycle</a>.</p>
 <h2 id="scorecard">Scorecard</h2>
 <table>
@@ -4896,7 +4940,7 @@ token left (no vendor call). DELETE parks whatever state it read as
 <tr>
 <td>7</td>
 <td>Revoke at vendor first, users delete only their own</td>
-<td>RFC 7009 counter 0→1, entry gone</td>
+<td>RFC 7009 counter 0→2 (access token, then refresh token), entry gone</td>
 </tr>
 </tbody>
 </table>
@@ -4932,10 +4976,11 @@ token left (no vendor call). DELETE parks whatever state it read as
 <li><strong>Lock:</strong> <code>SET vtb:lock:{vendor}:{sub} &lt;token&gt; NX PX 20000</code>.</li>
 <li>The PX TTL is <code>LOCK_TTL_MS</code> (default 20000). Startup fails if it is shorter than <code>(VENDOR_TIMEOUT_S + 2 × VAULT_TIMEOUT_S) × 1000</code>, so the lock outlives the slowest refresh it protects.</li>
 <li>Waiters retry every 200ms ± 25%, for up to <code>LOCK_TIMEOUT_S</code> (10s).</li>
-<li>On each retry they re-read the entry. Once the generation moves forward, they serve it without taking the lock.</li>
+<li>On each retry, a waiting resolve re-reads the entry. Once the generation moves forward, it serves that token without taking the lock.</li>
 <li>Release uses a compare-and-DEL Lua script, so only the holder ever releases a lock. If the release fails, the PX TTL frees the lock.</li>
 <li>The sweeper takes the lock without waiting and skips a held entry.</li>
-<li><strong>Consent transactions and states:</strong> <code>SETEX</code> (<code>TXN_TTL_S</code>, 600), consumed once with atomic <code>GETDEL</code>.</li>
+<li>DELETE and the consent write also wait for this lock. The sweeper's revoke retry takes it without waiting.</li>
+<li><strong>Consent transactions and states:</strong> <code>SETEX</code> (<code>TXN_TTL_S</code>, 600), consumed once with atomic <code>GETDEL</code>. An authorize link must be used within 300 s (<code>AUTHORIZE_LINK_TTL_S</code> in <code>main.py</code>).</li>
 <li>For states, the order is peek, check, then consume. So a rejection for an issuer (iss) mismatch does not burn the state the real callback needs.</li>
 <li><strong>Persisted <code>REFRESHING</code>:</strong> lives in the storage (custody) entry, not in redis, with <code>refresh_owner</code> and <code>refresh_started_at</code>. The broker writes it with CAS before calling the vendor. If the vendor is unreachable or errors, the broker CAS-writes the entry back to ACTIVE at once. The next lock holder takes over markers older than <code>REFRESHING_TTL_S</code> (30s), and never refreshes over a younger one.</li>
 <li><strong>Mass-STALE window:</strong> a per-vendor ZSET, plus <code>SET NX PX</code> to send each page only once.</li>

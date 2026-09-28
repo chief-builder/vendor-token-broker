@@ -57,9 +57,9 @@ The tests should all pass. They sign in, connect accounts, call tools, and disco
 ```
 
 1. A browser tab opens on Keycloak. Sign in as `alice`.
-2. The first time you use a service, the gateway asks you to connect it, and a second tab opens. Finish there. With the stand-ins, this happens by itself.
+2. The first time you use a service, the gateway asks you to connect it, and a second tab opens. Finish there. With the stand-ins, the tab approves by itself.
 3. The client prints the list of tools and the result.
-4. `disconnect_github` cancels the GitHub token and deletes the broker's copy. The next GitHub tool asks you to connect again.
+4. `disconnect_github` cancels the GitHub tokens and deletes the broker's copy. The next GitHub tool asks you to connect again.
 
 Tool names start with the service: `github_…`, `linear_…`, `atlassian_…`, or `cloudflare_…`. The demo client signs in as the pre-registered app `mcp-demo-cli` and listens for the sign-in result on port 33418.
 
@@ -103,7 +103,7 @@ If sign-in later fails with an error that names an old address, run `claude mcp 
          --redirect-base http://localhost:8600 --env-file tests/stack/.env
      ```
 
-     Don't run it again later: a new registration disconnects every account connected with the old one. Linear's and Cloudflare's secrets expire after about 3 months, and the script prints the date.
+     Don't run it again later: a new registration disconnects every account connected with the old one. Linear's and Cloudflare's secrets expire after about 90 days, and the script prints the date.
 3. Put the GitHub App's ID and secret in `tests/stack/.env` too (git ignores this file):
 
    ```sh
@@ -189,7 +189,7 @@ What you should see:
 4. `{"revoked": true}`: disconnected.
 5. `404 needs-consent` again.
 
-The test vendor widens scopes when it refreshes, so step 3 may list both `issues:read` and `issues:write` (see [scope policy](api.md#scope-policy)). For a guided tour with a browser, including attack attempts, see [Smoke tests](smoke-tests.md).
+The test service widens scopes when it refreshes, so step 3 may list both `issues:read` and `issues:write` (see [scope policy](api.md#scope-policy)). For a guided tour with a browser, including attack attempts, see [Smoke tests](smoke-tests.md).
 
 ## Run the automated checks
 

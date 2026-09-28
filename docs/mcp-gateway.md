@@ -1,6 +1,6 @@
 # MCP gateway
 
-**Checked on 2026-09-27 with MCP 2026-07-28, FastMCP 4.0.10, Keycloak 26.7.4, and Claude Code 2.1.283.**
+**Reviewed 2026-09-28 · MCP 2026-07-28 · tested with FastMCP 4.0.10, Keycloak 26.7.4, and Claude Code 2.1.283.**
 
 The MCP gateway lets AI assistants such as Claude Code use tools from several services, each as the signed-in person. It serves **GitHub**, **Linear**, **Atlassian** (Jira and Confluence), and **Cloudflare**.
 
@@ -8,16 +8,18 @@ The MCP gateway lets AI assistants such as Claude Code use tools from several se
 - Behind it, it is an MCP client of each service's own MCP server.
 - On every tool call, it gets that person's token for that service from the [token broker](api.md), uses it once, and throws it away.
 
-The gateway is a separate service (`src/mcp_gateway/`). The broker keeps its seven routes and issues no tokens of its own.
+The gateway is a separate service (`src/mcp_gateway/`). The broker has exactly seven routes and issues no tokens of its own.
 
 ## Supported servers
 
 | Service | Its MCP server | Tools | Read-only by |
 |---|---|---|---|
-| GitHub | `https://api.githubcopilot.com/mcp/` | 7: `github_get_me`, `github_search_repositories`, `github_get_file_contents`, `github_list_issues`, `github_issue_read`, `github_list_pull_requests`, `github_pull_request_read` | `X-MCP-Readonly: true` header, plus the tool list |
+| GitHub | `https://api.githubcopilot.com/mcp/` | 7: `github_get_me`, `github_search_repositories`, `github_get_file_contents`, `github_list_issues`, `github_issue_read`, `github_list_pull_requests`, `github_pull_request_read` | `X-MCP-Readonly: true` header (plus lockdown mode and a fixed toolset list), plus the tool list |
 | Linear | `https://mcp.linear.app/mcp/readonly` | 13: `linear_list_issues`, `linear_get_issue`, `linear_list_comments`, `linear_list_projects`, `linear_get_project`, `linear_list_cycles`, `linear_list_teams`, `linear_get_team`, `linear_list_issue_statuses`, `linear_list_users`, `linear_get_user`, `linear_list_documents`, `linear_get_document` | Tokens are bound to Linear's read-only MCP server (its full MCP server refuses them), the `read` scope, plus the tool list |
 | Atlassian | `https://mcp.atlassian.com/v2/mcp` | 8: `atlassian_getJiraIssue`, `atlassian_searchJiraIssuesUsingJql`, `atlassian_getConfluenceContent`, `atlassian_searchConfluence`, `atlassian_executeRead`, `atlassian_discover`, `atlassian_atlassianUserInfo`, `atlassian_getAccessibleAtlassianResources` | Read and search scopes only, plus the tool list |
 | Cloudflare | `https://mcp.cloudflare.com/mcp` | 3: `cloudflare_search`, `cloudflare_docs`, `cloudflare_execute` | **Scopes only.** `execute` runs code against the whole Cloudflare API. What stops it writing is that the token only has 12 read scopes, plus `offline_access` |
+
+For GitHub, only `X-MCP-Readonly` blocks writes. Lockdown mode (`X-MCP-Lockdown`) is a defence against prompt injection: in public repositories, it only returns content from people with push access. `X-MCP-Toolsets` limits which tool groups the server offers.
 
 Each service also has two account tools:
 
@@ -28,7 +30,7 @@ Each service also has two account tools:
 
 Each person connects each service separately: connecting GitHub doesn't connect Linear.
 
-Atlassian and Cloudflare run their own sign-in for their MCP servers, so the broker is registered with each of them once. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in).
+Linear, Atlassian, and Cloudflare run their own sign-in for their MCP servers, so the broker is registered with each of them once. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in).
 
 ## What happens on a tool call
 
@@ -131,7 +133,7 @@ flowchart TD
 
 Notice that a tool with a saved copy always keeps it. Only a tool with no saved copy takes its description from the live list.
 
-Why keep saved copies? The newest MCP version (2026-07-28) only lets servers announce a changed tool list over a separate subscription channel, which FastMCP 4.0.10 doesn't support. Without the saved copies, Claude Code would only see the `connect_…` and `disconnect_…` tools until it reconnected.
+Why keep saved copies? MCP 2026-07-28 only lets servers announce a changed tool list over a separate subscription channel, which FastMCP 4.0.10 doesn't support. Without the saved copies, Claude Code would only see the `connect_…` and `disconnect_…` tools until it reconnected.
 
 Protocol details:
 
@@ -191,14 +193,14 @@ sequenceDiagram
     G->>H: swap the sign-in token for an internal token
     H-->>G: internal token
     G->>B: DELETE /v1/grants/github/sub
-    B->>V: revoke the token first
+    B->>V: revoke the tokens first
     V-->>B: revoked
     Note over B: delete the broker's copy
     B-->>G: 200
     G-->>C: GitHub is disconnected
 ```
 
-Notice that the service is asked to cancel the token before the broker deletes its copy. The gateway never calls the service's MCP server here.
+Notice that the service is asked to cancel the tokens before the broker deletes its copy. The gateway never calls the service's MCP server here.
 
 How it works:
 
@@ -208,10 +210,10 @@ How it works:
 
 | `outcome` | Broker answer | What the person is told |
 |---|---|---|
-| `revoked` | 200 | Disconnected: the service was asked to cancel the token, and the broker deleted its copy. Run `connect_<service>` to connect again |
+| `revoked` | 200 | Disconnected: the service was asked to cancel the tokens, and the broker deleted its copy. Run `connect_<service>` to connect again |
 | `unsupported` | 200 with `vendor_revocation: unsupported` | Disconnected here, but the service can't cancel tokens remotely. Also remove the app's access in the service's account settings |
 | `not-connected` | 404 `no-grant` | The service was not connected |
-| `pending` | 502 `revoke-pending` | The service could not be reached to cancel the token. The broker keeps retrying, and until it succeeds the service can't be used here |
+| `pending` | 502 `revoke-pending` | The service could not be reached to cancel the tokens. The broker keeps retrying, and until it succeeds the service can't be used here |
 
 While a disconnect is `pending`, the broker parks the connection as `REVOKE_PENDING` and its sweeper retries the cancel. Tool calls for that service fail with `revoke-pending` (see [Errors](mcp-gateway.md#errors)).
 
@@ -281,7 +283,7 @@ Required settings: `GATEWAY_PUBLIC_URL`, `HUB_ISSUER`, `HUB_JWKS_URI`, `HUB_TOKE
 | `tools` | The allowlist: the service's own tool names |
 | `headers` | Optional. Extra headers on every call, such as GitHub's `X-MCP-Readonly`. `Authorization` is not allowed here |
 | `auth_scheme` | Optional. `Bearer` (default), or `Sentry-Bearer` for Sentry's MCP server |
-| `protocol` | Optional. How the gateway, as a client, picks the MCP revision. `legacy` (default): the classic handshake, for servers that stop at MCP 2025-11-25, like GitHub and Linear. `auto`: try the newest revision (2026-07-28) first, and fall back to the classic handshake for servers that don't show they support it. `2026-07-28`: use that revision without trying. All four bundled services use `legacy` |
+| `protocol` | Optional. How the gateway, as a client, picks the MCP revision. `legacy` (default): the classic handshake, for servers that stop at MCP 2025-11-25, like GitHub and Linear. `auto`: try revision 2026-07-28 first, and fall back to the classic handshake for servers that don't show they support it. `2026-07-28`: use that revision without trying. All four bundled services use `legacy` |
 | `snapshot` | Optional. The saved tool list. A bare file name (no `/`) always means the bundled `src/mcp_gateway/snapshots/` folder. A value with a `/` is a path relative to the upstreams file. Without it, the service's tools only appear after someone runs its `connect_<name>` tool |
 
 The gateway checks the file at startup and refuses to start if:
@@ -311,7 +313,7 @@ Services that run their own MCP sign-in (Linear, Atlassian, Cloudflare, Notion, 
 
 ## Servers with their own sign-in
 
-Linear's, Atlassian's, and Cloudflare's MCP servers run their own OAuth sign-in, and the token it issues is only valid at that one MCP server. (Atlassian's and Cloudflare's accept no other kind of token.) So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:
+Linear's, Atlassian's, and Cloudflare's MCP servers run their own OAuth sign-in, and the token it issues is only valid at that one MCP server. (Atlassian's and Cloudflare's accept no other kind of token. Linear's read-only server also accepts a personal API key, which the snapshot script can use.) So the broker is an OAuth client of that sign-in service, just like it is of GitHub's:
 
 - **It registers itself once**, with dynamic client registration. There is no developer console to create an app in.
 - **It names the MCP server on every request** with the `resource` parameter: when the person connects, when it swaps the code for a token, and on every refresh. The registry entry's `resource` field holds that address.
@@ -332,14 +334,14 @@ sequenceDiagram
     B->>A: swap the code, resource = MCP server URL
     A-->>B: token for that MCP server only
     Note over B: later, before the token runs out
-    B->>A: refresh, resource = MCP server URL
+    B->>A: refresh (resource too, except Linear)
     A-->>B: new token pair
     B-->>G: resolve answers with the token
     G->>M: tool call with the token
     Note over M: any other server refuses this token
 ```
 
-Notice that `resource` goes on all three requests (on the first two only, for Linear). The token that comes back works only at the MCP server it names.
+`resource` goes on the authorize, code-swap, and refresh requests (Linear: only the first two). The token that comes back works only at that MCP server.
 
 Standards: dynamic client registration is RFC 7591. The `resource` parameter is RFC 8707.
 
@@ -376,11 +378,11 @@ What each service needs:
 | MCP server the token is bound to | `https://mcp.linear.app/mcp/readonly` | `https://mcp.atlassian.com/v2/mcp` | `https://mcp.cloudflare.com/mcp` |
 | Scopes the broker asks for | `read` | `read:me`, `read:account`, `offline_access`, and read and search for Jira and Confluence (`…:agent-interface`) | 12 read scopes plus `offline_access`: `user:read`, `account:read`, `workers-scripts.read`, `workers-routes.read`, `workers-observability.read`, `workers-tail.read`, `workers-ci.read`, `workers-kv-storage.read`, `workers-r2.read`, `workers-r2-bucket-item.read`, `logs.read`, `account-logs.read`. Asked without a `scope`, Cloudflare granted 194 read scopes |
 | Tokens | 24 hours, refresh token rotates, reusing an old one fails. `resource` is left off refresh | 8 hours, refresh token rotates | 1 hour, refresh token rotates |
-| Client secret | **Expires after 90 days.** The test registration expires on 2026-12-27. Register again, update custody, and everyone reconnects | The script warns if the registration sets an expiry date | **Expires after about 3 months.** The test registration expires on 2026-12-26. There's no way to renew it: register again, update custody, and everyone reconnects |
+| Client secret | **Expires after about 90 days.** The test registration expires on 2026-12-27. Register again, update custody, and everyone reconnects | The script warns if the registration sets an expiry date | **Expires after about 90 days.** The test registration expires on 2026-12-26. There's no way to renew it: register again, update custody, and everyone reconnects |
 
 Cloudflare's separate observability and builds MCP servers each have their own sign-in and would need their own registration. The main server covers the same read APIs through `execute`.
 
-The test stack stands in for both services: mock-vendor plays their sign-in (it refuses a code exchange or refresh that doesn't name the right server), and the stand-ins at `/atlassian/mcp` and `/cloudflare/mcp` refuse tokens issued for any other server.
+The test stack stands in for Atlassian's and Cloudflare's sign-in: mock-vendor plays it, and refuses a code exchange or refresh that doesn't name the right server. The stand-ins at `/atlassian/mcp` and `/cloudflare/mcp` refuse tokens issued for any other server. Linear's stand-in uses an ordinary test app (vendor `mockhub-jwt`), and its `resource_on_refresh: false` rule is covered by unit tests (`tests/unit/test_vendor_client.py`).
 
 Figma's MCP server also runs its own sign-in, but only lets clients from its approved list register. It refused the broker's registration.
 
@@ -415,9 +417,8 @@ The stack sets shorter limits so the tests run quickly:
 - **Many dependencies.** `requirements-gateway.lock` pins 80 packages with checksums, including FastMCP 4.0.10 and the broker's own dependencies. Review updates to that file like any other supply-chain change.
 - **One swap and one service session per call.** This is simple and keeps nothing between calls, but it adds some delay. The gateway doesn't reuse connections.
 - **Read-only.** Write tools are blocked by the tool lists, and by each service's read-only header, URL, or scope. For Cloudflare, only the scopes do this, because `execute` can call any Cloudflare API. `disconnect_<service>` changes only the person's own connection in the broker, never data at the service.
-- **Cloudflare's client secret expires.** See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in). Put the date in your calendar.
+- **Linear's and Cloudflare's client secrets expire** after about 90 days. The test registrations expire on 2026-12-27 and 2026-12-26. Register again, update custody, and everyone reconnects. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in). Put the date in your calendar.
 - **Saved tool lists win.** If a service changes a tool, the gateway keeps listing the saved copy until you refresh it. Cloudflare's `execute` is always reported as `changed` when someone runs `connect_cloudflare`, because its live description is personalized.
 - **Linear account IDs aren't recorded.** Linear's API only speaks GraphQL, so the broker logs Linear connections with `vendor_user_id` `unknown`. This only affects audit joins.
-- **Timeouts.** The test setup uses a 5-second `HTTP_TIMEOUT_S` so outage tests run quickly. Against the real services, use the default 15 seconds: some Linear calls take longer than 5.
 - **Signing keys are cached for an hour.** New keys from the sign-in service are picked up on first use. But a key the sign-in service removes (for example after a leak) stays trusted by the gateway until the cache runs out. Restart the gateway when you revoke a signing key. (The broker doesn't have this gap, because it never caches single keys.)
 - **What we saw with Claude Code 2.1.283.** After the sign-in service moved to a new address, Claude Code kept using the old token endpoint. After a failed token refresh, its next tool call arrived with no usable sign-in (logged as `gateway.auth`). In both cases, removing and re-adding the server, then signing in once, fixed it. It also registered itself even when a pre-registered app ID was set.

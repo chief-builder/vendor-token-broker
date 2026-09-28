@@ -437,7 +437,7 @@ then deletes the stored entry.
 curl -s localhost:8310/_test/state | grep -o '"revoke":[0-9]*'   # "revoke":0
 curl -s -X DELETE localhost:8300/v1/grants/mockhub/wf-smoke \
      -H "Authorization: Bearer $(cat /tmp/tok)"                   # {"revoked":true}
-curl -s localhost:8310/_test/state | grep -o '"revoke":[0-9]*'   # "revoke":1
+curl -s localhost:8310/_test/state | grep -o '"revoke":[0-9]*'   # "revoke":2
 curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
      -H "Authorization: Bearer $(cat /tmp/tok)"                   # needs-consent again
 ```
@@ -459,8 +459,10 @@ sequenceDiagram
     end
     U->>B: DELETE /v1/grants/mockhub/wf-smoke (hub JWT)
     Note over B: sub in path MUST match JWT sub<br/>(anyone else → 403 forbidden)<br/>then hold the refresh lock until done
-    B->>M: POST /revoke (RFC 7009): access token, then refresh token
+    B->>M: POST /revoke (RFC 7009): access token
     M-->>B: 200, family revoked at the vendor
+    B->>M: POST /revoke (RFC 7009): refresh token
+    M-->>B: 200, this answer decides
     B->>V: re-read (unchanged), then delete<br/>vendor-tokens/mockhub/sub-b64.{encoded subject}
     B-->>U: {"revoked": true}
     Note over B,M: if the vendor were down: entry waits as<br/>REVOKE_PENDING (502), cannot be resolved,<br/>sweeper retries until the vendor recovers
@@ -484,28 +486,31 @@ stateDiagram-v2
     classDef dead fill:#ef444422,stroke:#ef4444
 
     [*] --> NoGrant
-    NoGrant --> ACTIVE : consent dance (test 3)<br/>gen=1
-    ACTIVE --> ACTIVE : single-flight refresh (test 4)<br/>gen+1, CAS-guarded
-    ACTIVE --> REFRESHING : refresh marker<br/>(redis profile)
-    REFRESHING --> ACTIVE : refresh done<br/>or vendor down
-    ACTIVE --> STALE : invalid_grant<br/>or no refresh token
+    NoGrant --> ACTIVE : consent, gen=1
+    ACTIVE --> ACTIVE : refresh ok (memory profile), gen+1<br/>or scope re-consent, gen=1
+    ACTIVE --> REFRESHING : refresh starts<br/>(redis profile)
+    REFRESHING --> ACTIVE : refresh ok, CAS gen+1<br/>or vendor down, restored
     REFRESHING --> STALE : invalid_grant
+    ACTIVE --> STALE : invalid_grant (memory profile)<br/>or no refresh token
     STALE --> ACTIVE : re-consent, fresh gen=1
-    ACTIVE --> REVOKE_PENDING : DELETE grant, vendor down
-    REFRESHING --> REVOKE_PENDING : DELETE grant, vendor down
-    REVOKE_PENDING --> NoGrant : sweeper retry succeeds
-    REVOKE_PENDING --> ACTIVE : re-consent,<br/>old grant revoked first
-    ACTIVE --> NoGrant : DELETE grant (test 7)<br/>revoke at vendor FIRST
+    ACTIVE --> REVOKE_PENDING : DELETE, vendor revoke fails
+    REFRESHING --> REVOKE_PENDING : DELETE, vendor revoke fails
+    REVOKE_PENDING --> ACTIVE : re-consent, old grant<br/>revoked first, gen=1
+    ACTIVE --> NoGrant : DELETE, revoked<br/>or unsupported
+    REFRESHING --> NoGrant : DELETE, revoked<br/>or unsupported
+    STALE --> NoGrant : DELETE, nothing to revoke
+    REVOKE_PENDING --> NoGrant : sweeper retry<br/>or repeated DELETE
 
     class ACTIVE live
     class REFRESHING transient
     class STALE,REVOKE_PENDING dead
 ```
 
-The tests walked the ACTIVE, refresh and DELETE paths. STALE happens on a
-lazy refresh or a sweeper refresh, and also when an entry has no refresh
-token left (no vendor call). DELETE parks whatever state it read as
-`REVOKE_PENDING`.
+The tests walked consent (Test 3), refresh (Test 4) and DELETE (Test 7).
+STALE happens on a lazy refresh or a sweeper refresh, and also when an
+entry has no refresh token left (no vendor call). If the vendor revoke
+fails, DELETE parks whatever state it read as `REVOKE_PENDING` (in
+practice ACTIVE or an abandoned REFRESHING marker).
 
 For every path in detail, see [the token lifecycle](token-lifecycle.md).
 
@@ -519,7 +524,7 @@ For every path in detail, see [the token lifecycle](token-lifecycle.md).
 | 4 | Single-flight refresh, generation CAS, id-only audit | gen 1→2→3 in `broker.refresh` |
 | 5 | Only allowed algorithms / contract shape at the door | RS256 & expired → 401 `invalid-hub-token` |
 | 6 | No token-issuing endpoints | six issuer paths → 404 |
-| 7 | Revoke at vendor first, users delete only their own | RFC 7009 counter 0→1, entry gone |
+| 7 | Revoke at vendor first, users delete only their own | RFC 7009 counter 0→2 (access token, then refresh token), entry gone |
 
 Tear down with:
 

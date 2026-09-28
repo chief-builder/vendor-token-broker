@@ -12,10 +12,10 @@ anyone handling tokens.
   scopes). Each service also has `connect_…` and `disconnect_…` tools. If an
   account isn't connected yet, the assistant shows a link to connect it.
   ([docs](docs/mcp-gateway.md))
-- **Token broker** (`src/token_broker/`). It keeps each person's vendor
-  tokens (GitHub and others) in OpenBao or Vault, refreshes them before they
-  expire, and cancels them at the vendor when the person disconnects. The
-  gateway asks it for a token on every call.
+- **Token broker** (`src/token_broker/`). It keeps each person's service
+  tokens in OpenBao or Vault, refreshes them before they expire, and revokes
+  them at the service when the person disconnects. The gateway asks it for a
+  token on every call.
 
 Neither part ever shows a token to the assistant or writes one to a log.
 
@@ -27,9 +27,10 @@ requests to vendors (`private_key_jwt`) with keys from storage.
 ## How the broker behaves
 
 - **Hands out tokens** (`POST /v1/tokens/resolve`). The gateway sends an
-  internal sign-in token (the "hub JWT"). The broker checks it again itself:
-  only the algorithms in `HUB_ALGORITHMS` (default PS256/ES256, never RS256
-  or HMAC), the issuer, exactly one tier audience, and the contract version.
+  internal sign-in token from your sign-in service (the "hub JWT"). The
+  broker checks it again itself: only the algorithms in `HUB_ALGORITHMS`
+  (default PS256/ES256, never RS256 or HMAC), the issuer, exactly one tier
+  audience, and the contract version.
   It returns a live vendor token, refreshing it first if needed. It aims for
   `min_ttl_s` of remaining life, with limits and exceptions for vendors whose
   tokens are short-lived ([details](docs/api.md#resolve-a-token)).
@@ -37,17 +38,18 @@ requests to vendors (`private_key_jwt`) with keys from storage.
   `/v1/callback/_hub` → vendor → `/v1/callback/{vendor}`). The person must
   sign in as the user the link was made for. The same browser must finish
   every step (a cookie ties them together). Both steps use PKCE, each link
-  works once, the vendor's `iss` is checked (RFC 9207, including when it is
-  missing), and scopes are capped by the vendor registry.
+  works once, the vendor's `iss` is checked when its metadata supports it
+  (RFC 9207, see [Security](docs/security.md#known-limitations) for limits),
+  and scopes are capped by the vendor registry.
 - **Keeps tokens fresh safely.** Only one request refreshes a person's token
   at a time. A compare-and-swap check stops an older token from overwriting a
-  newer one. A connection that can't be refreshed any more becomes `STALE`,
-  and the person must reconnect. If many go stale at once at one vendor, the
+  newer one. A connection whose refresh fails for good becomes `STALE`, and
+  the person must reconnect. If many go stale at once at one vendor, the
   broker raises an alert.
-- **Disconnects cleanly.** It cancels the token at the vendor first (RFC
-  7009, or GitHub's grant-deletion API), then deletes its copy. For a vendor
-  that can't cancel tokens, it deletes its copy and says so. The gateway's
-  `disconnect_<service>` tools use this.
+- **Disconnects cleanly.** It revokes the access and refresh tokens at the
+  service first (RFC 7009; GitHub uses its grant-deletion API), then deletes
+  its copy. For a service that can't revoke tokens, it deletes its copy and
+  says so. The gateway's `disconnect_<service>` tools use this.
 - **Fails safe.** If token storage is down, it serves only what is in its
   short memory cache (`CACHE_TTL_S`, default 60 s). After that it answers
   503. It never treats "storage down" as "not connected", and never hands out
@@ -116,7 +118,7 @@ contract pins and timing knobs):
 
 | Variable | Meaning |
 |---|---|
-| `HUB_ISSUER` / `HUB_JWKS_URI` | The workforce IdP the broker re-validates hub JWTs against |
+| `HUB_ISSUER` / `HUB_JWKS_URI` | Your sign-in service (the hub). The broker checks hub JWTs against it |
 | `BROKER_PUBLIC_URL` | Public base URL for consent redirects |
 | `VAULT_ADDR` + `VAULT_TOKEN`(`_FILE`) | OpenBao / Vault KV-v2 custody backend |
 | `REGISTRY_PATH` | The vendor registry JSON (see below) |
@@ -154,7 +156,7 @@ Published site: **https://chief-builder.github.io/vendor-token-broker-docs/**
 Build with `.venv/bin/python tools/build-pages.py`; verify with
 `.venv/bin/python tools/build-pages.py --check`. See
 [Maintaining the docs](docs/maintaining.md) for validation and publishing
-the allowlisted static artifact to the existing public companion repo.
+the generated page to the public docs repository.
 
 ## Provenance
 
