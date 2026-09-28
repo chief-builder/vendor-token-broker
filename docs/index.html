@@ -159,6 +159,8 @@
     participant H as Hub
     participant B as Broker
     participant S as Service
+    C-&gt;&gt;H: person signs in, in the browser (OAuth)
+    H--&gt;&gt;C: sign-in token for the MCP gateway
     C-&gt;&gt;G: sign-in token, meant only for the MCP gateway
     G-&gt;&gt;H: swap the sign-in token
     H--&gt;&gt;G: internal hub token
@@ -168,7 +170,7 @@
     S--&gt;&gt;G: result
     G--&gt;&gt;C: result, with no token in it
 </pre>
-<p>Each hop uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See <a href="#security">Security</a>.</p>
+<p>Claude Code gets the sign-in token when the person signs in at the hub, once (<code>/mcp</code>, then <strong>Authenticate</strong>). It is issued for the MCP gateway only. Each hop after that uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See <a href="#security">Security</a>.</p>
 <h2 id="the-first-time-someone-uses-a-service">The first time someone uses a service</h2>
 <pre class="mermaid">sequenceDiagram
     autonumber
