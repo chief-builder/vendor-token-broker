@@ -220,17 +220,19 @@
 <pre class="mermaid">flowchart TB
     subgraph A[&quot;GitHub and Linear&quot;]
         direction LR
-        A1[&quot;An admin creates an app&lt;br/&gt;in the service's console&quot;] --&gt; A2[&quot;Client ID and secret&lt;br/&gt;stored in Vault&quot;]
-        A2 --&gt; A3[&quot;The token works at the&lt;br/&gt;service's MCP server&quot;]
+        A1[&quot;An admin creates an app&lt;br/&gt;in the service's console&quot;] --&gt; A2[&quot;The app's client ID and&lt;br/&gt;secret stored in Vault&quot;]
+        A2 --&gt; A4[&quot;Each person signs in and&lt;br/&gt;approves, in their browser&quot;]
+        A4 --&gt; A3[&quot;A token for that person,&lt;br/&gt;used at the MCP server&quot;]
     end
     subgraph M[&quot;Atlassian and Cloudflare&quot;]
         direction LR
-        M1[&quot;register-mcp-client.py&lt;br/&gt;registers the broker once&quot;] --&gt; M2[&quot;Client ID and secret&lt;br/&gt;stored in Vault&quot;]
-        M2 --&gt; M3[&quot;Every request names&lt;br/&gt;the MCP server&quot;]
-        M3 --&gt; M4[&quot;The token only works&lt;br/&gt;at that one server&quot;]
+        M1[&quot;register-mcp-client.py&lt;br/&gt;registers the app once&quot;] --&gt; M2[&quot;The app's client ID and&lt;br/&gt;secret stored in Vault&quot;]
+        M2 --&gt; M5[&quot;Each person signs in and&lt;br/&gt;approves, in their browser&quot;]
+        M5 --&gt; M4[&quot;A token for that person,&lt;br/&gt;for one MCP server only&quot;]
     end
     A ~~~ M
 </pre>
+<p>Either way, the client ID and secret only identify the broker as an OAuth app. Only a person signing in and approving produces a token, and it acts as that person. The broker uses no system-to-system (client credentials) grant.</p>
 <p>Atlassian and Cloudflare run their own sign-in for their MCP servers. The broker is registered with each of them once, and names the MCP server on every request (the <code>resource</code> parameter, RFC 8707). Registering again would disconnect everyone. See <a href="#servers-with-their-own-sign-in">Servers with their own sign-in</a>.</p>
 <h2 id="what-keeps-each-service-read-only">What keeps each service read-only</h2>
 <p>Each service has several layers. If one fails, the others still hold.</p>
