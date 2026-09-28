@@ -51,22 +51,22 @@ flowchart LR
 sequenceDiagram
     participant C as Claude Code
     participant G as MCP gateway
-    participant H as Hub
+    participant H as Sign-in service
     participant B as Broker
     participant S as Service
     C->>H: person signs in, in the browser (OAuth)
     H-->>C: sign-in token for the MCP gateway
     C->>G: sign-in token, meant only for the MCP gateway
     G->>H: swap the sign-in token
-    H-->>G: internal hub token
-    G->>B: hub token, which only the broker accepts
+    H-->>G: internal token
+    G->>B: internal token, which only the broker accepts
     B-->>G: service token, for this one call
     G->>S: service token, which only this service sees
     S-->>G: result
     G-->>C: result, with no token in it
 ```
 
-Claude Code gets the sign-in token when the person signs in at the hub, once (`/mcp`, then **Authenticate**). It is issued for the MCP gateway only. Each hop after that uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See [Security](security.md).
+Claude Code gets the sign-in token when the person signs in at the sign-in service, once (`/mcp`, then **Authenticate**). It is issued for the MCP gateway only. Each hop after that uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See [Security](security.md).
 
 ## The first time someone uses a service
 
@@ -76,23 +76,31 @@ sequenceDiagram
     actor P as Person
     participant C as Claude Code
     participant G as MCP gateway
+    participant H as Sign-in service
     participant B as Broker
-    participant S as Jira
+    participant A as Atlassian
     P->>C: list my open Jira issues
     C->>G: atlassian_searchJiraIssuesUsingJql
+    Note over G,H: the gateway swaps the sign-in token<br/>for an internal token (every call)
     G->>B: this person's Atlassian token?
     B-->>G: not connected, here is a link
     G-->>C: please open this link
     C->>P: open the link?
-    P->>S: sign in and approve, in the browser
-    S-->>B: approval, stored in Vault
+    P->>B: open the link, in the browser
+    B->>H: sign in first
+    H-->>B: signed in as the person the link is for
+    B->>A: ask Atlassian for approval
+    P->>A: sign in to Atlassian and approve
+    A-->>B: a one-time code, via the browser
+    Note over B: swap the code for the person's<br/>tokens and store them in Vault
     G->>B: connected now?
     B-->>G: yes, and the token
-    G->>S: search issues as this person
-    S-->>C: results
+    G->>A: search issues as this person
+    A-->>G: results
+    G-->>C: results
 ```
 
-Later calls skip steps 3 to 10. How the link reaches the person depends on the assistant:
+Later calls skip steps 4 to 14: the broker answers step 3 with the token straight away. How the link reaches the person depends on the assistant:
 
 | Assistant | What happens |
 |---|---|
@@ -100,7 +108,7 @@ Later calls skip steps 3 to 10. How the link reaches the person depends on the a
 | Other clients that can open links (MCP 2025-11-25) | The gateway asks it to open the link during the call |
 | Clients that can't open links | The tool's error contains the link. Open it, then try again |
 
-The link only works for the person it was made for, in the browser that opened it. See [Connecting a service during a tool call](mcp-gateway.md#connecting-a-service-during-a-tool-call).
+The link only works for the person it was made for, in the browser that opened it: that is the sign-in check in steps 8 and 9. See [Connecting a service during a tool call](mcp-gateway.md#connecting-a-service-during-a-tool-call).
 
 ## Two ways services sign in
 

@@ -156,43 +156,51 @@
 <pre class="mermaid">sequenceDiagram
     participant C as Claude Code
     participant G as MCP gateway
-    participant H as Hub
+    participant H as Sign-in service
     participant B as Broker
     participant S as Service
     C-&gt;&gt;H: person signs in, in the browser (OAuth)
     H--&gt;&gt;C: sign-in token for the MCP gateway
     C-&gt;&gt;G: sign-in token, meant only for the MCP gateway
     G-&gt;&gt;H: swap the sign-in token
-    H--&gt;&gt;G: internal hub token
-    G-&gt;&gt;B: hub token, which only the broker accepts
+    H--&gt;&gt;G: internal token
+    G-&gt;&gt;B: internal token, which only the broker accepts
     B--&gt;&gt;G: service token, for this one call
     G-&gt;&gt;S: service token, which only this service sees
     S--&gt;&gt;G: result
     G--&gt;&gt;C: result, with no token in it
 </pre>
-<p>Claude Code gets the sign-in token when the person signs in at the hub, once (<code>/mcp</code>, then <strong>Authenticate</strong>). It is issued for the MCP gateway only. Each hop after that uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See <a href="#security">Security</a>.</p>
+<p>Claude Code gets the sign-in token when the person signs in at the sign-in service, once (<code>/mcp</code>, then <strong>Authenticate</strong>). It is issued for the MCP gateway only. Each hop after that uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See <a href="#security">Security</a>.</p>
 <h2 id="the-first-time-someone-uses-a-service">The first time someone uses a service</h2>
 <pre class="mermaid">sequenceDiagram
     autonumber
     actor P as Person
     participant C as Claude Code
     participant G as MCP gateway
+    participant H as Sign-in service
     participant B as Broker
-    participant S as Jira
+    participant A as Atlassian
     P-&gt;&gt;C: list my open Jira issues
     C-&gt;&gt;G: atlassian_searchJiraIssuesUsingJql
+    Note over G,H: the gateway swaps the sign-in token&lt;br/&gt;for an internal token (every call)
     G-&gt;&gt;B: this person's Atlassian token?
     B--&gt;&gt;G: not connected, here is a link
     G--&gt;&gt;C: please open this link
     C-&gt;&gt;P: open the link?
-    P-&gt;&gt;S: sign in and approve, in the browser
-    S--&gt;&gt;B: approval, stored in Vault
+    P-&gt;&gt;B: open the link, in the browser
+    B-&gt;&gt;H: sign in first
+    H--&gt;&gt;B: signed in as the person the link is for
+    B-&gt;&gt;A: ask Atlassian for approval
+    P-&gt;&gt;A: sign in to Atlassian and approve
+    A--&gt;&gt;B: a one-time code, via the browser
+    Note over B: swap the code for the person's&lt;br/&gt;tokens and store them in Vault
     G-&gt;&gt;B: connected now?
     B--&gt;&gt;G: yes, and the token
-    G-&gt;&gt;S: search issues as this person
-    S--&gt;&gt;C: results
+    G-&gt;&gt;A: search issues as this person
+    A--&gt;&gt;G: results
+    G--&gt;&gt;C: results
 </pre>
-<p>Later calls skip steps 3 to 10. How the link reaches the person depends on the assistant:</p>
+<p>Later calls skip steps 4 to 14: the broker answers step 3 with the token straight away. How the link reaches the person depends on the assistant:</p>
 <table>
 <thead>
 <tr>
@@ -215,7 +223,7 @@
 </tr>
 </tbody>
 </table>
-<p>The link only works for the person it was made for, in the browser that opened it. See <a href="#connecting-a-service-during-a-tool-call">Connecting a service during a tool call</a>.</p>
+<p>The link only works for the person it was made for, in the browser that opened it: that is the sign-in check in steps 8 and 9. See <a href="#connecting-a-service-during-a-tool-call">Connecting a service during a tool call</a>.</p>
 <h2 id="two-ways-services-sign-in">Two ways services sign in</h2>
 <pre class="mermaid">flowchart TB
     subgraph A[&quot;GitHub&quot;]
