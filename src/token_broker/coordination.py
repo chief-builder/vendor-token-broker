@@ -343,7 +343,7 @@ class RedisCoordination:
 
     async def _setex_json(self, key: str, record: dict) -> None:
         try:
-            await self._r.setex(key, self.cfg.txn_ttl_s, json.dumps(record))
+            await self._r.set(key, json.dumps(record), ex=self.cfg.txn_ttl_s)
         except self._exc as exc:
             raise CoordinationUnavailable(exc) from exc
 
