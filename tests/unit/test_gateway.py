@@ -409,3 +409,16 @@ async def test_disconnect_is_marked_destructive_and_touches_only_its_upstream():
         await c.call_tool("disconnect_linear", {})
     assert tool.annotations.destructive_hint and not tool.annotations.read_only_hint
     assert broker.disconnects == ["linear"] and "github" in broker.connected_vendors
+
+
+async def test_a_tool_outside_the_allowlist_cannot_be_called():
+    """The vendor offers create_issue, but only allowlisted tools exist at the
+    gateway: calling the write tool fails and never reaches the vendor."""
+    gw, _, broker, upstream = make_gateway()
+    async with client(gw) as c:
+        await c.call_tool("connect_github", {})
+        names = {t.name for t in await c.list_tools()}
+        r = await c.call_tool("github_create_issue", {"owner": "o"}, raise_on_error=False)
+    assert "github_create_issue" not in names
+    assert r.is_error
+    assert upstream.calls == []

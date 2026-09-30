@@ -536,7 +536,7 @@
 </ol>
 <p>Then generate a client secret, and install the App on the repositories you want to use.
 2. <strong>Linear, Atlassian, and Cloudflare:</strong> these register the broker with a script instead of a developer console (<a href="#servers-with-their-own-sign-in">why</a>).
-   - For Atlassian, first ask an org admin to allow <code>http://localhost:*/**</code> in Atlassian Administration, under <strong>Rovo → MCP → Domain settings</strong>.
+   - For Atlassian, first ask an org admin to allow <code>http://localhost:*/**</code> in Atlassian Administration, under <strong>Rovo → Rovo MCP server → Domain settings</strong>.
    - Then register once per service. The script writes the ID and secret into <code>tests/stack/.env</code>:</p>
 <pre><code> ```sh
  .venv/bin/python tools/register-mcp-client.py linear \
@@ -1283,7 +1283,7 @@ UPSTREAM_TOKEN=&lt;token from the broker&gt; .venv/bin/python tools/refresh-tool
 <tr>
 <td>Before registering</td>
 <td>Nothing</td>
-<td>An org admin allows the broker's callback address: in Atlassian Administration, under <strong>Rovo → MCP → Domain settings</strong></td>
+<td>An org admin allows the broker's callback address: in Atlassian Administration, under <strong>Rovo → Rovo MCP server → Domain settings</strong></td>
 <td>Nothing</td>
 </tr>
 <tr>
@@ -2227,7 +2227,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <li>Edit a copy of <code>registry.example.json</code>.</li>
 <li>Check it against <code>schemas/vendor-registry.schema.json</code> with <code>jsonschema</code>. CI checks <code>registry.example.json</code> on every push (<code>tests/unit/test_registry.py</code>). Do the same for your copy locally.</li>
 <li>Get the same sign-off for a <code>scope_ceiling</code> change as for a token-contract change. The ceiling is a security boundary: a caller can never go past it at runtime.</li>
-<li>Hardcode endpoints <strong>only</strong> when the vendor publishes no authorization server metadata (e.g. GitHub). When metadata exists, use <code>auth_metadata_url</code>. (Standards: RFC 8414.)</li>
+<li>Prefer <code>auth_metadata_url</code> (RFC 8414). Hardcode endpoints only when the vendor documents no authorization server metadata. GitHub is the one case: it serves metadata that its documentation does not yet describe (see <a href="#21-per-vendor-deviations">design §2.1</a>).</li>
 <li>Set <code>resource</code> only for a vendor whose tokens are bound to one MCP server (Linear, Atlassian, Cloudflare). The broker sends it on authorize, code exchange, and every refresh (RFC 8707), unless <code>resource_on_refresh</code> is false (Linear, which refuses it on refresh). Changing either later can break existing connections at their next refresh.</li>
 <li><code>revocation.type</code> is <code>rfc7009</code> or <code>github_grant</code>. For GitHub Enterprise Server, set <code>revocation.grant_url</code> (default <code>https://api.github.com/applications/{client_id}/grant</code>).</li>
 <li>Never put credentials in the registry. They live only in <code>vendor-clients/*</code>.</li>
@@ -2385,7 +2385,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <li><strong>External</strong>: another component must provide it.</li>
 <li><strong>Planned</strong>: not available here.</li>
 </ul>
-<p>Source and test paths are relative to the root of this repository.</p>
+<p>Source and test paths are relative to the root of the source repository, <a href="https://github.com/chief-builder/vendor-token-broker">chief-builder/vendor-token-broker</a>. Its <code>THREAT_MODEL.md</code> lists the assets, trust boundaries, threats, mitigations, and residual risks, with the test behind each control.</p>
 <table>
 <thead>
 <tr>
@@ -2780,9 +2780,9 @@ the reviewed registry and handled in <code>vendors.py</code>:</p>
 </thead>
 <tbody>
 <tr>
-<td>No RFC 8414 metadata</td>
+<td>Explicit endpoints instead of RFC 8414 metadata</td>
 <td>GitHub</td>
-<td>The registry lists <code>endpoints</code> explicitly. Allowed only where no metadata exists</td>
+<td>The registry lists <code>endpoints</code> explicitly. GitHub now serves metadata at <code>https://github.com/.well-known/oauth-authorization-server/login/oauth</code> (observed 2026-09-30), but its documentation does not describe it, so the registry keeps the documented endpoints. Switching to <code>auth_metadata_url</code> would also make the callback require <code>iss</code> (RFC 9207), which that metadata advertises</td>
 </tr>
 <tr>
 <td>Revocation by grant deletion, not RFC 7009</td>

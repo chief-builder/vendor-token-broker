@@ -26,11 +26,12 @@ from keycloak_stack import (
     MOCK_MCP,
     consent_via_keycloak,
     hub_jwt,
+    jwt_part,
     mcp_token,
     resolve_kc,
     revoke_kc,
 )
-from stack import grep_container_logs, mock_state
+from stack import MOCK, container_audit_events, grep_container_logs, mock_state
 
 pytestmark = pytest.mark.gateway
 
@@ -257,6 +258,48 @@ async def test_each_upstream_gets_its_own_token_and_policy():
     assert github["token_fp"] != linear["token_fp"]  # different vendors
 
 
+async def test_each_call_runs_as_the_signed_in_person():
+    """Alice's connection is never used for Bob: Bob is asked to connect his
+    own account, and once he has, his calls carry a different vendor token
+    and the broker resolves them for his subject."""
+    await _call("alice", "github_get_me", user=User("alice"))  # Alice connected
+    alice_fp = _last_call("github")["token_fp"]
+    revoke_kc(hub_jwt("bob"))
+    bob = User("bob", action="decline")
+    r = await _call("bob", "github_get_me", user=bob)
+    assert r.is_error and "not connected" in r.content[0].text
+    assert len(bob.prompts) == 1
+    assert _last_call("github")["token_fp"] == alice_fp  # Bob's attempt never reached GitHub
+
+    r = await _call("bob", "github_get_me", user=User("bob"))
+    assert not r.is_error, r.content[0].text
+    assert _last_call("github")["token_fp"] != alice_fp
+    bob_sub = jwt_part(hub_jwt("bob"), 1)["sub"]
+    resolves = [
+        e for e in container_audit_events("vtb-broker-kc", "2m") if e["audit"] == "broker.resolve"
+    ]
+    assert resolves[-1]["sub"] == bob_sub and resolves[-1]["decision"] == "allow"
+
+
+async def test_hidden_write_tool_cannot_be_called():
+    """Only allowlisted (read) tools exist at the gateway: a write tool the
+    vendor offers is not listed and a call to it never reaches the vendor."""
+    before = len(mock_state_mcp()["calls"])
+    r = await _call(
+        "alice",
+        "github_create_issue",
+        {"owner": "octocat-lab", "repo": "hello-world", "title": "x"},
+        user=User("alice", action="decline"),
+    )
+    assert r.is_error
+    calls = mock_state_mcp()["calls"]
+    assert len(calls) == before and all(c["tool"] != "create_issue" for c in calls)
+
+
+def mock_state_mcp() -> dict:
+    return requests.get(f"{MOCK_MCP}/_test/state", timeout=5).json()
+
+
 # ------------------------------------------ servers with their own sign-in
 
 
@@ -340,6 +383,25 @@ async def test_client_without_url_elicitation_is_given_the_link():
     revoke_kc(hub_jwt("alice"))
     r = await _call("alice", "github_get_me")  # no elicitation handler
     assert r.is_error and f"{BROKER_KC}/v1/authorize/mockhub?txn=" in r.content[0].text
+
+
+async def test_token_revoked_at_the_vendor_fails_closed_to_consent():
+    """The person revoked the app at the vendor: the broker's refresh gets
+    invalid_grant, the entry goes STALE, and the call asks to connect again.
+    The dead token is never used."""
+    await _call("alice", "github_get_me", user=User("alice"))  # connected
+    calls_before = len(mock_state_mcp()["calls"])
+    requests.post(f"{MOCK}/_test/revoke_family", timeout=10).raise_for_status()
+    user = User("alice", action="decline")
+    r = await _call("alice", "github_get_me", user=user)
+    assert r.is_error and "not connected" in r.content[0].text
+    assert len(user.prompts) == 1
+    assert len(mock_state_mcp()["calls"]) == calls_before  # nothing reached GitHub
+    alice_sub = jwt_part(hub_jwt("alice"), 1)["sub"]
+    stale = [
+        e for e in container_audit_events("vtb-broker-kc", "2m") if e["audit"] == "broker.stale"
+    ]
+    assert any(e["sub"] == alice_sub for e in stale)
 
 
 async def test_revoked_connection_prompts_again():
@@ -454,3 +516,7 @@ def test_no_token_material_in_any_container_log():
     atlassian = resolve_kc(hub, "mockhub-atlassian").json()["access_token"]
     for secret in (mcp, hub, github, linear, atlassian):
         assert grep_container_logs(secret, since="10m") == {}
+    # ...and none reached the assistant: tool results carry no token either.
+    results = [c.text for res in (r, r2, r3) for c in res.content if hasattr(c, "text")]
+    for secret in (mcp, hub, github, linear, atlassian):
+        assert all(secret not in text for text in results)

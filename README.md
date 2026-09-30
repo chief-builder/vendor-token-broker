@@ -208,8 +208,8 @@ Published site: **https://chief-builder.github.io/vendor-token-broker-docs/**
 - [Design](docs/design.md), [Token lifecycle](docs/token-lifecycle.md),
   [Smoke tests](docs/smoke-tests.md), and the
   [Redis decision](docs/adr/0001-redis-coordination.md)
-- [Contributing](CONTRIBUTING.md), [Security policy](SECURITY.md),
-  [Audit (2026-09-30)](AUDIT.md)
+- [Threat model](THREAT_MODEL.md), [Security policy](SECURITY.md),
+  [Contributing](CONTRIBUTING.md), and the [audit (2026-09-30)](AUDIT.md)
 
 ## Provenance
 

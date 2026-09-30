@@ -375,7 +375,7 @@ What each service needs:
 
 | | Linear | Atlassian | Cloudflare |
 |---|---|---|---|
-| Before registering | Nothing | An org admin allows the broker's callback address: in Atlassian Administration, under **Rovo → MCP → Domain settings** | Nothing |
+| Before registering | Nothing | An org admin allows the broker's callback address: in Atlassian Administration, under **Rovo → Rovo MCP server → Domain settings** | Nothing |
 | MCP server the token is bound to | `https://mcp.linear.app/mcp/readonly` | `https://mcp.atlassian.com/v2/mcp` | `https://mcp.cloudflare.com/mcp` |
 | Scopes the broker asks for | `read` | `read:me`, `read:account`, `offline_access`, and read and search for Jira and Confluence (`…:agent-interface`) | 12 read scopes plus `offline_access`: `user:read`, `account:read`, `workers-scripts.read`, `workers-routes.read`, `workers-observability.read`, `workers-tail.read`, `workers-ci.read`, `workers-kv-storage.read`, `workers-r2.read`, `workers-r2-bucket-item.read`, `logs.read`, `account-logs.read`. Asked without a `scope`, Cloudflare granted 194 read scopes |
 | Tokens | 24 hours, refresh token rotates, reusing an old one fails. `resource` is left off refresh | 8 hours, refresh token rotates | 1 hour, refresh token rotates |

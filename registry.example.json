@@ -14,7 +14,7 @@
     "revocation": {
       "type": "github_grant"
     },
-    "_notes": "GitHub App: no RFC 8414 metadata (endpoints hardcoded \u2014 allowed where no metadata exists); scopes come from App permissions, so the ceiling is empty; revocation uses GitHub's grant-deletion API, the documented RFC 7009 deviation."
+    "_notes": "GitHub App: endpoints hardcoded from GitHub's documentation (GitHub also serves undocumented RFC 8414 metadata at /.well-known/oauth-authorization-server/login/oauth, observed 2026-09-30); scopes come from App permissions, so the ceiling is empty; revocation uses GitHub's grant-deletion API, the documented RFC 7009 deviation."
   },
   "linear": {
     "vendor_id": "linear",

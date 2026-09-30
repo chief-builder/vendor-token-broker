@@ -17,7 +17,7 @@ Status words in the table:
 - **External**: another component must provide it.
 - **Planned**: not available here.
 
-Source and test paths are relative to the root of this repository.
+Source and test paths are relative to the root of the source repository, [chief-builder/vendor-token-broker](https://github.com/chief-builder/vendor-token-broker). Its `THREAT_MODEL.md` lists the assets, trust boundaries, threats, mitigations, and residual risks, with the test behind each control.
 
 | Control | Status / owner | Implementation and evidence |
 |---|---|---|
