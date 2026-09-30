@@ -44,11 +44,16 @@ def test_unknown_vendor_is_none(vendor_client):
     assert vendor_client.get_vendor("nope") is None
 
 
-def test_enabled_env_gates_vendor(vendor_client, monkeypatch):
-    monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
-    assert vendor_client.get_vendor("github") is None
+def test_enabled_env_gates_vendor(cfg, custody):
+    assert VendorClient(cfg, custody, environ={}).get_vendor("github") is None
+    assert VendorClient(cfg, custody, environ={"GITHUB_CLIENT_ID": ""}).get_vendor("github") is None
+    enabled = VendorClient(cfg, custody, environ={"GITHUB_CLIENT_ID": "iv1.abc"})
+    assert enabled.get_vendor("github") is not None
+
+
+def test_enabled_env_defaults_to_the_process_environment(cfg, custody, monkeypatch):
     monkeypatch.setenv("GITHUB_CLIENT_ID", "iv1.abc")
-    assert vendor_client.get_vendor("github") is not None
+    assert VendorClient(cfg, custody).get_vendor("github") is not None
 
 
 def test_ungated_vendor_always_enabled(vendor_client):

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Mapping
 
 import httpx
 
@@ -49,13 +50,21 @@ def _unreachable(what: str, exc: Exception) -> VendorUnavailable:
 
 
 class VendorClient:
-    def __init__(self, cfg: Config, custody: Custody):
+    def __init__(self, cfg: Config, custody: Custody, environ: Mapping[str, str] | None = None):
         self._registry: dict[str, dict] = json.loads(cfg.registry_path.read_text())
         # Vendor ids become custody path segments: enforce the schema's
         # pattern at load, not only in CI, so no id can nest or traverse.
         bad = [v for v in self._registry if not VENDOR_ID.match(v)]
         if bad:
             raise ConfigError(f"registry vendor ids must match {VENDOR_ID.pattern}: {bad}")
+        # A vendor with `enabled_env` is served only where that variable is
+        # set (its client is configured here). Decided once, at startup.
+        environ = os.environ if environ is None else environ
+        self._enabled = frozenset(
+            v
+            for v, spec in self._registry.items()
+            if not spec.get("enabled_env") or environ.get(spec["enabled_env"])
+        )
         self._timeout = cfg.vendor_timeout_s
         self._metadata_cache: dict[str, dict] = {}
         self._custody = custody
@@ -64,13 +73,8 @@ class VendorClient:
         return self._registry
 
     def get_vendor(self, vendor: str) -> dict | None:
-        spec = self._registry.get(vendor)
-        if spec is None:
-            return None
-        enabled_env = spec.get("enabled_env")
-        if enabled_env and not os.environ.get(enabled_env):
-            return None  # vendor present in registry but not configured here
-        return spec
+        """The registry entry, or None if unknown or not enabled here."""
+        return self._registry[vendor] if vendor in self._enabled else None
 
     def resource(self, vendor: str) -> str | None:
         """RFC 8707 resource indicator for vendors whose tokens are bound to
