@@ -16,10 +16,9 @@ from urllib.parse import urlencode
 
 import httpx
 import jwt
-from jwt.exceptions import PyJWKClientConnectionError
 
 from .config import Config
-from .hub import HubUnavailable, HubValidator
+from .hub import HubAuthError, HubUnavailable, HubValidator
 
 log = logging.getLogger(__name__)
 
@@ -119,10 +118,8 @@ class HubLogin:
 
     def _validate_id_token(self, id_token: str, nonce: str) -> dict:
         try:
-            key = self._validator._jwks.get_signing_key_from_jwt(id_token).key
-        except (PyJWKClientConnectionError, TimeoutError) as exc:
-            raise HubUnavailable("hub signing keys unavailable") from exc
-        except Exception as exc:
+            key = self._validator.signing_key(id_token)
+        except HubAuthError as exc:
             raise HubLoginError(f"ID token key: {exc}") from exc
         try:
             claims = jwt.decode(
