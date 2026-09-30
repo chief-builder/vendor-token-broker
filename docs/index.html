@@ -3752,7 +3752,7 @@ separate implementation and rollout plan.</p>
         LB[&quot;any balancer&quot;]
         A2[&quot;broker A&quot;]
         B2[&quot;broker B&quot;]
-        R2[&quot;redis 7&lt;br/&gt;locks · consent state · sweep&lt;br/&gt;lease · invalidation pub/sub&quot;]
+        R2[&quot;redis 8&lt;br/&gt;locks · consent state · sweep&lt;br/&gt;lease · invalidation pub/sub&quot;]
         K2[&quot;custody KV-v2&lt;br/&gt;(CAS = correctness backstop)&quot;]
         LB --&gt; A2
         LB --&gt; B2
@@ -3785,7 +3785,7 @@ separate implementation and rollout plan.</p>
 </ul>
 <p><strong>Correct only while replicas = 1.</strong></p>
 <h3 id="multi-replica-coord_backendredis">Multi-replica (<code>COORD_BACKEND=redis</code>)</h3>
-<p>Redis 7 provides:</p>
+<p>Redis (7.4 or later; the stack runs 8.10) provides:</p>
 <ul>
 <li>the distributed single-flight lock (<code>LOCK_TTL_MS</code>, default 20000; it
   must be at least <code>(VENDOR_TIMEOUT_S + 2 × VAULT_TIMEOUT_S) × 1000</code> or
@@ -4995,6 +4995,7 @@ practice ACTIVE or an abandoned REFRESHING marker).</p>
 <div class="section-head"><h1>Redis Decision</h1><p class="blurb">Why Redis coordinates several brokers running side by side.</p><p class="src">source: <code>docs/adr/0001-redis-coordination.md</code></p></div>
 <p><strong>Status:</strong> accepted · <strong>Date:</strong> 2026-07-16</p>
 <p>This record explains why the broker uses Redis 7 to coordinate more than one replica.</p>
+<p><em>Update 2026-09-30:</em> the test stack and the multi-replica deploy shape moved to Redis 8.10.2. The commands the broker uses (<code>SET NX PX</code>, <code>GETDEL</code>, Lua, sorted sets, pub/sub) are unchanged, and the redis and multi-replica suites pass on it.</p>
 <h2 id="context">Context</h2>
 <p>The source lab ran the broker as one replica. There:</p>
 <ul>

@@ -408,7 +408,7 @@ is Atlassian's global MCP authorization server, not tenant-specific. It stays.
 | W15 `docs-site-review.md` | Deleted (stale working notes with `/tmp` paths and a wrong "private" claim) | `276d2fc` |
 | W13 wording vs. extending the test | Docs narrowed to what the test checks; adding a Cloudflare tool call to the leak test was left out rather than written blind | `18f1ba2` |
 | Python 3.14, relocked, base digests, stub images on the hashed lock, `.dockerignore` | Done | `1788e00` |
-| Compose images pinned (exact version + digest), project name | Done; **redis held at 7.4.11** (major bump, needs a multi-replica run) | `eceda03` |
+| Compose images pinned (exact version + digest), project name | Done; redis first held at 7.4.11 (major bump), then moved to **8.10.2** once CI ran the redis and multi-replica suites on 8.x (Dependabot PR #2, closed for picking 8.10.1 and an old nginx mainline) | `eceda03`, follow-up PR |
 | D1 split `main.py` | Done, behavior-neutral (statement-level diff checked) | `11654b0` |
 | D2 enabled vendors from injectable env | Done | `5acc319` |
 | D3 GitHub grant URL in registry; D14 revocation enum | Done (+ first tests of the `github_grant` path) | `f891145` |
@@ -444,8 +444,7 @@ links, CodeQL for python and actions) green.
 
 **Proposed, not done:** publish the docs site from this repository through
 GitHub Pages (a settings change) instead of copying to a second repository;
-adopt CIMD for vendor MCP registration once vendors support it; bump Redis
-to 8.x after a multi-replica run.
+adopt CIMD for vendor MCP registration once vendors support it.
 
 ---
 

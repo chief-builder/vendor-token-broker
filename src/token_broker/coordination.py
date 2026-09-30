@@ -248,7 +248,7 @@ async def _stop(task: asyncio.Task | None) -> None:
 
 
 class RedisCoordination:
-    """Multi-replica profile on Redis 7 (ADR-0001)."""
+    """Multi-replica profile on Redis 7.4 or later; tested on 8.10 (ADR-0001)."""
 
     persist_refreshing = True
 

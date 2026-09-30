@@ -34,7 +34,7 @@ See `AUDIT.md` for the findings behind each change.
   concurrency, timeouts; format, mypy, coverage floor, build, `pip-audit`,
   and link-check jobs; CodeQL and Dependabot; a `Makefile` for all of it
 - Test stack: exact image versions pinned by digest (OpenBao 2.7.0, Redis
-  7.4.11, nginx 1.30.5, curl 8.22.0, Keycloak 26.7.4), stub images built
+  8.10.2, nginx 1.30.5, curl 8.22.0, Keycloak 26.7.4), stub images built
   from the hashed lock, project name `vtb`
 - Docs: README rebuilt (why, architecture, quickstart from a clean clone,
   configuration, tests, status and limitations); wrong claims fixed (the
