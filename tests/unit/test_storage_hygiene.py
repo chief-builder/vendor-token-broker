@@ -13,8 +13,8 @@ import pytest
 from broker_harness import VENDOR, Harness
 from unit_helpers import MemoryCustody, make_config
 
+from token_broker import broker as broker_mod
 from token_broker import coordination
-from token_broker import main as main_mod
 from token_broker import vendors as vendors_mod
 from token_broker.config import Config, ConfigError
 from token_broker.coordination import MemoryCoordination, RedisCoordination
@@ -78,7 +78,7 @@ async def test_memory_lock_timeout_leaves_no_residue():
 
 
 def test_token_cache_is_bounded_and_drops_expired(monkeypatch):
-    monkeypatch.setattr(main_mod, "CACHE_MAX_ENTRIES", 5)
+    monkeypatch.setattr(broker_mod, "CACHE_MAX_ENTRIES", 5)
     b = Harness().broker
     for i in range(8):
         b.put_cache(VENDOR, f"u{i}", {"access_token": f"at-{i}"}, 1)

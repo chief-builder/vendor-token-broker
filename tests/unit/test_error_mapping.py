@@ -12,10 +12,10 @@ from jwt.exceptions import PyJWKClientConnectionError, PyJWKClientError
 
 from token_broker import sweeper
 from token_broker import vendors as vendors_mod
+from token_broker.consent import BROWSER_HEADERS
 from token_broker.coordination import CoordinationUnavailable, RedisCoordination
 from token_broker.custody import CasConflict, CustodyUnavailable
 from token_broker.hub import HubValidator
-from token_broker.main import BROWSER_HEADERS
 
 
 def assert_browser_headers(r):

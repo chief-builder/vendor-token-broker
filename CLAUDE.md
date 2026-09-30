@@ -59,7 +59,10 @@ integration(memory, redis) / gateway / multi. The integration job is a matrix ov
 
 ## Layout
 
-- `src/token_broker/` — `main.py` (app factory + 7 routes), `config.py`
+- `src/token_broker/` — `main.py` (app factory + thin 7-route table),
+  `broker.py` (per-process state + token cache), `resolve.py` (resolve +
+  single-flight waiters), `consent.py` (authorize + both callbacks),
+  `grants.py` (list + self-service revoke/delete), `config.py`
   (fail-fast dataclass), `hub.py` (hub-JWT re-validation), `hub_login.py`
   (consent-leg hub OIDC login), `lifecycle.py` (startup checks, custody-token
   renewal, `/healthz`), `vendors.py`

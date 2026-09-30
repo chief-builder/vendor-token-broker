@@ -15,9 +15,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx import ASGITransport, AsyncClient
 from unit_helpers import MemoryCustody, StaticJWKS, make_config, mint_hub_token
 
+from token_broker.broker import Broker
 from token_broker.coordination import MemoryCoordination, RedisCoordination
 from token_broker.hub import HubValidator
-from token_broker.main import Broker, create_app
+from token_broker.main import create_app
 
 VENDOR = "mockhub"
 CEILING = ["issues:read", "issues:write"]

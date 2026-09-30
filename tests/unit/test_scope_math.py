@@ -1,7 +1,7 @@
 """Scope math (design §4.1/§4.2): consent requests the minimum; re-consent
 unions held + required, always capped by the registry ceiling."""
 
-from token_broker.main import consent_scopes, reconsent_scopes
+from token_broker.resolve import consent_scopes, reconsent_scopes
 
 CEILING = ["issues:read", "issues:write", "repo:status"]
 

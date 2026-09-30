@@ -11,9 +11,9 @@ import time
 import pytest
 from broker_harness import VENDOR, Harness, audit_events, query
 
+from token_broker.consent import binding_cookie
 from token_broker.hub import HubUnavailable
 from token_broker.hub_login import HubLoginError
-from token_broker.main import binding_cookie
 
 
 def security_fails(capsys, reason):

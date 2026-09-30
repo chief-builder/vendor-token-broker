@@ -2361,12 +2361,12 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>PKCE S256, nonce, subject/browser binding</td>
 <td>Implemented / broker</td>
-<td><code>main.py</code>, <code>hub_login.py</code>; <code>tests/unit/test_consent_binding.py</code>, <code>test_hub_login.py</code>, <code>tests/integration/test_consent.py</code></td>
+<td><code>consent.py</code>, <code>hub_login.py</code>; <code>tests/unit/test_consent_binding.py</code>, <code>test_hub_login.py</code>, <code>tests/integration/test_consent.py</code></td>
 </tr>
 <tr>
 <td>Vendor callback issuer validation</td>
 <td>Partial / broker</td>
-<td><code>main.py</code> callback checks; <code>tests/integration/test_consent.py</code>; see the metadata limits below</td>
+<td><code>consent.py</code> callback checks; <code>tests/integration/test_consent.py</code>; see the metadata limits below</td>
 </tr>
 <tr>
 <td>Hub JWT revalidation</td>
@@ -2381,7 +2381,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Scope ceiling and scope union</td>
 <td>Implemented / broker policy</td>
-<td><code>main.py</code>, <code>refresh.py</code>; <code>tests/unit/test_scope_math.py</code>, <code>tests/integration/test_refresh.py</code></td>
+<td><code>resolve.py</code>, <code>refresh.py</code>; <code>tests/unit/test_scope_math.py</code>, <code>tests/integration/test_refresh.py</code></td>
 </tr>
 <tr>
 <td>Per-user custody, generation CAS, single-flight</td>
@@ -2391,7 +2391,7 @@ bao kv put vendor-clients/acmehub client_id=… private_key=@key.pem alg=RS256
 <tr>
 <td>Revocation</td>
 <td>Implemented with exceptions / broker + vendor</td>
-<td>Vendor first, then the broker's copy. For RFC 7009 vendors the broker revokes the access token and then the refresh token. Not every vendor revokes the access tokens with the refresh token (Linear's live on for up to 24 hours). A 4xx on the access token is ignored; the refresh token's answer decides. GitHub: grant deletion. <code>main.py</code>, <code>vendors.py</code>, <code>sweeper.py</code>; <code>tests/unit/test_storage_hygiene.py</code>, <code>tests/integration/test_grants.py</code></td>
+<td>Vendor first, then the broker's copy. For RFC 7009 vendors the broker revokes the access token and then the refresh token. Not every vendor revokes the access tokens with the refresh token (Linear's live on for up to 24 hours). A 4xx on the access token is ignored; the refresh token's answer decides. GitHub: grant deletion. <code>grants.py</code>, <code>vendors.py</code>, <code>sweeper.py</code>; <code>tests/unit/test_storage_hygiene.py</code>, <code>tests/integration/test_grants.py</code></td>
 </tr>
 <tr>
 <td>No access-token issuance endpoint</td>
@@ -4980,7 +4980,7 @@ practice ACTIVE or an abandoned REFRESHING marker).</p>
 <li>Release uses a compare-and-DEL Lua script, so only the holder ever releases a lock. If the release fails, the PX TTL frees the lock.</li>
 <li>The sweeper takes the lock without waiting and skips a held entry.</li>
 <li>DELETE and the consent write also wait for this lock. The sweeper's revoke retry takes it without waiting.</li>
-<li><strong>Consent transactions and states:</strong> <code>SETEX</code> (<code>TXN_TTL_S</code>, 600), consumed once with atomic <code>GETDEL</code>. An authorize link must be used within 300 s (<code>AUTHORIZE_LINK_TTL_S</code> in <code>main.py</code>).</li>
+<li><strong>Consent transactions and states:</strong> <code>SETEX</code> (<code>TXN_TTL_S</code>, 600), consumed once with atomic <code>GETDEL</code>. An authorize link must be used within 300 s (<code>AUTHORIZE_LINK_TTL_S</code> in <code>consent.py</code>).</li>
 <li>For states, the order is peek, check, then consume. So a rejection for an issuer (iss) mismatch does not burn the state the real callback needs.</li>
 <li><strong>Persisted <code>REFRESHING</code>:</strong> lives in the storage (custody) entry, not in redis, with <code>refresh_owner</code> and <code>refresh_started_at</code>. The broker writes it with CAS before calling the vendor. If the vendor is unreachable or errors, the broker CAS-writes the entry back to ACTIVE at once. The next lock holder takes over markers older than <code>REFRESHING_TTL_S</code> (30s), and never refreshes over a younger one.</li>
 <li><strong>Mass-STALE window:</strong> a per-vendor ZSET, plus <code>SET NX PX</code> to send each page only once.</li>

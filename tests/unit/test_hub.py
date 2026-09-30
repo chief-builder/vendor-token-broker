@@ -126,9 +126,7 @@ def test_custom_pins_honored(rsa_key):
     assert v.validate(bearer(token))["iss"] == "https://other.test"
 
 
-def test_key_removed_from_jwks_stops_validating_after_the_set_cache(
-    cfg, rsa_key, monkeypatch
-):
+def test_key_removed_from_jwks_stops_validating_after_the_set_cache(cfg, rsa_key, monkeypatch):
     """No per-kid cache: once the hub drops a key from its JWKS, tokens
     signed with it stop validating when the JWK-set cache expires
     (JWKS_CACHE_S), with no restart. Within that window the key still works."""
