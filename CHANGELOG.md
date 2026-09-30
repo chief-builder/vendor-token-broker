@@ -5,6 +5,16 @@
 Fixes from the September 2026 project review. Existing gateway plugins keep
 working unchanged: every wire change below is additive.
 
+### Threat model and vendor check (2026-09-30)
+- `THREAT_MODEL.md`: assets, trust boundaries, threats, mitigations,
+  residual risks, and the test behind each control
+- New tests: each gateway call runs as the signed-in person (Bob never gets
+  Alice's connection); hidden write tools cannot be called; a token revoked
+  at the vendor fails closed to consent; tool results carry no token
+- Vendor MCP servers and auth flows re-checked against vendor docs and live
+  metadata: all current. Docs corrected: GitHub now serves (undocumented)
+  RFC 8414 metadata; Atlassian's admin menu is "Rovo MCP server"
+
 ### Hardening review (2026-09-30)
 See `AUDIT.md` for the findings behind each change.
 - **Python 3.14** (was 3.12, now security-only): `requires-python >=3.14`,

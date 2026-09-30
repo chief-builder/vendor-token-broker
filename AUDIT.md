@@ -448,6 +448,66 @@ adopt CIMD for vendor MCP registration once vendors support it.
 
 ---
 
+## Follow-up checks (2026-09-30)
+
+### Threat model and required properties
+
+`THREAT_MODEL.md` lists the assets, trust boundaries, threats T1-T18,
+mitigations with code references, residual risks, and the test behind each
+control. New tests for the required properties:
+- `test_each_call_runs_as_the_signed_in_person` (integration)
+- `test_hidden_write_tool_cannot_be_called` (integration) and
+  `test_a_tool_outside_the_allowlist_cannot_be_called` (unit)
+- `test_token_revoked_at_the_vendor_fails_closed_to_consent` (integration)
+- the container-log leak test now also checks the tool results the
+  assistant receives
+
+The test-only keypair in `tests/stack/keys/` and its README are unchanged,
+and it remains the only path excluded from secret scanning.
+
+### Vendor MCP servers and auth flows (checked against vendor docs and live metadata)
+
+- **Checked:** every server URL, the GitHub headers and toolsets, all 31
+  allowlisted tool names (Linear's are not published by Linear), every
+  registry scope, each metadata URL, and each `resource`.
+- **Result:** all are current. Each server answers 401 with protected-resource
+  metadata whose `resource` and `authorization_servers` match the registry.
+  Atlassian `/v2/mcp` is current (v1 migrates on 2027-03-01). MCP 2026-07-28
+  is current; CIMD is SHOULD and DCR is deprecated but allowed.
+- **Changed and fixed in docs:**
+  - GitHub now serves RFC 8414 metadata (undocumented by GitHub, advertises
+    `iss` support). The registry keeps the documented endpoints; switching
+    to the metadata, and with it the RFC 9207 `iss` requirement, is a
+    proposal to test against real GitHub first.
+  - Atlassian's admin menu is "Rovo MCP server", not "MCP".
+- **Proposal:** Linear, Atlassian, and Cloudflare now advertise CIMD support.
+  Moving to CIMD would remove the expiring Linear and Cloudflare client
+  secrets.
+
+### Published docs site vs code
+
+The site (`vendor-token-broker-docs` at `1d8b8ac`, 2026-09-28) predates the
+hardening, so it is stale against `main`. It says:
+- Python 3.12
+- the consent, refresh, and revoke logic lives in `main.py`
+- `AUTHORIZE_LINK_TTL_S` lives in `main.py`
+- the source repository is private
+- the broker never trusts a removed hub key
+- Redis 7
+- 433 unit tests in the verification record
+- the private key is PKCS8 only
+- a snapshot path with `/` is always relative to the upstreams file
+- the GitHub grant URL is fixed
+
+It also lacks the Makefile, the deploy guidance, and the
+`revocation.grant_url` override. Everything else checked matches the code:
+routes, problem titles, configuration defaults, tool lists, and the
+gateway settings. The regenerated `docs/index.html` on `main` fixes every
+item. The site has no relative links, so nothing breaks there. Fix:
+republish `docs/index.html` after this change merges.
+
+---
+
 ## Appendix A — Verified claims (condensed)
 
 | Document | Verified examples (evidence) |
