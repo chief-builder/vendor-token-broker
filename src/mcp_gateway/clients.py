@@ -22,6 +22,17 @@ class Unavailable(Exception):
     """A dependency is down or answered 5xx: retry later, never 'connect'."""
 
 
+def _json_object(r: httpx.Response) -> dict:
+    """The response body as a JSON object, or {} for anything else."""
+    if "json" not in r.headers.get("content-type", ""):
+        return {}
+    try:
+        body = r.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
 class Hub:
     def __init__(self, cfg: GatewayConfig, http: httpx.AsyncClient):
         self._cfg, self._http = cfg, http
@@ -45,14 +56,14 @@ class Hub:
             raise Unavailable(f"hub unreachable ({type(exc).__name__})") from exc
         if r.status_code >= 500:
             raise Unavailable(f"hub answered {r.status_code}")
+        body = _json_object(r)
         if r.status_code != 200:
-            error = (
-                r.json().get("error", "")
-                if r.headers.get("content-type", "").startswith("application/json")
-                else ""
-            )
+            error = body.get("error", "")
             raise HandoffError(f"hub refused token exchange ({r.status_code} {error})".strip())
-        return r.json()["access_token"]
+        token = body.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise HandoffError("hub token exchange returned no access token")
+        return token
 
 
 @dataclass(frozen=True)
@@ -75,10 +86,13 @@ class Broker:
             )
         except httpx.HTTPError as exc:
             raise Unavailable(f"broker unreachable ({type(exc).__name__})") from exc
-        body = r.json() if r.headers.get("content-type", "").endswith("json") else {}
+        body = _json_object(r)
         title = body.get("title", "")
         if r.status_code == 200:
-            return Resolved(token=body["access_token"])
+            token = body.get("access_token")
+            if not isinstance(token, str) or not token:
+                raise Unavailable("broker answered 200 without a token")
+            return Resolved(token=token)
         if r.status_code in (404, 409) and body.get("authorize_uri"):
             return Resolved(consent_url=body["authorize_uri"], problem=title)
         if r.status_code == 401:
@@ -100,9 +114,12 @@ class Broker:
             raise HandoffError("broker rejected the hub token (401)")
         if r.status_code != 200:  # an outage must never look like "not connected yet"
             raise Unavailable(f"broker answered {r.status_code} listing grants")
+        grants = _json_object(r).get("grants")
+        if not isinstance(grants, list):  # malformed: never read as "not connected"
+            raise Unavailable("broker answered 200 without a grant list")
         return any(
-            g.get("vendor") == vendor and g.get("state") == "ACTIVE"
-            for g in r.json().get("grants", [])
+            isinstance(g, dict) and g.get("vendor") == vendor and g.get("state") == "ACTIVE"
+            for g in grants
         )
 
     async def disconnect(self, hub_jwt: str, vendor: str) -> str:
@@ -118,7 +135,7 @@ class Broker:
             r = await self._http.delete(url, headers={"Authorization": f"Bearer {hub_jwt}"})
         except httpx.HTTPError as exc:
             raise Unavailable(f"broker unreachable ({type(exc).__name__})") from exc
-        body = r.json() if r.headers.get("content-type", "").endswith("json") else {}
+        body = _json_object(r)
         title = body.get("title", "")
         if r.status_code == 200:
             return "unsupported" if body.get("vendor_revocation") == "unsupported" else "revoked"
