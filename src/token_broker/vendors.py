@@ -22,6 +22,10 @@ from .custody import Custody
 log = logging.getLogger(__name__)
 
 
+# GitHub's grant-deletion API (the documented RFC 7009 deviation); a registry
+# entry may override it with revocation.grant_url (GitHub Enterprise Server).
+GITHUB_GRANT_URL = "https://api.github.com/applications/{client_id}/grant"
+
 VENDOR_ID = re.compile(r"^[a-z0-9-]+$")  # also the registry schema's key pattern
 
 
@@ -225,7 +229,9 @@ class VendorClient:
                         return  # nothing live to revoke (e.g. a scrubbed STALE entry)
                     r = await c.request(
                         "DELETE",
-                        f"https://api.github.com/applications/{creds['client_id']}/grant",
+                        spec["revocation"]
+                        .get("grant_url", GITHUB_GRANT_URL)
+                        .format(client_id=creds["client_id"]),
                         auth=(creds["client_id"], creds["client_secret"]),
                         json={"access_token": entry["access_token"]},
                         headers={"Accept": "application/vnd.github+json"},

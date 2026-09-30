@@ -63,3 +63,10 @@ def test_ungated_vendor_always_enabled(vendor_client):
 async def test_hardcoded_endpoints_used_when_no_metadata(vendor_client):
     eps = await vendor_client.endpoints("github")
     assert eps["token_endpoint"] == "https://github.com/login/oauth/access_token"
+
+
+@pytest.mark.parametrize("revocation", [{"type": "rfc7O09"}, {"type": "rfc7009", "url": "x"}])
+def test_schema_rejects_unknown_revocation_settings(revocation):
+    bad = {"typo": {**EXAMPLE["mockhub"], "vendor_id": "typo", "revocation": revocation}}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, SCHEMA)

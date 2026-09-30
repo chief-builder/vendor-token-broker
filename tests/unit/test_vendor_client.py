@@ -3,12 +3,13 @@ httpx.MockTransport: every metadata/token/userinfo/revocation failure is a
 VendorError the routes handle (never a raw httpx or JSON exception), messages
 carry no vendor hostnames, and the vendor-user lookup is best-effort."""
 
+import json
 import time
 
 import httpx
 import pytest
 from broker_harness import Harness
-from unit_helpers import MemoryCustody, make_config
+from unit_helpers import REPO_ROOT, MemoryCustody, make_config
 
 from token_broker import vendors as vendors_mod
 from token_broker.vendors import (
@@ -236,3 +237,64 @@ async def test_ordinary_vendor_token_requests_have_no_resource(client, vendor_ht
     await client.exchange_code("mockhub", "code", "verifier", "http://broker/cb")
     await client.refresh("mockhub", "rt-0")
     assert len(forms) == 2 and all("resource" not in f for f in forms)
+
+
+# ------------------------------------------------- GitHub grant-deletion revoke
+
+GITHUB_GRANT = "https://api.github.com/applications/gh-cid/grant"
+
+
+@pytest.fixture
+def github_client():
+    custody = MemoryCustody()
+    custody.clients["github"] = {"client_id": "gh-cid", "client_secret": "gh-secret"}
+    return VendorClient(make_config(), custody)
+
+
+@pytest.mark.parametrize("status", [204, 404, 422])
+async def test_github_grant_revoke_accepts_done_or_gone(github_client, vendor_http, status):
+    seen = []
+
+    def grant(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status)
+
+    vendor_http[GITHUB_GRANT] = grant
+    await github_client.revoke("github", {"access_token": "gho_live"})
+    (req,) = seen
+    assert req.method == "DELETE"
+    assert req.headers["authorization"].startswith("Basic ")  # client_id:secret
+    assert b"gho_live" in req.content
+
+
+@pytest.mark.parametrize("status", [401, 500])
+async def test_github_grant_revoke_failure_is_vendor_unavailable(
+    github_client, vendor_http, status
+):
+    vendor_http[GITHUB_GRANT] = httpx.Response(status)
+    with pytest.raises(VendorUnavailable) as err:
+        await github_client.revoke("github", {"access_token": "gho_live"})
+    assert "gho_live" not in str(err.value)
+
+
+async def test_github_grant_revoke_outage_is_vendor_unavailable(github_client, vendor_http):
+    with pytest.raises(VendorUnavailable):  # GITHUB_GRANT unrouted: connection refused
+        await github_client.revoke("github", {"access_token": "gho_live"})
+
+
+async def test_github_grant_revoke_skips_a_scrubbed_entry(github_client, vendor_http):
+    await github_client.revoke("github", {"access_token": ""})  # unrouted: any call would fail
+
+
+async def test_github_grant_url_is_configurable(tmp_path, vendor_http):
+    registry = json.loads((REPO_ROOT / "registry.example.json").read_text())
+    ghes = "https://ghe.example.com/api/v3/applications/{client_id}/grant"
+    registry["github"]["revocation"]["grant_url"] = ghes
+    path = tmp_path / "registry.json"
+    path.write_text(json.dumps(registry))
+    custody = MemoryCustody()
+    custody.clients["github"] = {"client_id": "gh-cid", "client_secret": "gh-secret"}
+    vendor_http[ghes.format(client_id="gh-cid")] = httpx.Response(204)
+    await VendorClient(make_config(registry_path=path), custody).revoke(
+        "github", {"access_token": "gho_live"}
+    )
