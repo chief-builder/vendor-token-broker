@@ -54,7 +54,9 @@ services:
       - "6390:6379"
 
   mock-vendor:
-    build: ./mock-vendor
+    build:
+      context: ../..
+      dockerfile: tests/stack/mock-vendor/Dockerfile
     container_name: vtb-mock-vendor
     environment:
       MOCK_PUBLIC_URL: http://localhost:8310
@@ -70,7 +72,9 @@ services:
       - "8310:8310"
 
   hub-stub:
-    build: ./hub-stub
+    build:
+      context: ../..
+      dockerfile: tests/stack/hub-stub/Dockerfile
     container_name: vtb-hub-stub
     environment:
       HUB_STUB_ISSUER: http://hub-stub:8320

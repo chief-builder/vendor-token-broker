@@ -151,7 +151,7 @@ class GatewayConfig:
             raise ConfigError("MIN_TTL_S and CONSENT_WAIT_S must be >= 0")
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> "GatewayConfig":
+    def from_env(cls, env: dict[str, str] | None = None) -> GatewayConfig:
         env = dict(os.environ if env is None else env)
         missing = [k for k in _REQUIRED if not env.get(k)]
         if missing:
