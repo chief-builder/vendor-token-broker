@@ -15,4 +15,6 @@ exclude = [
   '^https://mcp\.(linear\.app|atlassian\.com|cloudflare\.com)/',
   '^https://github\.com/login/oauth/',
   '^https://github\.com/settings/',
+  # Status badges: a workflow's badge 404s until that workflow first runs on main.
+  '^https://github\.com/[^/]+/[^/]+/actions/workflows/[^/]+/badge\.svg',
 ]
