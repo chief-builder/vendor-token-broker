@@ -58,7 +58,7 @@ services:
     entrypoint: ["sh", "/init.sh"]
 
   redis:
-    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    image: redis:8.10.1-alpine@sha256:ef216d85ec44f4fdf7c0e6df2d1757a4734ed32fbb278cabd3181b5a27353b79
     container_name: vtb-redis
     ports:
       - "6390:6379"
@@ -198,7 +198,7 @@ services:
         condition: service_started
 
   broker-lb:
-    image: nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+    image: nginx:1.31.0-alpine@sha256:2f07d83bf561b506400dc183b1b2003803e39efbd22451f848adaba14d28c7c7
     container_name: vtb-broker-lb
     profiles: ["multi"]
     volumes:
