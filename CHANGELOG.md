@@ -5,6 +5,42 @@
 Fixes from the September 2026 project review. Existing gateway plugins keep
 working unchanged: every wire change below is additive.
 
+### Hardening review (2026-09-30)
+See `AUDIT.md` for the findings behind each change.
+- **Python 3.14** (was 3.12, now security-only): `requires-python >=3.14`,
+  `.python-version`, `python:3.14-slim` images pinned by digest. The three
+  locks were regenerated and now agree (PyJWT 2.15.1, uvicorn 0.54.0,
+  fastapi 0.142.2); `pip-audit` finds no known vulnerabilities
+- **Fix (gateway):** an upstream MCP server's 401 was never recognized (the
+  MCP SDK reports it as a generic error), so a user whose vendor token was
+  revoked was told to retry instead of to reconnect. The HTTP status is now
+  recorded per call (`UpstreamRejected`)
+- **Fix (gateway):** malformed hub or broker answers (a 200 without a
+  token, non-JSON) map to the typed handoff/unavailable errors
+- **Fix (deploy):** the deploy compose files now pass the whole `.env` to
+  the broker (vendor `enabled_env` ids, `HUB_LOGIN_HINT`, knobs were
+  dropped before) and document the token-file ownership (UID 65534)
+- Registry: `revocation.type` is an enum (`rfc7009`, `github_grant`), and
+  `revocation.grant_url` overrides GitHub's grant-deletion URL (GitHub
+  Enterprise Server)
+- The hub JWKS cache window is explicit (`JWKS_CACHE_S`, 300 s) and tested
+  on both sides; the docs no longer claim removed keys stop at once
+- `main.py` split into `broker`, `resolve`, `consent`, and `grants` (routes
+  unchanged); `src/` passes mypy; code formatted with `ruff format`
+- New unit tests for security paths (issuer checks, single-use state,
+  fail-closed coordination, self-service DELETE, grant listing, the RFC 8693
+  exchange, GitHub grant revocation); coverage 91% -> 95%
+- CI: actions moved off Node 20 and SHA-pinned; least-privilege permissions,
+  concurrency, timeouts; format, mypy, coverage floor, build, `pip-audit`,
+  and link-check jobs; CodeQL and Dependabot; a `Makefile` for all of it
+- Test stack: exact image versions pinned by digest (OpenBao 2.7.0, Redis
+  7.4.11, nginx 1.30.5, curl 8.22.0, Keycloak 26.7.4), stub images built
+  from the hashed lock, project name `vtb`
+- Docs: README rebuilt (why, architecture, quickstart from a clean clone,
+  configuration, tests, status and limitations); wrong claims fixed (the
+  repo is public; test counts; key-cache window); `SECURITY.md`,
+  `CONTRIBUTING.md`, templates; the stale `docs-site-review.md` removed
+
 ### Wire additions (additive)
 - Problem titles `invalid-request` (400, malformed resolve body) and
   `hub-unavailable` (503, hub JWKS unreachable; was a misleading 401)
@@ -30,8 +66,9 @@ working unchanged: every wire change below is additive.
 - Admin group must be a list claim (a string claim was a substring match)
 - Hub signing keys are no longer cached forever (removed keys stop working)
 - `HUB_ALGORITHMS` is an allowlist (no RS256, HMAC, or `none`)
-- Consent never orphans a redeemed grant; custody keeps 2 versions per
-  entry (`max_versions`), STALE entries hold no tokens; error `detail` text
+- Consent never orphans a redeemed grant; operators set `max_versions=2`
+  on custody entries (provisioning, `docs/operations.md`), STALE entries
+  hold no tokens; error `detail` text
   never carries backend hostnames; consent pages send no-store/no-referrer
 
 ### Reliability
@@ -79,7 +116,8 @@ working unchanged: every wire change below is additive.
   the live schemas on the first connected call
 - `gateway` Compose profile: Keycloak 26.7.4 as a real hub, a broker that
   trusts it, the gateway, and a GitHub MCP stand-in; `tools/mcp-demo-client.py`
-- Verified end to end with Claude Code 2.1.283 against GitHub's MCP server
+- Tested manually end to end with Claude Code 2.1.283 against GitHub's MCP
+  server
 - **Several MCP servers behind one gateway**, listed in `upstreams.json`
   (name, broker vendor, URL, auth scheme, headers, protocol, allowlist,
   snapshot); `GATEWAY_UPSTREAMS` and `GATEWAY_ENABLED_UPSTREAMS` select
@@ -133,9 +171,9 @@ working unchanged: every wire change below is additive.
   second refresh (an occasional CI failure)
 
 ### Tests and supply chain
-- 393 unit tests (offline harness over the real app) and 108 integration
-  tests (61 per coordination backend, 7 multi-replica, 37 gateway profile,
-  3 external)
+- 507 unit tests (offline harness over the real app; 95% line coverage)
+  and 123 integration tests (64 per coordination backend, 7 multi-replica,
+  47 gateway profile, 5 external), counted 2026-09-30
 - Hash-pinned `requirements.lock` / `requirements-dev.lock`; base image
   pinned by digest; GitHub Actions pinned by commit SHA
 
