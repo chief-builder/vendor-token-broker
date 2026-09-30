@@ -3,6 +3,7 @@ server (their own MCP authorization server, e.g. Atlassian, Cloudflare): the
 MCP authorization spec requires `resource` on the authorization request, the
 code exchange, and every refresh (the latter two: test_vendor_client.py).
 Ordinary vendor APIs never get one."""
+
 from broker_harness import Harness, query
 
 MCP = "https://mcp.example.test/mcp"

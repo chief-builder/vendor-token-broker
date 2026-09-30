@@ -2,6 +2,7 @@
 7-route no-issuance surface. Audits the router itself (app.routes), not the
 OpenAPI document, which omits framework routes such as /docs. Runs offline
 on every push."""
+
 from broker_harness import Harness
 
 from token_broker.main import create_app
@@ -11,7 +12,7 @@ FROZEN_ROUTES = {
     "/v1/tokens/resolve",
     "/v1/authorize/{vendor}",
     "/v1/callback/{vendor}",
-    "/v1/grants/{vendor}/{sub:path}",   # same URL; the sub may contain "/"
+    "/v1/grants/{vendor}/{sub:path}",  # same URL; the sub may contain "/"
     "/v1/grants",
     "/v1/admin/vendors/{vendor}",
 }

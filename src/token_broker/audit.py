@@ -3,6 +3,7 @@
 Token material MUST never be passed to audit() — callers log ids, states,
 and generations only. Event names are wire contract (SIEM joins on them).
 """
+
 import json
 import time
 

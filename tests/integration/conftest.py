@@ -1,6 +1,7 @@
 """Integration fixtures. Importable helpers live in stack.py (uniquely named
 so it never collides with the unit suite's modules when both directories are
 collected in one pytest run)."""
+
 import time
 
 import pytest
@@ -24,7 +25,8 @@ def _stack_up():
                 pytest.exit(
                     f"test stack not reachable ({exc}); start it with:\n"
                     "  docker compose -f tests/stack/docker-compose.yml up -d --build",
-                    returncode=3)
+                    returncode=3,
+                )
             time.sleep(2)
 
 

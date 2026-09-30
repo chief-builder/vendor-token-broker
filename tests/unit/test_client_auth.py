@@ -1,4 +1,5 @@
 """client_auth: the three token_endpoint_auth_method branches (design §3)."""
+
 import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -22,16 +23,20 @@ def test_client_secret_basic_uses_http_basic_only():
 
 def test_private_key_jwt_builds_a_valid_rfc7523_assertion(rsa_key):
     pem = rsa_key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption()).decode()
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode()
     creds = {"client_id": "jwt-cid", "private_key": pem, "kid": "k1"}
     form, basic = token_request_auth("private_key_jwt", creds, "https://as/token")
     assert basic is None
     assert form["client_id"] == "jwt-cid"
     assert form["client_assertion_type"] == ASSERTION_TYPE
-    claims = pyjwt.decode(form["client_assertion"], rsa_key.public_key(),
-                          algorithms=["RS256"], audience="https://as/token",
-                          options={"require": ["exp", "iat", "jti"]})
+    claims = pyjwt.decode(
+        form["client_assertion"],
+        rsa_key.public_key(),
+        algorithms=["RS256"],
+        audience="https://as/token",
+        options={"require": ["exp", "iat", "jti"]},
+    )
     assert claims["iss"] == claims["sub"] == "jwt-cid"
     assert pyjwt.get_unverified_header(form["client_assertion"])["kid"] == "k1"
 

@@ -8,6 +8,7 @@ servers they also refuse tokens not issued for them (RFC 8707 resource).
 GitHub, Linear and Atlassian also offer a write tool the gateway's
 allowlist must hide. /_test/state reports what each call carried (upstream,
 Authorization scheme, policy headers, token fingerprint), never tokens."""
+
 import hashlib
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -21,7 +22,7 @@ from starlette.routing import Mount, Route
 
 VENDOR = os.environ.get("MOCK_VENDOR_URL", "http://mock-vendor:8310")
 PUBLIC_BASE = os.environ.get("MOCK_MCP_BASE", "http://mock-mcp:8330")
-BOUND = ("/atlassian/mcp", "/cloudflare/mcp")    # tokens must be issued for these
+BOUND = ("/atlassian/mcp", "/cloudflare/mcp")  # tokens must be issued for these
 state: dict = {"calls": [], "unauthorized": 0}
 
 
@@ -41,37 +42,49 @@ class RequireVendorToken:
         if token:
             async with httpx.AsyncClient(timeout=5) as http:
                 found = (await http.post(f"{VENDOR}/introspect", data={"token": token})).json()
-        ok = found["active"] and (scope["path"] not in BOUND
-                                  or found.get("aud") == PUBLIC_BASE + scope["path"])
+        ok = found["active"] and (
+            scope["path"] not in BOUND or found.get("aud") == PUBLIC_BASE + scope["path"]
+        )
         if not ok:
             state["unauthorized"] += 1
-            return await JSONResponse({"error": "unauthorized"}, status_code=401,
-                                      headers={"WWW-Authenticate": "Bearer"})(scope, receive, send)
+            return await JSONResponse(
+                {"error": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": "Bearer"}
+            )(scope, receive, send)
         return await self.app(scope, receive, send)
 
 
 def _record(upstream: str, tool: str, **args) -> None:
     h = get_http_headers(include={"authorization"})
     scheme, _, token = h.get("authorization", "").partition(" ")
-    state["calls"].append({
-        "upstream": upstream, "tool": tool, "args": args, "scheme": scheme,
-        "token_fp": hashlib.sha256(token.encode()).hexdigest()[:16],
-        "readonly": h.get("x-mcp-readonly"), "lockdown": h.get("x-mcp-lockdown"),
-        "toolsets": h.get("x-mcp-toolsets")})
+    state["calls"].append(
+        {
+            "upstream": upstream,
+            "tool": tool,
+            "args": args,
+            "scheme": scheme,
+            "token_fp": hashlib.sha256(token.encode()).hexdigest()[:16],
+            "readonly": h.get("x-mcp-readonly"),
+            "lockdown": h.get("x-mcp-lockdown"),
+            "toolsets": h.get("x-mcp-toolsets"),
+        }
+    )
 
 
 def _read_tool(server: FastMCP, upstream: str, name: str, doc: str, result):
     def tool(query: str = "") -> object:
         _record(upstream, name, query=query)
         return result
+
     tool.__name__, tool.__doc__ = name, doc
     server.tool(tool)
 
 
 # ------------------------------------------------------------------ GitHub
 github = FastMCP("mock-github-mcp")
-ISSUES = [{"number": 1, "title": "First issue", "state": "open"},
-          {"number": 2, "title": "Second issue", "state": "closed"}]
+ISSUES = [
+    {"number": 1, "title": "First issue", "state": "open"},
+    {"number": 2, "title": "Second issue", "state": "closed"},
+]
 
 
 @github.tool
@@ -132,8 +145,10 @@ def create_issue(owner: str, repo: str, title: str) -> dict:
 
 # ------------------------------------------------------------------ Linear
 linear = FastMCP("mock-linear-mcp")
-LINEAR_ISSUES = [{"id": "LIN-1", "title": "Fix login", "status": "In Progress"},
-                 {"id": "LIN-2", "title": "Write docs", "status": "Todo"}]
+LINEAR_ISSUES = [
+    {"id": "LIN-1", "title": "Fix login", "status": "In Progress"},
+    {"id": "LIN-2", "title": "Write docs", "status": "Todo"},
+]
 
 
 for _name, _doc, _result in [
@@ -174,10 +189,16 @@ CLOUD_ID = "00000000-0000-4000-8000-00000000a71a"
 
 for _name, _doc, _result in [
     ("atlassianUserInfo", "The signed-in Atlassian user.", {"account_id": "at-4217"}),
-    ("getAccessibleAtlassianResources", "Sites this user can reach.",
-     [{"id": CLOUD_ID, "name": "lab-site"}]),
-    ("searchJiraIssuesUsingJql", "Search Jira issues with JQL.",
-     {"issues": [{"key": "LAB-1", "summary": "Gateway rollout"}]}),
+    (
+        "getAccessibleAtlassianResources",
+        "Sites this user can reach.",
+        [{"id": CLOUD_ID, "name": "lab-site"}],
+    ),
+    (
+        "searchJiraIssuesUsingJql",
+        "Search Jira issues with JQL.",
+        {"issues": [{"key": "LAB-1", "summary": "Gateway rollout"}]},
+    ),
     ("getConfluenceContent", "Read a Confluence page.", {"title": "Runbook"}),
     ("searchConfluence", "Search Confluence.", {"results": [{"title": "Runbook"}]}),
     ("executeRead", "Run a read-only Atlassian API call.", {"ok": True}),
@@ -205,15 +226,17 @@ cloudflare = FastMCP("mock-cloudflare-mcp")
 for _name, _doc, _result in [
     ("search", "Search the Cloudflare API spec.", {"endpoints": ["GET /accounts"]}),
     ("docs", "Search Cloudflare's documentation.", {"pages": ["Workers"]}),
-    ("execute", "Call the Cloudflare API (read-only via the granted scopes).",
-     {"result": [{"name": "chantalong"}]}),
+    (
+        "execute",
+        "Call the Cloudflare API (read-only via the granted scopes).",
+        {"result": [{"name": "chantalong"}]},
+    ),
 ]:
     _read_tool(cloudflare, "cloudflare", _name, _doc, _result)
 
 
 # ------------------------------------------------------------------- app
-servers = {"github": github, "linear": linear, "atlassian": atlassian,
-           "cloudflare": cloudflare}
+servers = {"github": github, "linear": linear, "atlassian": atlassian, "cloudflare": cloudflare}
 apps = {name: server.http_app(path="/mcp") for name, server in servers.items()}
 
 
@@ -235,6 +258,13 @@ async def test_reset(request):
     return JSONResponse({"ok": True})
 
 
-app = RequireVendorToken(Starlette(lifespan=lifespan, routes=[
-    Route("/_test/state", test_state), Route("/_test/reset", test_reset, methods=["POST"]),
-    *[Mount(f"/{name}", sub) for name, sub in apps.items()]]))
+app = RequireVendorToken(
+    Starlette(
+        lifespan=lifespan,
+        routes=[
+            Route("/_test/state", test_state),
+            Route("/_test/reset", test_reset, methods=["POST"]),
+            *[Mount(f"/{name}", sub) for name, sub in apps.items()],
+        ],
+    )
+)

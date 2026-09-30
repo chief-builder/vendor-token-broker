@@ -2,6 +2,7 @@
 locally-minted hub JWTs (no network, no containers). Fixtures live in
 conftest.py; this module is uniquely named so bare imports never collide
 with the integration suite's modules."""
+
 import time
 import uuid
 from pathlib import Path
@@ -38,7 +39,7 @@ class MemoryCustody:
         self.entries: dict[tuple[str, str], tuple[dict, int]] = {}
         self.clients: dict[str, dict] = {}
         self.fail = False  # set True to simulate backend outage
-        self.token = (0, False)          # (ttl, renewable) the broker token reports
+        self.token = (0, False)  # (ttl, renewable) the broker token reports
         self.token_error: Exception | None = None
         self.renewals = 0
         self.renew_ttl = 3600
@@ -47,6 +48,7 @@ class MemoryCustody:
     def _check(self):
         if self.fail:
             from token_broker.custody import CustodyUnavailable
+
             raise CustodyUnavailable()
 
     def read_now(self, vendor, sub):
@@ -94,6 +96,7 @@ class MemoryCustody:
 
 
 # ---------------------------------------------------------- hub JWT minting
+
 
 class StaticJWKS:
     """Stands in for PyJWKClient: always returns the fixed public key."""

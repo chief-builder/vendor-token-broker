@@ -7,6 +7,7 @@ forbidden). Contract shape — the pinned contract version and exactly one
 tier audience — is enforced here so a malformed or cross-tier token never
 reaches the resolve path.
 """
+
 import asyncio
 import logging
 
@@ -74,7 +75,8 @@ class HubValidator:
             raise HubAuthError(str(exc)) from exc
         try:
             claims = jwt.decode(
-                token, key,
+                token,
+                key,
                 algorithms=list(self._cfg.hub_algorithms),
                 issuer=self._cfg.hub_issuer,
                 audience=self._cfg.hub_tier_audience,

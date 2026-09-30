@@ -5,6 +5,7 @@ an attacker could send their own link to a victim and have the victim's
 vendor account stored under the attacker's sub. Now /v1/authorize sends the
 browser to log in at the hub (the logged-in sub must be the link's sub) and
 binds every leg to the browser that opened the link."""
+
 import time
 
 import pytest
@@ -16,8 +17,11 @@ from token_broker.main import binding_cookie
 
 
 def security_fails(capsys, reason):
-    return [e for e in audit_events(capsys, "broker.consent.fail")
-            if e.get("reason") == reason and e.get("security_event") is True]
+    return [
+        e
+        for e in audit_events(capsys, "broker.consent.fail")
+        if e.get("reason") == reason and e.get("security_event") is True
+    ]
 
 
 # ------------------------------------------------------------ the authorize link
@@ -36,7 +40,7 @@ async def test_authorize_sends_the_browser_to_the_hub_bound_to_it():
     assert cookie.startswith(f"{binding_cookie(VENDOR)}=")
     for attribute in ("HttpOnly", "Path=/v1/callback", "SameSite=lax"):
         assert attribute in cookie
-    assert "Secure" not in cookie                 # http public URL in this config
+    assert "Secure" not in cookie  # http public URL in this config
 
 
 async def test_real_idp_mode_sends_no_login_hint():
@@ -83,17 +87,19 @@ async def test_hub_unreachable_at_authorize_is_503():
 # ------------------------------------------------------------ the attacks
 
 
-@pytest.mark.parametrize("link_for,opened_by", [
-    ("wf-attacker", "wf-victim"),   # attacker forwards their own link to a victim
-    ("wf-victim", "wf-attacker"),   # attacker opens a link stolen from a victim
-])
-async def test_a_link_opened_by_another_user_never_reaches_the_vendor(
-        link_for, opened_by, capsys):
+@pytest.mark.parametrize(
+    "link_for,opened_by",
+    [
+        ("wf-attacker", "wf-victim"),  # attacker forwards their own link to a victim
+        ("wf-victim", "wf-attacker"),  # attacker opens a link stolen from a victim
+    ],
+)
+async def test_a_link_opened_by_another_user_never_reaches_the_vendor(link_for, opened_by, capsys):
     h = Harness()
     h.hub_login.login_as = opened_by
     r = await h.hub_callback(await h.authorize(link_for))
     assert r.status_code == 403
-    assert "location" not in r.headers                # no vendor redirect
+    assert "location" not in r.headers  # no vendor redirect
     [fail] = security_fails(capsys, "login_sub_mismatch")
     assert fail["sub"] == link_for and fail["login_sub"] == opened_by
     assert h.stored(link_for) is None and h.stored(opened_by) is None
@@ -114,12 +120,13 @@ async def test_vendor_leg_completed_in_another_browser_never_redeems(capsys):
     h = Harness()
     state = await h.start_consent()
     async with h.client() as other_browser:
-        r = await other_browser.get(f"/v1/callback/{VENDOR}",
-                                    params={"state": state, "code": "c", "iss": "http://as.test"})
+        r = await other_browser.get(
+            f"/v1/callback/{VENDOR}", params={"state": state, "code": "c", "iss": "http://as.test"}
+        )
     assert r.status_code == 400
     assert h.vendors.exchange_calls == 0
     assert security_fails(capsys, "browser_mismatch")
-    assert (await h.callback(state)).status_code == 200   # the real browser still can
+    assert (await h.callback(state)).status_code == 200  # the real browser still can
 
 
 # ------------------------------------------------------------ state misuse
@@ -150,8 +157,10 @@ async def test_vendor_state_cannot_be_used_on_the_hub_callback():
 async def test_hub_issuer_mismatch_is_rejected(capsys):
     h = Harness()
     q = query((await h.authorize()).headers["location"])
-    r = await h.browser.get("/v1/callback/_hub", params={
-        "state": q["state"], "code": "code-for-wf-user-1", "iss": "https://evil.example"})
+    r = await h.browser.get(
+        "/v1/callback/_hub",
+        params={"state": q["state"], "code": "code-for-wf-user-1", "iss": "https://evil.example"},
+    )
     assert r.status_code == 400
     assert security_fails(capsys, "iss_mismatch")
 
@@ -161,8 +170,11 @@ async def test_failed_hub_login_is_502_and_audited(capsys):
     h.hub_login.exchange_error = HubLoginError("ID token nonce mismatch")
     r = await h.hub_callback(await h.authorize())
     assert r.status_code == 502
-    [fail] = [e for e in audit_events(capsys, "broker.consent.fail")
-              if e.get("reason") == "hub_login_failed"]
+    [fail] = [
+        e
+        for e in audit_events(capsys, "broker.consent.fail")
+        if e.get("reason") == "hub_login_failed"
+    ]
     assert fail["error"] == "ID token nonce mismatch"
 
 

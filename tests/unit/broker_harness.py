@@ -5,6 +5,7 @@ httpx.ASGITransport — no network, no containers.
 
 Uniquely named (not conftest) so bare imports never collide with the
 integration suite's modules."""
+
 import asyncio
 import json
 import time
@@ -33,10 +34,15 @@ def hub_key():
 def make_entry(**overrides) -> dict:
     now = time.time()
     entry = {
-        "access_token": "at-0", "refresh_token": "rt-0",
-        "expires_at": now + 3600, "granted_scopes": list(CEILING),
-        "vendor_user_id": "vu-1", "state": "ACTIVE",
-        "refresh_generation": 1, "last_refresh_at": now, "created_at": now,
+        "access_token": "at-0",
+        "refresh_token": "rt-0",
+        "expires_at": now + 3600,
+        "granted_scopes": list(CEILING),
+        "vendor_user_id": "vu-1",
+        "state": "ACTIVE",
+        "refresh_generation": 1,
+        "last_refresh_at": now,
+        "created_at": now,
     }
     entry.update(overrides)
     return entry
@@ -53,18 +59,18 @@ class FakeVendors:
         self.refresh_delay = 0.0
         self.rotate = True
         self.expires_in = 60
-        self.on_refresh = None          # optional hook(n) run mid-refresh
+        self.on_refresh = None  # optional hook(n) run mid-refresh
         self.revoke_calls = 0
         self.revoked: list[dict] = []
         self.revoke_error: Exception | None = None
-        self.on_revoke = None           # optional hook() run inside revoke
+        self.on_revoke = None  # optional hook() run inside revoke
         self.endpoints_error: Exception | None = None
         self.client: dict | None = {"client_id": "cid", "client_secret": "secret"}
         self.client_error: Exception | None = None
         self.exchange_error: Exception | None = None
         self.exchange_calls = 0
-        self.consent_token: dict | None = None     # override the code-exchange response
-        self.refresh_scope: str | None = None      # override the refresh response scope
+        self.consent_token: dict | None = None  # override the code-exchange response
+        self.refresh_scope: str | None = None  # override the refresh response scope
 
     def registry(self) -> dict:
         return {VENDOR: self.spec}
@@ -78,9 +84,11 @@ class FakeVendors:
     async def endpoints(self, vendor: str) -> dict:
         if self.endpoints_error is not None:
             raise self.endpoints_error
-        return {"authorization_endpoint": "http://as.test/authorize",
-                "issuer": "http://as.test",
-                "authorization_response_iss_parameter_supported": True}
+        return {
+            "authorization_endpoint": "http://as.test/authorize",
+            "issuer": "http://as.test",
+            "authorization_response_iss_parameter_supported": True,
+        }
 
     async def read_client(self, vendor: str) -> dict | None:
         if self.client_error is not None:
@@ -93,8 +101,12 @@ class FakeVendors:
             raise self.exchange_error
         if self.consent_token is not None:
             return dict(self.consent_token)
-        return {"access_token": "at-consent", "refresh_token": "rt-consent",
-                "expires_in": 3600, "scope": " ".join(self.spec["scope_ceiling"])}
+        return {
+            "access_token": "at-consent",
+            "refresh_token": "rt-consent",
+            "expires_in": 3600,
+            "scope": " ".join(self.spec["scope_ceiling"]),
+        }
 
     async def vendor_user_id(self, vendor: str, access_token: str) -> str:
         return "vu-1"
@@ -142,8 +154,12 @@ class FakeHubLogin:
             raise self.check_error
 
     async def authorization_url(self, *, state, nonce, challenge, login_hint, redirect_uri):
-        params = {"state": state, "nonce": nonce, "code_challenge": challenge,
-                  "redirect_uri": redirect_uri}
+        params = {
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": challenge,
+            "redirect_uri": redirect_uri,
+        }
         if login_hint:
             params["login_hint"] = login_hint
         return f"{self.AUTHORIZE}?" + urlencode(params)
@@ -165,20 +181,29 @@ class Harness:
         self.vendors = FakeVendors()
         if coord == "redis":
             import fakeredis.aioredis
+
             self.coord = RedisCoordination(
-                self.cfg, instance_id="inst-a",
-                client=fakeredis.aioredis.FakeRedis(decode_responses=True))
+                self.cfg,
+                instance_id="inst-a",
+                client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+            )
         else:
             self.coord = MemoryCoordination(self.cfg)
         hub = HubValidator(self.cfg, jwks_client=StaticJWKS(hub_key().public_key()))
         self.hub_login = FakeHubLogin()
-        self.broker = Broker(self.cfg, custody=self.custody, hub=hub,
-                             vendors=self.vendors, coord=self.coord,
-                             hub_login=self.hub_login)
+        self.broker = Broker(
+            self.cfg,
+            custody=self.custody,
+            hub=hub,
+            vendors=self.vendors,
+            coord=self.coord,
+            hub_login=self.hub_login,
+        )
         self.app = create_app(self.cfg, broker=self.broker)
         # One browser: keeps the consent binding cookie across legs.
-        self.browser = AsyncClient(transport=ASGITransport(app=self.app),
-                                   base_url="http://broker.test")
+        self.browser = AsyncClient(
+            transport=ASGITransport(app=self.app), base_url="http://broker.test"
+        )
 
     def token(self, sub: str = "wf-user-1", **claims) -> str:
         return mint_hub_token(hub_key(), "PS256", self.cfg, sub=sub, **claims)
@@ -191,8 +216,7 @@ class Harness:
         return found[0] if found else None
 
     def client(self) -> AsyncClient:
-        return AsyncClient(transport=ASGITransport(app=self.app),
-                           base_url="http://broker.test")
+        return AsyncClient(transport=ASGITransport(app=self.app), base_url="http://broker.test")
 
     async def authorize(self, sub: str = "wf-user-1"):
         """New txn for `sub`, then GET /v1/authorize in the browser."""
@@ -204,7 +228,8 @@ class Harness:
         q = query(authorize_response.headers["location"])
         who = self.hub_login.login_as or q["login_hint"]
         return await (browser or self.browser).get(
-            "/v1/callback/_hub", params={"state": q["state"], "code": f"code-for-{who}"})
+            "/v1/callback/_hub", params={"state": q["state"], "code": f"code-for-{who}"}
+        )
 
     async def start_consent(self, sub: str = "wf-user-1") -> str:
         """Drive authorize and the hub login; return the vendor `state`."""
@@ -217,8 +242,7 @@ class Harness:
     async def callback(self, state: str, **params):
         params.setdefault("code", "code-1")
         params.setdefault("iss", "http://as.test")
-        return await self.browser.get(f"/v1/callback/{VENDOR}",
-                                      params={"state": state, **params})
+        return await self.browser.get(f"/v1/callback/{VENDOR}", params={"state": state, **params})
 
     async def resolve(self, as_sub: str = "wf-user-1", **body):
         """POST /v1/tokens/resolve as `as_sub` (the hub JWT subject); body
@@ -226,8 +250,11 @@ class Harness:
         body.setdefault("vendor", VENDOR)
         body.setdefault("min_ttl_s", 30)
         async with self.client() as c:
-            return await c.post("/v1/tokens/resolve", json=body,
-                                headers={"Authorization": f"Bearer {self.token(as_sub)}"})
+            return await c.post(
+                "/v1/tokens/resolve",
+                json=body,
+                headers={"Authorization": f"Bearer {self.token(as_sub)}"},
+            )
 
 
 def audit_events(capsys, event: str | None = None) -> list[dict]:
@@ -239,4 +266,3 @@ def audit_events(capsys, event: str | None = None) -> list[dict]:
     if event is not None:
         events = [e for e in events if e["audit"] == event]
     return events
-

@@ -3,6 +3,7 @@ request validation (400 invalid-request), hub JWKS outage (503
 hub-unavailable), authorize/callback dependency failures, the post-redeem
 custody failure, delete edge cases, fixed error messages, and the
 browser-response headers."""
+
 import time
 
 import pytest
@@ -24,26 +25,32 @@ def assert_browser_headers(r):
 
 # ------------------------------------------------------------ resolve body
 
-@pytest.mark.parametrize("raw", [
-    b"not json",
-    b"[1, 2]",
-    b"{}",                                                          # no vendor
-    b'{"vendor": 7}',
-    b'{"vendor": ""}',
-    b'{"vendor": "mockhub", "sub": 5}',
-    b'{"vendor": "mockhub", "min_ttl_s": "soon"}',
-    b'{"vendor": "mockhub", "min_ttl_s": true}',
-    b'{"vendor": "mockhub", "min_ttl_s": -1}',
-    b'{"vendor": "mockhub", "min_ttl_s": 30.5}',
-    b'{"vendor": "mockhub", "required_scopes": "issues:read"}',
-    b'{"vendor": "mockhub", "required_scopes": ["issues:read", 7]}',
-])
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"not json",
+        b"[1, 2]",
+        b"{}",  # no vendor
+        b'{"vendor": 7}',
+        b'{"vendor": ""}',
+        b'{"vendor": "mockhub", "sub": 5}',
+        b'{"vendor": "mockhub", "min_ttl_s": "soon"}',
+        b'{"vendor": "mockhub", "min_ttl_s": true}',
+        b'{"vendor": "mockhub", "min_ttl_s": -1}',
+        b'{"vendor": "mockhub", "min_ttl_s": 30.5}',
+        b'{"vendor": "mockhub", "required_scopes": "issues:read"}',
+        b'{"vendor": "mockhub", "required_scopes": ["issues:read", 7]}',
+    ],
+)
 async def test_malformed_resolve_body_is_400(raw, capsys):
     h = Harness()
     async with h.client() as c:
-        r = await c.post("/v1/tokens/resolve", content=raw,
-                         headers={"Authorization": f"Bearer {h.token()}",
-                                  "content-type": "application/json"})
+        r = await c.post(
+            "/v1/tokens/resolve",
+            content=raw,
+            headers={"Authorization": f"Bearer {h.token()}", "content-type": "application/json"},
+        )
     assert r.status_code == 400
     assert r.json()["title"] == "invalid-request"
     deny = audit_events(capsys, "broker.resolve")
@@ -59,10 +66,12 @@ async def test_well_formed_body_still_resolves():
 
 # ------------------------------------------------------------ hub JWKS outage
 
+
 class _JWKSDown:
     def get_signing_key_from_jwt(self, token):
         raise PyJWKClientConnectionError(
-            'Fail to fetch data from the url, err: "http://hub.internal/jwks"')
+            'Fail to fetch data from the url, err: "http://hub.internal/jwks"'
+        )
 
 
 class _UnknownKid:
@@ -72,14 +81,15 @@ class _UnknownKid:
 
 async def _call(h, method, path, **kw):
     async with h.client() as c:
-        return await c.request(method, path,
-                               headers={"Authorization": f"Bearer {h.token()}"}, **kw)
+        return await c.request(method, path, headers={"Authorization": f"Bearer {h.token()}"}, **kw)
 
 
-ROUTES = [("POST", "/v1/tokens/resolve", {"json": {"vendor": VENDOR}}),
-          ("GET", "/v1/grants", {}),
-          ("DELETE", f"/v1/grants/{VENDOR}/wf-user-1", {}),
-          ("GET", f"/v1/admin/vendors/{VENDOR}", {})]
+ROUTES = [
+    ("POST", "/v1/tokens/resolve", {"json": {"vendor": VENDOR}}),
+    ("GET", "/v1/grants", {}),
+    ("DELETE", f"/v1/grants/{VENDOR}/wf-user-1", {}),
+    ("GET", f"/v1/admin/vendors/{VENDOR}", {}),
+]
 
 
 @pytest.mark.parametrize("method,path,kw", ROUTES)
@@ -102,6 +112,7 @@ async def test_unknown_signing_key_is_still_401(method, path, kw):
 
 # ------------------------------------------------------------ authorize
 
+
 async def _authorize(h):
     return await h.authorize()
 
@@ -111,14 +122,24 @@ async def _through_hub_login(h):
     return await h.hub_callback(await h.authorize())
 
 
-@pytest.mark.parametrize("setup,title,reason", [
-    (lambda v: setattr(v, "endpoints_error",
-                       vendors_mod.VendorUnavailable("mockhub metadata unavailable")),
-     "vendor-unavailable", "vendor_unavailable"),
-    (lambda v: setattr(v, "client_error", CustodyUnavailable()),
-     "vault-unavailable", "vault_unavailable"),
-    (lambda v: setattr(v, "client", None), "vendor-unavailable", "no_client_credential"),
-])
+@pytest.mark.parametrize(
+    "setup,title,reason",
+    [
+        (
+            lambda v: setattr(
+                v, "endpoints_error", vendors_mod.VendorUnavailable("mockhub metadata unavailable")
+            ),
+            "vendor-unavailable",
+            "vendor_unavailable",
+        ),
+        (
+            lambda v: setattr(v, "client_error", CustodyUnavailable()),
+            "vault-unavailable",
+            "vault_unavailable",
+        ),
+        (lambda v: setattr(v, "client", None), "vendor-unavailable", "no_client_credential"),
+    ],
+)
 async def test_authorize_dependency_failures(setup, title, reason, capsys):
     h = Harness()
     setup(h.vendors)
@@ -135,6 +156,7 @@ async def test_authorize_redirect_carries_browser_headers():
 
 
 # ------------------------------------------------------------ callback
+
 
 async def test_callback_success_writes_grant_with_browser_headers():
     h = Harness()
@@ -163,8 +185,10 @@ async def test_exchange_failure_is_502():
 def refuse_writes(h):
     """Custody reads work, writes fail: the failure lands after the code is
     redeemed (the callback reads custody before the exchange)."""
+
     async def refuse(*a, **kw):
         raise CustodyUnavailable()
+
     h.custody.write = refuse
 
 
@@ -194,6 +218,7 @@ async def test_post_redeem_revoke_failure_is_audited(capsys):
 
 
 # ------------------------------------------------------------ delete
+
 
 async def _delete(h):
     return await _call(h, "DELETE", f"/v1/grants/{VENDOR}/wf-user-1")
@@ -248,6 +273,7 @@ async def test_sweeper_drains_parked_grant_without_vendor_revocation(capsys):
 
 # ------------------------------------------------------------ fixed messages (L9)
 
+
 async def test_custody_outage_detail_is_fixed():
     h = Harness()
     h.custody.fail = True
@@ -285,6 +311,7 @@ async def test_redis_outage_on_refresh_path_is_fixed_503():
 
     async def down(*a, **kw):
         from redis.exceptions import ConnectionError as RedisConnectionError
+
         raise RedisConnectionError("Error connecting to redis.internal:6379")
 
     h.coord._r.set = down

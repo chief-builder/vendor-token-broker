@@ -5,6 +5,7 @@ registry) have no defaults — a missing one aborts startup with every
 missing name listed at once. Contract pins keep compatible defaults so an
 existing deployment can point at this broker unchanged.
 """
+
 import os
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -14,13 +15,18 @@ class ConfigError(Exception):
     pass
 
 
-_REQUIRED = ("HUB_ISSUER", "HUB_JWKS_URI", "BROKER_PUBLIC_URL", "VAULT_ADDR", "REGISTRY_PATH",
-             "HUB_LOGIN_CLIENT_ID")
+_REQUIRED = (
+    "HUB_ISSUER",
+    "HUB_JWKS_URI",
+    "BROKER_PUBLIC_URL",
+    "VAULT_ADDR",
+    "REGISTRY_PATH",
+    "HUB_LOGIN_CLIENT_ID",
+)
 
 # Asymmetric signature algorithms only: RS256 (PKCS#1 v1.5) and every HMAC
 # algorithm are outside the hub contract and can never be configured.
-ALLOWED_HUB_ALGORITHMS = frozenset(
-    {"PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"})
+ALLOWED_HUB_ALGORITHMS = frozenset({"PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"})
 
 # Knobs where 0 has a meaning (sweeper off / no per-replica cache); every
 # other integer knob must be at least 1.
@@ -44,7 +50,7 @@ class Config:
     hub_algorithms: tuple[str, ...] = ("PS256", "ES256")
     hub_contract_version: str = "1.0"
     admin_group: str = "mcp-platform-admin"
-    hub_login_client_secret: str = ""   # empty: public client (PKCE only)
+    hub_login_client_secret: str = ""  # empty: public client (PKCE only)
     # OIDC login_hint on the consent-leg login: "sub" suits hubs that key
     # sign-in on the subject (hub-stub); real IdPs expect a username or email,
     # so send "none". UX only: the logged-in sub is still checked (H1).
@@ -80,14 +86,15 @@ class Config:
     def __post_init__(self):
         if self.hub_login_hint not in ("sub", "none"):
             raise ConfigError(
-                f"HUB_LOGIN_HINT must be 'sub' or 'none', not {self.hub_login_hint!r}")
+                f"HUB_LOGIN_HINT must be 'sub' or 'none', not {self.hub_login_hint!r}"
+            )
         if not self.hub_algorithms:
             raise ConfigError("HUB_ALGORITHMS must name at least one algorithm")
         bad = [a for a in self.hub_algorithms if a not in ALLOWED_HUB_ALGORITHMS]
         if bad:
             raise ConfigError(
-                f"HUB_ALGORITHMS may only contain {sorted(ALLOWED_HUB_ALGORITHMS)}, "
-                f"not {bad}")
+                f"HUB_ALGORITHMS may only contain {sorted(ALLOWED_HUB_ALGORITHMS)}, not {bad}"
+            )
         for f in fields(self):
             if f.type is not int:
                 continue
@@ -103,7 +110,8 @@ class Config:
         if self.coord_backend == "redis" and self.lock_ttl_ms < worst_ms:
             raise ConfigError(
                 f"LOCK_TTL_MS ({self.lock_ttl_ms}) must be >= (VENDOR_TIMEOUT_S + "
-                f"2 x VAULT_TIMEOUT_S) x 1000 = {worst_ms}")
+                f"2 x VAULT_TIMEOUT_S) x 1000 = {worst_ms}"
+            )
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":

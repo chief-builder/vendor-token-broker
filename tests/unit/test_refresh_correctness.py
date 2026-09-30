@@ -2,6 +2,7 @@
 winner's token (M4), non-expiring and refresh-token-less grants (M7), the
 REVOKE_PENDING interplay with re-consent and waiting resolves (L3), deletes
 serialized against refreshes (L4), and ceiling-capped recorded scopes (L10)."""
+
 import asyncio
 import time
 
@@ -27,17 +28,16 @@ async def test_min_ttl_longer_than_vendor_tokens_still_single_flight(coord, caps
     assert {r.status_code for r in results} == {200}
     assert {r.json()["access_token"] for r in results} == {"at-1"}
     assert h.vendors.refresh_calls == 1
-    waited = [e for e in audit_events(capsys, "broker.resolve")
-              if e["path"] == "refresh-waited"]
+    waited = [e for e in audit_events(capsys, "broker.resolve") if e["path"] == "refresh-waited"]
     assert len(waited) == 9 and all(e["short_ttl"] is True for e in waited)
 
 
 async def test_min_ttl_above_the_buffer_is_clamped_and_audited(capsys):
-    h = Harness()                                   # REFRESH_BUFFER_S = 300
-    h.put(expires_at=time.time() + 400)             # > buffer, < requested 600
+    h = Harness()  # REFRESH_BUFFER_S = 300
+    h.put(expires_at=time.time() + 400)  # > buffer, < requested 600
     r = await h.resolve(min_ttl_s=600)
     assert r.status_code == 200 and r.json()["access_token"] == "at-0"
-    assert h.vendors.refresh_calls == 0             # served, not force-refreshed
+    assert h.vendors.refresh_calls == 0  # served, not force-refreshed
     [event] = audit_events(capsys, "broker.resolve")
     assert event["path"] == "cache" and event["min_ttl_clamped_from"] == 600
 
@@ -60,6 +60,7 @@ async def test_waiter_never_refreshes_an_entry_parked_for_revocation():
 
 # ------------------------------------------------------------ M7: token shapes
 
+
 def test_token_shapes_map_to_expiry():
     now = time.time()
     never = entry_from_token_response({"access_token": "a"}, 1, "u", [])
@@ -68,10 +69,11 @@ def test_token_shapes_map_to_expiry():
     assert no_rt["expires_at"] <= now + 61
     no_exp = entry_from_token_response({"access_token": "a", "refresh_token": "r"}, 1, "u", [])
     assert now + 8 * 3600 - 5 <= no_exp["expires_at"] <= now + 8 * 3600 + 5
-    kept = entry_from_token_response({"access_token": "a", "expires_in": 60}, 2, "u", [],
-                                      previous_refresh_token="rt-old")
+    kept = entry_from_token_response(
+        {"access_token": "a", "expires_in": 60}, 2, "u", [], previous_refresh_token="rt-old"
+    )
     assert kept["refresh_token"] == "rt-old"
-    assert kept["expires_at"] <= now + 61       # an RT from before: not "never expires"
+    assert kept["expires_at"] <= now + 61  # an RT from before: not "never expires"
 
 
 async def test_non_expiring_grant_is_never_refreshed():
@@ -93,11 +95,11 @@ async def test_expired_grant_without_refresh_token_goes_stale_without_a_vendor_c
     h.put(refresh_token="", expires_at=time.time() + 100)
     r = await h.resolve()
     assert r.status_code == 404 and r.json()["title"] == "needs-consent"
-    assert h.vendors.refresh_calls == 0          # never sends an empty refresh token
+    assert h.vendors.refresh_calls == 0  # never sends an empty refresh token
     assert h.stored()["state"] == "STALE"
     assert audit_events(capsys, "broker.stale")
     count, _ = await h.coord.record_stale(VENDOR)
-    assert count == 1                             # not counted as an uninstall signal
+    assert count == 1  # not counted as an uninstall signal
 
 
 # ------------------------------------------------------------ L3: re-consent
@@ -120,7 +122,7 @@ async def test_reconsent_waits_while_the_parked_revocation_cannot_complete():
     h.vendors.revoke_error = vendors_mod.VendorUnavailable("vendor revocation unavailable")
     r = await h.callback(await h.start_consent())
     assert r.status_code == 503
-    assert h.vendors.exchange_calls == 0          # no new grant was minted
+    assert h.vendors.exchange_calls == 0  # no new grant was minted
     assert h.stored()["state"] == "REVOKE_PENDING"
 
 
@@ -152,7 +154,7 @@ async def test_consent_still_stores_the_grant_if_the_lock_never_frees():
     """The code is already spent: losing the new grant is worse than waiting."""
     h = Harness(lock_timeout_s=1)
     state = await h.start_consent()
-    await h.coord.try_refresh_lock(VENDOR, "wf-user-1")          # never released
+    await h.coord.try_refresh_lock(VENDOR, "wf-user-1")  # never released
     assert (await h.callback(state)).status_code == 200
     assert h.stored()["access_token"] == "at-consent"
 
@@ -162,8 +164,9 @@ async def test_consent_still_stores_the_grant_if_the_lock_never_frees():
 
 async def _delete(h):
     async with h.client() as c:
-        return await c.delete(f"/v1/grants/{VENDOR}/wf-user-1",
-                              headers={"Authorization": f"Bearer {h.token()}"})
+        return await c.delete(
+            f"/v1/grants/{VENDOR}/wf-user-1", headers={"Authorization": f"Bearer {h.token()}"}
+        )
 
 
 async def test_delete_waits_for_an_in_flight_refresh_and_revokes_the_new_pair():
@@ -171,11 +174,11 @@ async def test_delete_waits_for_an_in_flight_refresh_and_revokes_the_new_pair():
     h.put(expires_at=time.time() + 100)
     h.vendors.refresh_delay = 0.1
     refreshing = asyncio.create_task(h.resolve())
-    await asyncio.sleep(0.02)                      # the refresh holds the lock
+    await asyncio.sleep(0.02)  # the refresh holds the lock
     r = await _delete(h)
     assert (await refreshing).status_code == 200
     assert r.status_code == 200
-    assert [e["refresh_token"] for e in h.vendors.revoked] == ["rt-1"]   # not rt-0
+    assert [e["refresh_token"] for e in h.vendors.revoked] == ["rt-1"]  # not rt-0
     assert h.stored() is None
 
 
@@ -223,8 +226,12 @@ async def test_refresh_records_only_scopes_within_the_ceiling(capsys):
 
 async def test_consent_records_only_scopes_within_the_ceiling(capsys):
     h = Harness()
-    h.vendors.consent_token = {"access_token": "at-c", "refresh_token": "rt-c",
-                               "expires_in": 3600, "scope": "issues:read repo:delete"}
+    h.vendors.consent_token = {
+        "access_token": "at-c",
+        "refresh_token": "rt-c",
+        "expires_in": 3600,
+        "scope": "issues:read repo:delete",
+    }
     assert (await h.callback(await h.start_consent())).status_code == 200
     assert h.stored()["granted_scopes"] == ["issues:read"]
     [complete] = audit_events(capsys, "broker.consent.complete")

@@ -1,5 +1,6 @@
 """Registry: the example validates against the normative schema, and
 enabled_env gating works as documented."""
+
 import json
 
 import jsonschema
@@ -17,16 +18,19 @@ def test_example_registry_validates_against_schema():
 
 
 def test_schema_rejects_metadata_plus_hardcoded_endpoints():
-    bad = {"dual": {**EXAMPLE["mockhub"], "vendor_id": "dual",
-                    "endpoints": {"authorization_endpoint": "https://x/a",
-                                  "token_endpoint": "https://x/t"}}}
+    bad = {
+        "dual": {
+            **EXAMPLE["mockhub"],
+            "vendor_id": "dual",
+            "endpoints": {"authorization_endpoint": "https://x/a", "token_endpoint": "https://x/t"},
+        }
+    }
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(bad, SCHEMA)
 
 
 def test_schema_rejects_secrets_in_registry():
-    bad = {"leaky": {**EXAMPLE["mockhub"], "vendor_id": "leaky",
-                     "client_secret": "oops"}}
+    bad = {"leaky": {**EXAMPLE["mockhub"], "vendor_id": "leaky", "client_secret": "oops"}}
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(bad, SCHEMA)
 

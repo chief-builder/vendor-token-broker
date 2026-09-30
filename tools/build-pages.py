@@ -16,6 +16,7 @@ After rebuilding, copy index.html there and push.
 Use ``python tools/build-pages.py --check`` in CI to verify that the checked-in
 HTML is current and that generated internal anchors resolve.
 """
+
 import html
 import re
 import sys
@@ -27,34 +28,77 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 
 SECTIONS = [
-    ("overview", "Overview", "overview.md",
-     "AI assistants in GitHub, Linear, Jira, and Cloudflare, as each signed-in person."),
-    ("quickstart", "Quickstart", "quickstart.md",
-     "Try it on your laptop: sign in, connect services, and call tools from Claude Code."),
-    ("gateway", "MCP Gateway", "mcp-gateway.md",
-     "How the gateway works, what your sign-in service must do, and how to configure it."),
-    ("mcp", "Connect Your Own MCP Server", "mcp-integration.md",
-     "Use the token broker from an MCP server or gateway you build yourself."),
-    ("api", "Broker API", "api.md",
-     "The broker's internal REST API: requests, answers, and what to do on each error."),
-    ("operations", "Deploy and Operate", "operations.md",
-     "Set up storage, configure the broker, and fix common problems."),
-    ("security", "Security", "security.md",
-     "Which protections are built in, which are partial, and what we tested."),
-    ("design", "Design", "design.md",
-     "The broker's full design: roles, rules, states, and failure handling."),
-    ("lifecycle", "Token Lifecycle", "token-lifecycle.md",
-     "Every path a connection takes, step by step: connect, refresh, disconnect, outages."),
-    ("smoke-tests", "Smoke Tests", "smoke-tests.md",
-     "A hands-on tour that checks each protection with curl and a browser."),
-    ("adr", "Redis Decision", "adr/0001-redis-coordination.md",
-     "Why Redis coordinates several brokers running side by side."),
+    (
+        "overview",
+        "Overview",
+        "overview.md",
+        "AI assistants in GitHub, Linear, Jira, and Cloudflare, as each signed-in person.",
+    ),
+    (
+        "quickstart",
+        "Quickstart",
+        "quickstart.md",
+        "Try it on your laptop: sign in, connect services, and call tools from Claude Code.",
+    ),
+    (
+        "gateway",
+        "MCP Gateway",
+        "mcp-gateway.md",
+        "How the gateway works, what your sign-in service must do, and how to configure it.",
+    ),
+    (
+        "mcp",
+        "Connect Your Own MCP Server",
+        "mcp-integration.md",
+        "Use the token broker from an MCP server or gateway you build yourself.",
+    ),
+    (
+        "api",
+        "Broker API",
+        "api.md",
+        "The broker's internal REST API: requests, answers, and what to do on each error.",
+    ),
+    (
+        "operations",
+        "Deploy and Operate",
+        "operations.md",
+        "Set up storage, configure the broker, and fix common problems.",
+    ),
+    (
+        "security",
+        "Security",
+        "security.md",
+        "Which protections are built in, which are partial, and what we tested.",
+    ),
+    (
+        "design",
+        "Design",
+        "design.md",
+        "The broker's full design: roles, rules, states, and failure handling.",
+    ),
+    (
+        "lifecycle",
+        "Token Lifecycle",
+        "token-lifecycle.md",
+        "Every path a connection takes, step by step: connect, refresh, disconnect, outages.",
+    ),
+    (
+        "smoke-tests",
+        "Smoke Tests",
+        "smoke-tests.md",
+        "A hands-on tour that checks each protection with curl and a browser.",
+    ),
+    (
+        "adr",
+        "Redis Decision",
+        "adr/0001-redis-coordination.md",
+        "Why Redis coordinates several brokers running side by side.",
+    ),
 ]
 
 SECTION_BY_FILE = {fname: sid for sid, _, fname, _ in SECTIONS}
 
-MERMAID_BLOCK = re.compile(
-    r'<pre><code class="language-mermaid">(.*?)</code></pre>', re.S)
+MERMAID_BLOCK = re.compile(r'<pre><code class="language-mermaid">(.*?)</code></pre>', re.S)
 
 
 def render(md_path: Path, section_id: str) -> str:
@@ -63,6 +107,7 @@ def render(md_path: Path, section_id: str) -> str:
     body = MERMAID_BLOCK.sub(r'<pre class="mermaid">\1</pre>', body)
     # The section wrapper supplies the visible document title.
     body = re.sub(r"^<h1 id=\"[^\"]+\">.*?</h1>\n?", "", body, count=1)
+
     # Source Markdown links to another guide become deep links in the one-page
     # artifact; links to repository files remain ordinary relative links.
     def rewrite_link(match: re.Match[str]) -> str:
@@ -73,6 +118,7 @@ def render(md_path: Path, section_id: str) -> str:
         if target_sid:
             return f'href="#{fragment if sep and fragment else target_sid}"'
         return match.group(0)
+
     body = re.sub(r'href="([^"]*)"', rewrite_link, body)
     return body
 
@@ -88,10 +134,12 @@ def build_page() -> str:
             f'<div class="section-head"><h1>{html.escape(title)}</h1>'
             f'<p class="blurb">{html.escape(blurb)}</p>'
             f'<p class="src">source: <code>docs/{fname}</code></p></div>\n'
-            f"{body}\n</section>")
+            f"{body}\n</section>"
+        )
 
-    return TEMPLATE.replace("{{NAV}}", "\n".join(nav_html)) \
-                   .replace("{{SECTIONS}}", "\n<hr class='sep'/>\n".join(sections_html))
+    return TEMPLATE.replace("{{NAV}}", "\n".join(nav_html)).replace(
+        "{{SECTIONS}}", "\n<hr class='sep'/>\n".join(sections_html)
+    )
 
 
 def validate(page: str) -> list[str]:
@@ -106,8 +154,11 @@ def validate(page: str) -> list[str]:
 
 def main() -> None:
     check = "--check" in sys.argv[1:]
-    missing = [f"missing source: docs/{fname}" for _, _, fname, _ in SECTIONS
-               if not (DOCS / fname).exists()]
+    missing = [
+        f"missing source: docs/{fname}"
+        for _, _, fname, _ in SECTIONS
+        if not (DOCS / fname).exists()
+    ]
     if missing:
         raise SystemExit("\n".join(missing))
     page = build_page()
@@ -121,7 +172,7 @@ def main() -> None:
         print("docs/index.html is current; internal anchors resolve")
         return
     (DOCS / "index.html").write_text(page)
-    print(f"wrote {DOCS / 'index.html'} ({len(page)//1024} KiB)")
+    print(f"wrote {DOCS / 'index.html'} ({len(page) // 1024} KiB)")
 
 
 TEMPLATE = """<!DOCTYPE html>

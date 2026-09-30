@@ -48,3 +48,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The page template embeds CSS rules that read best on one line each.
+"tools/build-pages.py" = ["E501"]

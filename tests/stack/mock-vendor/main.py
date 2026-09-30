@@ -18,6 +18,7 @@ Deliberately hostile in the ways that matter to the broker design:
 /_test/* endpoints expose call counters and a revoke-family switch for the
 acceptance suite. Nothing here persists — restart resets the vendor.
 """
+
 import base64
 import hashlib
 import json
@@ -51,14 +52,23 @@ MOCK_USER = {"id": "mock-4217", "login": "octocat-lab"}
 app = FastAPI(title="mockhub")
 
 codes: dict[str, dict] = {}
-families: dict[str, dict] = {}         # family_id -> {gen, active_rt, revoked}
-refresh_tokens: dict[str, dict] = {}   # rt -> {family, gen, consumed}
-access_tokens: dict[str, dict] = {}    # at -> {family, exp, scopes}
-counters = {"authorize": 0, "token_code": 0, "token_refresh": 0,
-            "rt_replay": 0, "revoke": 0, "mcp_calls": 0, "mcp_unauthorized": 0,
-            "client_assertions": 0, "bad_assertions": 0, "invalid_target": 0}
+families: dict[str, dict] = {}  # family_id -> {gen, active_rt, revoked}
+refresh_tokens: dict[str, dict] = {}  # rt -> {family, gen, consumed}
+access_tokens: dict[str, dict] = {}  # at -> {family, exp, scopes}
+counters = {
+    "authorize": 0,
+    "token_code": 0,
+    "token_refresh": 0,
+    "rt_replay": 0,
+    "revoke": 0,
+    "mcp_calls": 0,
+    "mcp_unauthorized": 0,
+    "client_assertions": 0,
+    "bad_assertions": 0,
+    "invalid_target": 0,
+}
 issues: list[dict] = []
-registered: dict[str, dict] = {}       # client_id -> RFC 7591 registration (kept on reset)
+registered: dict[str, dict] = {}  # client_id -> RFC 7591 registration (kept on reset)
 
 
 def _client_ok(client_id: str | None, client_secret: str | None) -> bool:
@@ -75,10 +85,12 @@ def _assertion_ok(form: dict) -> bool:
         return False
     try:
         claims = jwt.decode(
-            form.get("client_assertion", ""), JWT_PUBLIC_KEY,
+            form.get("client_assertion", ""),
+            JWT_PUBLIC_KEY,
             algorithms=["RS256"],
             audience=[f"{INTERNAL_URL}/token", ISSUER],
-            options={"require": ["exp", "iss", "sub", "aud", "jti"]})
+            options={"require": ["exp", "iss", "sub", "aud", "jti"]},
+        )
     except Exception:
         counters["bad_assertions"] += 1
         return False
@@ -113,10 +125,19 @@ def _mint(family_id: str, scopes: str) -> dict:
         refresh_tokens[fam["active_rt"]]["consumed"] = True
     fam["active_rt"] = rt
     refresh_tokens[rt] = {"family": family_id, "gen": fam["gen"], "consumed": False}
-    access_tokens[at] = {"family": family_id, "exp": time.time() + AT_TTL,
-                         "scopes": scopes, "resource": fam["resource"]}
-    return {"access_token": at, "token_type": "bearer", "expires_in": AT_TTL,
-            "refresh_token": rt, "scope": scopes}
+    access_tokens[at] = {
+        "family": family_id,
+        "exp": time.time() + AT_TTL,
+        "scopes": scopes,
+        "resource": fam["resource"],
+    }
+    return {
+        "access_token": at,
+        "token_type": "bearer",
+        "expires_in": AT_TTL,
+        "refresh_token": rt,
+        "scope": scopes,
+    }
 
 
 @app.get("/.well-known/oauth-authorization-server")
@@ -147,9 +168,14 @@ async def register(request: Request):
     body = await request.json()
     if not body.get("redirect_uris"):
         return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
-    reg = {**body, "client_id": f"mock-dcr-{secrets.token_urlsafe(8)}",
-           "client_secret": secrets.token_urlsafe(24), "client_id_issued_at": int(time.time()),
-           "client_secret_expires_at": 0, "token_endpoint_auth_method": "client_secret_post"}
+    reg = {
+        **body,
+        "client_id": f"mock-dcr-{secrets.token_urlsafe(8)}",
+        "client_secret": secrets.token_urlsafe(24),
+        "client_id_issued_at": int(time.time()),
+        "client_secret_expires_at": 0,
+        "token_endpoint_auth_method": "client_secret_post",
+    }
     registered[reg["client_id"]] = reg
     return JSONResponse(reg, status_code=201)
 
@@ -169,21 +195,36 @@ def _metadata() -> dict:
 
 
 @app.get("/authorize")
-async def authorize(client_id: str, redirect_uri: str, state: str,
-                    code_challenge: str, response_type: str = "code",
-                    code_challenge_method: str = "S256", scope: str = "",
-                    resource: str | None = None):
+async def authorize(
+    client_id: str,
+    redirect_uri: str,
+    state: str,
+    code_challenge: str,
+    response_type: str = "code",
+    code_challenge_method: str = "S256",
+    scope: str = "",
+    resource: str | None = None,
+):
     counters["authorize"] += 1
-    if client_id not in (CLIENT_ID, JWT_CLIENT_ID, *registered) or response_type != "code" \
-            or code_challenge_method != "S256":
+    if (
+        client_id not in (CLIENT_ID, JWT_CLIENT_ID, *registered)
+        or response_type != "code"
+        or code_challenge_method != "S256"
+    ):
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     code = f"mock-code-{secrets.token_urlsafe(16)}"
-    codes[code] = {"challenge": code_challenge, "redirect_uri": redirect_uri,
-                   "scope": scope, "resource": resource, "created_at": time.time(),
-                   "used": False}
+    codes[code] = {
+        "challenge": code_challenge,
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "resource": resource,
+        "created_at": time.time(),
+        "used": False,
+    }
     # Auto-consent as the fixed mock user; RFC 9207 iss on the response.
     return RedirectResponse(
-        f"{redirect_uri}?{urlencode({'code': code, 'state': state, 'iss': ISSUER})}")
+        f"{redirect_uri}?{urlencode({'code': code, 'state': state, 'iss': ISSUER})}"
+    )
 
 
 @app.post("/token")
@@ -195,20 +236,29 @@ async def token(request: Request):
     if form.get("grant_type") == "authorization_code":
         counters["token_code"] += 1
         rec = codes.get(form.get("code", ""))
-        if (rec is None or rec["used"] or time.time() - rec["created_at"] > 300
-                or rec["redirect_uri"] != form.get("redirect_uri")):
+        if (
+            rec is None
+            or rec["used"]
+            or time.time() - rec["created_at"] > 300
+            or rec["redirect_uri"] != form.get("redirect_uri")
+        ):
             return JSONResponse({"error": "invalid_grant"}, status_code=400)
         digest = hashlib.sha256(form.get("code_verifier", "").encode()).digest()
         if base64.urlsafe_b64encode(digest).rstrip(b"=").decode() != rec["challenge"]:
-            return JSONResponse({"error": "invalid_grant",
-                                 "error_description": "pkce"}, status_code=400)
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "pkce"}, status_code=400
+            )
         if form.get("resource") != rec["resource"]:
             counters["invalid_target"] += 1
             return JSONResponse({"error": "invalid_target"}, status_code=400)
         rec["used"] = True
         family_id = f"fam-{secrets.token_urlsafe(8)}"
-        families[family_id] = {"gen": 0, "active_rt": None, "revoked": False,
-                               "resource": rec["resource"]}
+        families[family_id] = {
+            "gen": 0,
+            "active_rt": None,
+            "revoked": False,
+            "resource": rec["resource"],
+        }
         return _mint(family_id, rec["scope"])
 
     if form.get("grant_type") == "refresh_token":
@@ -223,8 +273,9 @@ async def token(request: Request):
             # Replay of a rotated-away refresh token burns the family (§8).
             counters["rt_replay"] += 1
             fam["revoked"] = True
-            return JSONResponse({"error": "invalid_grant",
-                                 "error_description": "replay"}, status_code=400)
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "replay"}, status_code=400
+            )
         if form.get("resource") != fam["resource"]:
             counters["invalid_target"] += 1
             return JSONResponse({"error": "invalid_target"}, status_code=400)
@@ -280,8 +331,9 @@ async def mcp(request: Request):
     """Fake vendor MCP endpoint: create_issue / list_issues over JSON-RPC."""
     if _bearer(request) is None:
         counters["mcp_unauthorized"] += 1
-        return JSONResponse({"error": "unauthorized"}, status_code=401,
-                            headers={"WWW-Authenticate": "Bearer"})
+        return JSONResponse(
+            {"error": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": "Bearer"}
+        )
     counters["mcp_calls"] += 1
     body = await request.json()
     name = (body.get("params") or {}).get("name")
@@ -293,15 +345,23 @@ async def mcp(request: Request):
         result = {"ok": True, "issue_number": len(issues)}
     else:
         result = {"issues": issues}
-    return {"jsonrpc": "2.0", "id": body.get("id"),
-            "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
+    return {
+        "jsonrpc": "2.0",
+        "id": body.get("id"),
+        "result": {"content": [{"type": "text", "text": json.dumps(result)}]},
+    }
 
 
 @app.get("/_test/state")
 async def test_state():
-    return {"counters": counters, "families": families, "issue_count": len(issues),
-            "registered": [{k: v for k, v in r.items() if k != "client_secret"}
-                           for r in registered.values()]}
+    return {
+        "counters": counters,
+        "families": families,
+        "issue_count": len(issues),
+        "registered": [
+            {k: v for k, v in r.items() if k != "client_secret"} for r in registered.values()
+        ],
+    }
 
 
 @app.post("/_test/revoke_family")

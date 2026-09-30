@@ -1,6 +1,7 @@
 """Hub-JWT validation matrix (design §3): algorithm pinning, issuer,
 tier-audience, contract shape, required claims. Keys are generated locally;
 the JWKS client is faked — no network."""
+
 import time
 
 import pytest
@@ -42,6 +43,7 @@ def test_rs256_rejected_even_with_resolvable_key(cfg, rsa_key, validator_rsa):
 
 def test_hmac_rejected(cfg, validator_rsa):
     import jwt as pyjwt
+
     token = pyjwt.encode({"iss": cfg.hub_issuer, "sub": "x"}, "secret", algorithm="HS256")
     with pytest.raises(HubAuthError):
         validator_rsa.validate(bearer(token))
@@ -62,15 +64,16 @@ def test_wrong_tier_audience_rejected(cfg, rsa_key, validator_rsa):
 def test_two_tier_audiences_rejected(cfg, rsa_key, validator_rsa):
     """Exactly one tier audience — a cross-tier token never resolves."""
     token = mint_hub_token(
-        rsa_key, "PS256", cfg,
-        aud=["mcp://tier/internal", "mcp://tier/external"])
+        rsa_key, "PS256", cfg, aud=["mcp://tier/internal", "mcp://tier/external"]
+    )
     with pytest.raises(HubAuthError):
         validator_rsa.validate(bearer(token))
 
 
 def test_expired_token_rejected(cfg, rsa_key, validator_rsa):
-    token = mint_hub_token(rsa_key, "PS256", cfg,
-                           exp=int(time.time()) - 120, iat=int(time.time()) - 600)
+    token = mint_hub_token(
+        rsa_key, "PS256", cfg, exp=int(time.time()) - 120, iat=int(time.time()) - 600
+    )
     with pytest.raises(HubAuthError):
         validator_rsa.validate(bearer(token))
 
@@ -106,12 +109,20 @@ def test_garbage_token_rejected(validator_rsa):
 
 def test_custom_pins_honored(rsa_key):
     """A deployment can re-pin issuer/audience/contract without code change."""
-    cfg = make_config(hub_issuer="https://other.test",
-                      hub_tier_audience="mcp://tier/partner",
-                      hub_contract_version="1.1")
+    cfg = make_config(
+        hub_issuer="https://other.test",
+        hub_tier_audience="mcp://tier/partner",
+        hub_contract_version="1.1",
+    )
     v = HubValidator(cfg, jwks_client=StaticJWKS(rsa_key.public_key()))
-    token = mint_hub_token(rsa_key, "PS256", cfg, iss="https://other.test",
-                           aud=["mcp://tier/partner"], mcp_contract="1.1")
+    token = mint_hub_token(
+        rsa_key,
+        "PS256",
+        cfg,
+        iss="https://other.test",
+        aud=["mcp://tier/partner"],
+        mcp_contract="1.1",
+    )
     assert v.validate(bearer(token))["iss"] == "https://other.test"
 
 
@@ -121,18 +132,19 @@ def test_key_removed_from_jwks_stops_validating(cfg, rsa_key):
     import jwt as pyjwt
     from jwt.algorithms import RSAAlgorithm
 
-    v = HubValidator(cfg)                       # the real PyJWKClient
+    v = HubValidator(cfg)  # the real PyJWKClient
     jwk = RSAAlgorithm.to_jwk(rsa_key.public_key(), as_dict=True)
     jwk.update({"kid": "k1", "use": "sig"})
     published = {"keys": [jwk]}
-    v._jwks.fetch_data = lambda: published      # stands in for the HTTP fetch
+    v._jwks.fetch_data = lambda: published  # stands in for the HTTP fetch
 
-    claims = pyjwt.decode(mint_hub_token(rsa_key, "PS256", cfg),
-                          options={"verify_signature": False})
+    claims = pyjwt.decode(
+        mint_hub_token(rsa_key, "PS256", cfg), options={"verify_signature": False}
+    )
     token = pyjwt.encode(claims, rsa_key, algorithm="PS256", headers={"kid": "k1"})
     assert v.validate(bearer(token))["sub"] == "wf-user-1"
 
-    published["keys"] = []                      # the hub rotates the key out
+    published["keys"] = []  # the hub rotates the key out
     with pytest.raises(HubAuthError):
         v.validate(bearer(token))
 

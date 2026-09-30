@@ -2,6 +2,7 @@
 the CAS-conflict message becomes CasConflict, a missing path is None (never
 an outage), and everything else is CustodyUnavailable (fail closed,
 distinguishably). A change in hvac's error text would break these first."""
+
 import pytest
 from hvac import exceptions as hvac_exc
 from unit_helpers import make_config
@@ -40,17 +41,18 @@ def store_with(kv: FakeKV) -> VaultStore:
     class _Secrets:
         class kv:  # noqa: N801 — mirrors hvac's attribute path
             v2 = None
+
     _Secrets.kv.v2 = kv
 
     class _Client:
         secrets = _Secrets
+
     store._client = _Client()
     return store
 
 
 async def test_read_returns_entry_and_version():
-    kv = FakeKV(result={"data": {"data": {"state": "ACTIVE"},
-                                 "metadata": {"version": 4}}})
+    kv = FakeKV(result={"data": {"data": {"state": "ACTIVE"}, "metadata": {"version": 4}}})
     assert await store_with(kv).read("mockhub", "alice") == ({"state": "ACTIVE"}, 4)
     name, kw = kv.calls[0]
     assert kw["path"] == "mockhub/sub-b64.YWxpY2U" and kw["mount_point"] == "vendor-tokens"
@@ -60,11 +62,14 @@ async def test_read_missing_path_is_none():
     assert await store_with(FakeKV(error=hvac_exc.InvalidPath("not found"))).read("v", "s") is None
 
 
-@pytest.mark.parametrize("error", [
-    hvac_exc.Forbidden("permission denied"),
-    hvac_exc.VaultDown("sealed"),
-    ConnectionError("refused"),
-])
+@pytest.mark.parametrize(
+    "error",
+    [
+        hvac_exc.Forbidden("permission denied"),
+        hvac_exc.VaultDown("sealed"),
+        ConnectionError("refused"),
+    ],
+)
 async def test_read_other_errors_fail_closed(error):
     with pytest.raises(CustodyUnavailable):
         await store_with(FakeKV(error=error)).read("v", "s")
@@ -134,14 +139,18 @@ def store_with_token(api: FakeTokenAPI) -> VaultStore:
 
     class _Client:
         auth = _Auth
+
     store._client = _Client()
     return store
 
 
 async def test_token_status_and_renewal():
-    store = store_with_token(FakeTokenAPI(
-        lookup={"data": {"ttl": 2763169, "renewable": True}},
-        renew={"auth": {"lease_duration": 2763177, "renewable": True}}))
+    store = store_with_token(
+        FakeTokenAPI(
+            lookup={"data": {"ttl": 2763169, "renewable": True}},
+            renew={"auth": {"lease_duration": 2763177, "renewable": True}},
+        )
+    )
     assert await store.token_status() == (2763169, True)
     assert await store.renew_token() == 2763177
 
@@ -151,11 +160,14 @@ async def test_root_style_token_reports_no_expiry():
     assert await store.token_status() == (0, False)
 
 
-@pytest.mark.parametrize("error,expected", [
-    (hvac_exc.Forbidden("permission denied"), CustodyTokenRejected),
-    (hvac_exc.Unauthorized("bad token"), CustodyTokenRejected),
-    (ConnectionError("refused"), CustodyUnavailable),
-])
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        (hvac_exc.Forbidden("permission denied"), CustodyTokenRejected),
+        (hvac_exc.Unauthorized("bad token"), CustodyTokenRejected),
+        (ConnectionError("refused"), CustodyUnavailable),
+    ],
+)
 async def test_token_errors_distinguish_rejection_from_outage(error, expected):
     store = store_with_token(FakeTokenAPI(error=error))
     for call in (store.token_status, store.renew_token):
@@ -165,6 +177,7 @@ async def test_token_errors_distinguish_rejection_from_outage(error, expected):
 
 
 # ------------------------------------------------------------ path encoding (M8)
+
 
 class KVStore:
     """Stateful KV v2 fake: versions, check-and-set, list, delete."""
@@ -192,8 +205,13 @@ class KVStore:
 
     def list_secrets(self, path, mount_point):
         prefix = path.rstrip("/") + "/"
-        keys = sorted({p[len(prefix):].split("/")[0] + ("/" if "/" in p[len(prefix):] else "")
-                       for p in self.data if p.startswith(prefix)})
+        keys = sorted(
+            {
+                p[len(prefix) :].split("/")[0] + ("/" if "/" in p[len(prefix) :] else "")
+                for p in self.data
+                if p.startswith(prefix)
+            }
+        )
         if not keys:
             raise hvac_exc.InvalidPath("none")
         return {"data": {"keys": keys}}
@@ -205,8 +223,17 @@ def kv_store():
     return store_with(kv), kv
 
 
-@pytest.mark.parametrize("sub", ["alice", "https://idp.example/users/42", "a/b/../c",
-                                 "user with spaces", "ünï-cødé", "sub-b64.lookalike"])
+@pytest.mark.parametrize(
+    "sub",
+    [
+        "alice",
+        "https://idp.example/users/42",
+        "a/b/../c",
+        "user with spaces",
+        "ünï-cødé",
+        "sub-b64.lookalike",
+    ],
+)
 async def test_any_subject_is_one_key_and_round_trips(kv_store, sub):
     store, kv = kv_store
     await store.write("mockhub", sub, {"state": "ACTIVE"})
@@ -220,14 +247,14 @@ async def test_any_subject_is_one_key_and_round_trips(kv_store, sub):
 
 async def test_legacy_entry_is_read_then_migrated_on_its_next_cas_write(kv_store):
     store, kv = kv_store
-    kv.data["mockhub/alice"] = ({"state": "ACTIVE", "g": 1}, 5)       # pre-encoding entry
+    kv.data["mockhub/alice"] = ({"state": "ACTIVE", "g": 1}, 5)  # pre-encoding entry
     entry, ver = await store.read("mockhub", "alice")
     assert (entry["g"], ver) == (1, 5)
     new_ver = await store.write("mockhub", "alice", {"state": "ACTIVE", "g": 2}, cas=ver)
     assert new_ver == 1
-    assert list(kv.data) == ["mockhub/sub-b64.YWxpY2U"]              # legacy removed
+    assert list(kv.data) == ["mockhub/sub-b64.YWxpY2U"]  # legacy removed
     assert await store.read("mockhub", "alice") == ({"state": "ACTIVE", "g": 2}, 1)
-    await store.write("mockhub", "alice", {"g": 3}, cas=1)          # normal CAS from here
+    await store.write("mockhub", "alice", {"g": 3}, cas=1)  # normal CAS from here
 
 
 async def test_stale_cas_against_a_legacy_entry_still_conflicts(kv_store):
@@ -260,8 +287,8 @@ async def test_consent_overwrite_removes_a_legacy_entry(kv_store):
 
 async def test_listing_mixes_encoded_and_legacy_without_duplicates(kv_store):
     store, kv = kv_store
-    kv.data["mockhub/alice"] = ({}, 1)                     # legacy, unmigrated
-    kv.data["mockhub/sub-b64.YWxpY2U"] = ({}, 1)           # same subject, migrated
+    kv.data["mockhub/alice"] = ({}, 1)  # legacy, unmigrated
+    kv.data["mockhub/sub-b64.YWxpY2U"] = ({}, 1)  # same subject, migrated
     kv.data["mockhub/bob"] = ({}, 1)
     await store.write("mockhub", "carol/x", {})
     assert sorted(await store.list_subjects("mockhub")) == ["alice", "bob", "carol/x"]

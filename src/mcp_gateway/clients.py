@@ -1,6 +1,7 @@
 """The gateway's two HTTP dependencies: the hub (RFC 8693 token exchange)
 and the broker (resolve, grant listing, self-service disconnect). Errors
 carry ids and statuses only — never token material."""
+
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -28,28 +29,37 @@ class Hub:
     async def exchange(self, mcp_token: str) -> str:
         """MCP access token (aud = this gateway) -> hub JWT for the broker."""
         try:
-            r = await self._http.post(self._cfg.hub_token_endpoint, data={
-                "grant_type": TOKEN_EXCHANGE,
-                "client_id": self._cfg.client_id, "client_secret": self._cfg.client_secret,
-                "subject_token": mcp_token, "subject_token_type": ACCESS_TOKEN_TYPE,
-                "requested_token_type": ACCESS_TOKEN_TYPE,
-                "scope": self._cfg.exchange_scope})
+            r = await self._http.post(
+                self._cfg.hub_token_endpoint,
+                data={
+                    "grant_type": TOKEN_EXCHANGE,
+                    "client_id": self._cfg.client_id,
+                    "client_secret": self._cfg.client_secret,
+                    "subject_token": mcp_token,
+                    "subject_token_type": ACCESS_TOKEN_TYPE,
+                    "requested_token_type": ACCESS_TOKEN_TYPE,
+                    "scope": self._cfg.exchange_scope,
+                },
+            )
         except httpx.HTTPError as exc:
             raise Unavailable(f"hub unreachable ({type(exc).__name__})") from exc
         if r.status_code >= 500:
             raise Unavailable(f"hub answered {r.status_code}")
         if r.status_code != 200:
-            error = r.json().get("error", "") if r.headers.get(
-                "content-type", "").startswith("application/json") else ""
+            error = (
+                r.json().get("error", "")
+                if r.headers.get("content-type", "").startswith("application/json")
+                else ""
+            )
             raise HandoffError(f"hub refused token exchange ({r.status_code} {error})".strip())
         return r.json()["access_token"]
 
 
 @dataclass(frozen=True)
 class Resolved:
-    token: str | None = None          # 200: the vendor access token
-    consent_url: str | None = None    # 404/409: where the user connects the vendor
-    problem: str = ""                 # problem title, for errors and logs
+    token: str | None = None  # 200: the vendor access token
+    consent_url: str | None = None  # 404/409: where the user connects the vendor
+    problem: str = ""  # problem title, for errors and logs
 
 
 class Broker:
@@ -61,7 +71,8 @@ class Broker:
             r = await self._http.post(
                 f"{self._cfg.broker_url}/v1/tokens/resolve",
                 json={"vendor": vendor, "min_ttl_s": self._cfg.min_ttl_s},
-                headers={"Authorization": f"Bearer {hub_jwt}"})
+                headers={"Authorization": f"Bearer {hub_jwt}"},
+            )
         except httpx.HTTPError as exc:
             raise Unavailable(f"broker unreachable ({type(exc).__name__})") from exc
         body = r.json() if r.headers.get("content-type", "").endswith("json") else {}
@@ -74,22 +85,25 @@ class Broker:
             raise HandoffError(f"broker rejected the hub token ({title or 401})")
         if r.status_code >= 500:
             raise Unavailable(f"broker answered {r.status_code} {title}".strip())
-        return Resolved(problem=title or str(r.status_code))   # e.g. 409 revoke-pending
+        return Resolved(problem=title or str(r.status_code))  # e.g. 409 revoke-pending
 
     async def connected(self, hub_jwt: str, vendor: str) -> bool:
         """True once the user holds an ACTIVE grant for the vendor. Used while
         waiting on the browser flow: unlike resolve, it mints no new link."""
         try:
-            r = await self._http.get(f"{self._cfg.broker_url}/v1/grants",
-                                     headers={"Authorization": f"Bearer {hub_jwt}"})
+            r = await self._http.get(
+                f"{self._cfg.broker_url}/v1/grants", headers={"Authorization": f"Bearer {hub_jwt}"}
+            )
         except httpx.HTTPError as exc:
             raise Unavailable(f"broker unreachable ({type(exc).__name__})") from exc
         if r.status_code == 401:
             raise HandoffError("broker rejected the hub token (401)")
-        if r.status_code != 200:     # an outage must never look like "not connected yet"
+        if r.status_code != 200:  # an outage must never look like "not connected yet"
             raise Unavailable(f"broker answered {r.status_code} listing grants")
-        return any(g.get("vendor") == vendor and g.get("state") == "ACTIVE"
-                   for g in r.json().get("grants", []))
+        return any(
+            g.get("vendor") == vendor and g.get("state") == "ACTIVE"
+            for g in r.json().get("grants", [])
+        )
 
     async def disconnect(self, hub_jwt: str, vendor: str) -> str:
         """Revoke and delete the user's grant (the broker's self-service

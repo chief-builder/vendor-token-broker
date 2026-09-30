@@ -7,6 +7,7 @@ mockhub-atlassian and mockhub-cloudflare, whose tokens are bound to their
 server; all accept only live mock-vendor tokens).
 When the user isn't connected, the client's elicitation handler plays the
 user: it opens the consent link and signs in at Keycloak."""
+
 import asyncio
 import contextlib
 import subprocess
@@ -33,20 +34,61 @@ from stack import grep_container_logs, mock_state
 
 pytestmark = pytest.mark.gateway
 
-GITHUB = {"github_" + t for t in (
-    "get_me", "search_repositories", "get_file_contents", "list_issues", "issue_read",
-    "list_pull_requests", "pull_request_read")}
-LINEAR = {"linear_" + t for t in (
-    "list_issues", "get_issue", "list_comments", "list_projects", "get_project", "list_cycles",
-    "list_teams", "get_team", "list_issue_statuses", "list_users", "get_user",
-    "list_documents", "get_document")}
-ATLASSIAN = {"atlassian_" + t for t in (
-    "getJiraIssue", "searchJiraIssuesUsingJql", "getConfluenceContent", "searchConfluence",
-    "executeRead", "discover", "atlassianUserInfo", "getAccessibleAtlassianResources")}
+GITHUB = {
+    "github_" + t
+    for t in (
+        "get_me",
+        "search_repositories",
+        "get_file_contents",
+        "list_issues",
+        "issue_read",
+        "list_pull_requests",
+        "pull_request_read",
+    )
+}
+LINEAR = {
+    "linear_" + t
+    for t in (
+        "list_issues",
+        "get_issue",
+        "list_comments",
+        "list_projects",
+        "get_project",
+        "list_cycles",
+        "list_teams",
+        "get_team",
+        "list_issue_statuses",
+        "list_users",
+        "get_user",
+        "list_documents",
+        "get_document",
+    )
+}
+ATLASSIAN = {
+    "atlassian_" + t
+    for t in (
+        "getJiraIssue",
+        "searchJiraIssuesUsingJql",
+        "getConfluenceContent",
+        "searchConfluence",
+        "executeRead",
+        "discover",
+        "atlassianUserInfo",
+        "getAccessibleAtlassianResources",
+    )
+}
 CLOUDFLARE = {"cloudflare_" + t for t in ("search", "docs", "execute")}
-ALL_TOOLS = GITHUB | LINEAR | ATLASSIAN | CLOUDFLARE | {
-    f"{verb}_{name}" for verb in ("connect", "disconnect")
-    for name in ("github", "linear", "atlassian", "cloudflare")}
+ALL_TOOLS = (
+    GITHUB
+    | LINEAR
+    | ATLASSIAN
+    | CLOUDFLARE
+    | {
+        f"{verb}_{name}"
+        for verb in ("connect", "disconnect")
+        for name in ("github", "linear", "atlassian", "cloudflare")
+    }
+)
 OWN_SIGN_IN = ("mockhub-atlassian", "mockhub-cloudflare")
 STAND_IN = "/config/stand-in-upstreams.json"
 
@@ -67,10 +109,14 @@ def fresh_gateway():
     who have never connected."""
     upstreams = subprocess.run(
         ["docker", "exec", "vtb-mcp-gateway", "printenv", "GATEWAY_UPSTREAMS"],
-        capture_output=True, text=True).stdout.strip()
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     if upstreams != STAND_IN:
-        pytest.skip(f"gateway uses upstreams {upstreams or '(bundled: real servers)'!r}, "
-                    "not the stand-ins; recreate it without GATEWAY_UPSTREAMS")
+        pytest.skip(
+            f"gateway uses upstreams {upstreams or '(bundled: real servers)'!r}, "
+            "not the stand-ins; recreate it without GATEWAY_UPSTREAMS"
+        )
     subprocess.run(["docker", "restart", "vtb-mcp-gateway"], check=True, capture_output=True)
     _wait_healthy("http://localhost:8500/.well-known/oauth-protected-resource/mcp")
     for user in ("alice", "bob"):
@@ -96,10 +142,12 @@ class User:
         return ElicitResult(action=self.action)
 
 
-def gateway_client(username: str, user: User | None = None, mode: str = "legacy",
-                   token: str | None = None) -> Client:
-    transport = StreamableHttpTransport(GATEWAY_MCP, headers={
-        "Authorization": f"Bearer {token or mcp_token(username)}"})
+def gateway_client(
+    username: str, user: User | None = None, mode: str = "legacy", token: str | None = None
+) -> Client:
+    transport = StreamableHttpTransport(
+        GATEWAY_MCP, headers={"Authorization": f"Bearer {token or mcp_token(username)}"}
+    )
     kw = {"elicitation_handler": user} if user else {}
     return Client(transport, mode=mode, timeout=60, **kw)
 
@@ -111,11 +159,12 @@ def _last_call(upstream: str) -> dict:
 
 async def _call(username: str, tool: str, args: dict | None = None, **kw):
     async with gateway_client(username, **kw) as c:
-        await c.list_tools()     # as real clients do: 2026-07-28 mirrors x-mcp-header
-        return await c.call_tool(tool, args or {}, raise_on_error=False)   # args from it
+        await c.list_tools()  # as real clients do: 2026-07-28 mirrors x-mcp-header
+        return await c.call_tool(tool, args or {}, raise_on_error=False)  # args from it
 
 
 # ------------------------------------------------------------- first contact
+
 
 async def test_all_tools_are_listed_before_anyone_connects():
     """Pinned tool list: no client ever needs a list-changed notification."""
@@ -132,17 +181,22 @@ async def test_connect_runs_consent_then_lists_the_allowlisted_tools(username, m
     assert not r.is_error, r.content[0].text
     assert "GitHub is connected" in r.content[0].text
     assert [p.url.split("?")[0] for p in user.prompts] == [f"{BROKER_KC}/v1/authorize/mockhub"]
-    assert user.pages == [200]                           # "Connected" page in the browser
-    assert names == ALL_TOOLS              # create_issue and save_issue stay hidden
+    assert user.pages == [200]  # "Connected" page in the browser
+    assert names == ALL_TOOLS  # create_issue and save_issue stay hidden
 
 
 # ------------------------------------------------------------ connected use
 
+
 @pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
 async def test_tool_call_reaches_github_with_the_users_token_and_policy(mode):
-    r = await _call("alice", "github_issue_read",
-                    {"owner": "octocat-lab", "repo": "hello-world", "issue_number": 1},
-                    user=User("alice", action="decline"), mode=mode)
+    r = await _call(
+        "alice",
+        "github_issue_read",
+        {"owner": "octocat-lab", "repo": "hello-world", "issue_number": 1},
+        user=User("alice", action="decline"),
+        mode=mode,
+    )
     assert not r.is_error, r.content[0].text
     assert "First issue" in r.content[0].text
     call = _last_call("github")
@@ -175,17 +229,17 @@ async def test_parallel_calls_never_burn_the_rotating_token_family():
 
 # ------------------------------------------------------ a second upstream
 
+
 async def test_linear_connects_separately_from_github():
     """Connected to GitHub does not mean connected to Linear: a Linear tool
     asks for its own connection, and GitHub keeps working without a prompt."""
-    await _call("alice", "github_get_me", user=User("alice"))   # GitHub connected
+    await _call("alice", "github_get_me", user=User("alice"))  # GitHub connected
     revoke_kc(hub_jwt("alice"), "mockhub-jwt")
     user = User("alice")
     r = await _call("alice", "linear_list_issues", user=user)
     assert not r.is_error, r.content[0].text
     assert "Fix login" in r.content[0].text
-    assert [p.url.split("?")[0] for p in user.prompts] == \
-        [f"{BROKER_KC}/v1/authorize/mockhub-jwt"]
+    assert [p.url.split("?")[0] for p in user.prompts] == [f"{BROKER_KC}/v1/authorize/mockhub-jwt"]
     assert "Linear" in user.prompts[0].message
     quiet = User("alice", action="decline")
     assert not (await _call("alice", "github_get_me", user=quiet)).is_error
@@ -194,17 +248,17 @@ async def test_linear_connects_separately_from_github():
 
 async def test_each_upstream_gets_its_own_token_and_policy():
     await _call("alice", "github_get_me", user=User("alice", action="decline"))
-    await _call("alice", "linear_get_issue", {"id": "LIN-2"},
-                user=User("alice", action="decline"))
+    await _call("alice", "linear_get_issue", {"id": "LIN-2"}, user=User("alice", action="decline"))
     github, linear = _last_call("github"), _last_call("linear")
     assert linear["tool"] == "get_issue" and linear["args"] == {"id": "LIN-2"}
     assert linear["scheme"] == "Bearer"
-    assert (linear["readonly"], linear["lockdown"]) == (None, None)   # Linear: read-only URL
+    assert (linear["readonly"], linear["lockdown"]) == (None, None)  # Linear: read-only URL
     assert github["readonly"] == "true"
-    assert github["token_fp"] != linear["token_fp"]                  # different vendors
+    assert github["token_fp"] != linear["token_fp"]  # different vendors
 
 
 # ------------------------------------------ servers with their own sign-in
+
 
 async def test_connect_atlassian_uses_its_own_sign_in():
     user = User("alice")
@@ -213,9 +267,10 @@ async def test_connect_atlassian_uses_its_own_sign_in():
         names = {t.name for t in await c.list_tools()}
     assert not r.is_error, r.content[0].text
     assert "Atlassian is connected; 8 Atlassian tools" in r.content[0].text
-    assert [p.url.split("?")[0] for p in user.prompts] == \
-        [f"{BROKER_KC}/v1/authorize/mockhub-atlassian"]
-    assert names == ALL_TOOLS                        # atlassian_executeWrite stays hidden
+    assert [p.url.split("?")[0] for p in user.prompts] == [
+        f"{BROKER_KC}/v1/authorize/mockhub-atlassian"
+    ]
+    assert names == ALL_TOOLS  # atlassian_executeWrite stays hidden
 
 
 async def test_atlassian_calls_keep_working_across_refreshes():
@@ -224,9 +279,12 @@ async def test_atlassian_calls_keep_working_across_refreshes():
     Atlassian stand-in would get 401."""
     before = mock_state()["counters"]
     for key in ("LAB-1", "LAB-2"):
-        r = await _call("alice", "atlassian_getJiraIssue",
-                        {"cloudId": "c1", "issueIdOrKey": key},
-                        user=User("alice", action="decline"))
+        r = await _call(
+            "alice",
+            "atlassian_getJiraIssue",
+            {"cloudId": "c1", "issueIdOrKey": key},
+            user=User("alice", action="decline"),
+        )
         assert not r.is_error, r.content[0].text
         assert _last_call("atlassian")["args"]["issueIdOrKey"] == key
     after = mock_state()["counters"]
@@ -237,18 +295,26 @@ async def test_atlassian_calls_keep_working_across_refreshes():
 async def test_tokens_only_work_at_the_server_they_were_issued_for():
     await _call("alice", "connect_cloudflare", user=User("alice"))
     hub = hub_jwt("alice")
-    tokens = {v: resolve_kc(hub, v).json()["access_token"]
-              for v in ("mockhub", *OWN_SIGN_IN)}
-    for path, vendor in [("/atlassian/mcp", "mockhub-atlassian"),
-                         ("/cloudflare/mcp", "mockhub-cloudflare")]:
+    tokens = {v: resolve_kc(hub, v).json()["access_token"] for v in ("mockhub", *OWN_SIGN_IN)}
+    for path, vendor in [
+        ("/atlassian/mcp", "mockhub-atlassian"),
+        ("/cloudflare/mcp", "mockhub-cloudflare"),
+    ]:
         for holder, token in tokens.items():
-            r = httpx.post(f"{MOCK_MCP}{path}", json=INIT, headers={
-                "Authorization": f"Bearer {token}", "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream"})
+            r = httpx.post(
+                f"{MOCK_MCP}{path}",
+                json=INIT,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+            )
             assert (r.status_code == 200) == (holder == vendor), (path, holder, r.status_code)
 
 
 # ---------------------------------------------------------- consent outcomes
+
 
 async def test_declining_leaves_github_disconnected():
     revoke_kc(hub_jwt("alice"))
@@ -272,13 +338,13 @@ async def test_link_opened_by_someone_else_never_connects():
 
 async def test_client_without_url_elicitation_is_given_the_link():
     revoke_kc(hub_jwt("alice"))
-    r = await _call("alice", "github_get_me")               # no elicitation handler
+    r = await _call("alice", "github_get_me")  # no elicitation handler
     assert r.is_error and f"{BROKER_KC}/v1/authorize/mockhub?txn=" in r.content[0].text
 
 
 async def test_revoked_connection_prompts_again():
     user = User("alice")
-    r = await _call("alice", "github_get_me", user=user)   # reconnects (after the tests above)
+    r = await _call("alice", "github_get_me", user=user)  # reconnects (after the tests above)
     assert not r.is_error and len(user.prompts) == 1
     revoke_kc(hub_jwt("alice"))
     again = User("alice")
@@ -287,20 +353,21 @@ async def test_revoked_connection_prompts_again():
 
 
 async def test_disconnect_revokes_at_the_vendor_and_the_next_call_asks_again():
-    await _call("alice", "github_get_me", user=User("alice"))      # connected
+    await _call("alice", "github_get_me", user=User("alice"))  # connected
     before = mock_state()["counters"]["revoke"]
     r = await _call("alice", "disconnect_github")
     assert not r.is_error and "GitHub is disconnected" in r.content[0].text
-    assert mock_state()["counters"]["revoke"] == before + 2   # vendor first: AT, then RT
+    assert mock_state()["counters"]["revoke"] == before + 2  # vendor first: AT, then RT
     assert resolve_kc(hub_jwt("alice")).status_code == 404
     again = await _call("alice", "disconnect_github")
     assert "GitHub was not connected" in again.content[0].text
-    user = User("alice")                                            # reconnect for later tests
+    user = User("alice")  # reconnect for later tests
     assert not (await _call("alice", "github_get_me", user=user)).is_error
     assert len(user.prompts) == 1
 
 
 # ----------------------------------------------------------------- failures
+
 
 @contextlib.contextmanager
 def paused(container: str):
@@ -323,18 +390,25 @@ async def test_broker_outage_is_retryable_and_never_asks_to_connect():
 async def test_github_outage_is_retryable():
     token = mcp_token("alice")
     with paused("vtb-mock-mcp"):
-        r = await _call("alice", "github_get_me", user=User("alice", action="decline"),
-                        token=token)
+        r = await _call("alice", "github_get_me", user=User("alice", action="decline"), token=token)
     assert r.is_error and "unavailable" in r.content[0].text
 
 
-INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-    "protocolVersion": "2025-11-25", "capabilities": {},
-    "clientInfo": {"name": "t", "version": "0"}}}
+INIT = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {},
+        "clientInfo": {"name": "t", "version": "0"},
+    },
+}
 
 
-@pytest.mark.parametrize("path", ["/github/mcp", "/linear/mcp", "/atlassian/mcp",
-                                  "/cloudflare/mcp"])
+@pytest.mark.parametrize(
+    "path", ["/github/mcp", "/linear/mcp", "/atlassian/mcp", "/cloudflare/mcp"]
+)
 @pytest.mark.parametrize("auth", [None, "Basic dXNlcjpwYXNz", "Bearer not-a-live-token"])
 def test_stand_ins_refuse_calls_without_a_live_vendor_token(path, auth):
     """The stand-ins behave like the real servers: no live token, 401."""
@@ -344,24 +418,35 @@ def test_stand_ins_refuse_calls_without_a_live_vendor_token(path, auth):
 
 @pytest.mark.parametrize("which", ["hub-jwt", "no-gateway-scope", "garbage"])
 def test_tokens_not_issued_for_the_gateway_are_rejected(which):
-    token = {"hub-jwt": lambda: hub_jwt("alice"),
-             "no-gateway-scope": lambda: mcp_token("alice", scope="openid"),
-             "garbage": lambda: "not-a-token"}[which]()
-    r = httpx.post(GATEWAY_MCP, json=INIT, headers={
-        "Authorization": f"Bearer {token}", "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream"})
+    token = {
+        "hub-jwt": lambda: hub_jwt("alice"),
+        "no-gateway-scope": lambda: mcp_token("alice", scope="openid"),
+        "garbage": lambda: "not-a-token",
+    }[which]()
+    r = httpx.post(
+        GATEWAY_MCP,
+        json=INIT,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
     assert r.status_code == 401
     assert "resource_metadata=" in r.headers["www-authenticate"]
 
 
 def test_no_token_material_in_any_container_log():
     mcp = mcp_token("alice")
-    with ThreadPoolExecutor(1) as pool:                     # a real call with this token
+    with ThreadPoolExecutor(1) as pool:  # a real call with this token
         r = pool.submit(asyncio.run, _call("alice", "github_get_me", token=mcp)).result()
-        r2 = pool.submit(asyncio.run, _call("alice", "linear_list_issues", token=mcp,
-                                            user=User("alice"))).result()
-        r3 = pool.submit(asyncio.run, _call("alice", "atlassian_atlassianUserInfo", token=mcp,
-                                            user=User("alice"))).result()
+        r2 = pool.submit(
+            asyncio.run, _call("alice", "linear_list_issues", token=mcp, user=User("alice"))
+        ).result()
+        r3 = pool.submit(
+            asyncio.run,
+            _call("alice", "atlassian_atlassianUserInfo", token=mcp, user=User("alice")),
+        ).result()
     assert not r.is_error and not r2.is_error and not r3.is_error
     hub = hub_jwt("alice")
     github = resolve_kc(hub).json()["access_token"]

@@ -1,5 +1,6 @@
 """Config fail-fast: every missing required name is listed at once; lab
 defaults are gone; contract pins stay defaulted-compatible."""
+
 import pytest
 
 from token_broker.config import Config, ConfigError
@@ -19,8 +20,15 @@ def test_empty_env_lists_every_missing_name():
     with pytest.raises(ConfigError) as exc:
         Config.from_env({})
     msg = str(exc.value)
-    for name in ("HUB_ISSUER", "HUB_JWKS_URI", "BROKER_PUBLIC_URL",
-                 "VAULT_ADDR", "REGISTRY_PATH", "VAULT_TOKEN", "HUB_LOGIN_CLIENT_ID"):
+    for name in (
+        "HUB_ISSUER",
+        "HUB_JWKS_URI",
+        "BROKER_PUBLIC_URL",
+        "VAULT_ADDR",
+        "REGISTRY_PATH",
+        "VAULT_TOKEN",
+        "HUB_LOGIN_CLIENT_ID",
+    ):
         assert name in msg
 
 
@@ -79,8 +87,17 @@ def test_hub_algorithms_allowlist_accepts_asymmetric():
     assert cfg.hub_algorithms == ("PS256", "ES384", "EdDSA")
 
 
-@pytest.mark.parametrize("name", ["REFRESH_BUFFER_S", "LOCK_TIMEOUT_S", "LOCK_TTL_MS",
-                                  "MASS_STALE_THRESHOLD", "VAULT_TIMEOUT_S", "TXN_TTL_S"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "REFRESH_BUFFER_S",
+        "LOCK_TIMEOUT_S",
+        "LOCK_TTL_MS",
+        "MASS_STALE_THRESHOLD",
+        "VAULT_TIMEOUT_S",
+        "TXN_TTL_S",
+    ],
+)
 def test_non_positive_timing_knobs_rejected(name):
     for bad in ("0", "-5"):
         with pytest.raises(ConfigError):
@@ -96,6 +113,7 @@ def test_zero_allowed_where_it_means_off():
 
 def test_direct_construction_is_validated_too():
     from unit_helpers import make_config
+
     with pytest.raises(ConfigError):
         make_config(hub_algorithms=("RS256",))
 

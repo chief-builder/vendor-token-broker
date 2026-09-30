@@ -11,6 +11,7 @@ The KV-v2 CAS is the correctness backstop everywhere: a lost lock can never
 write a stale token pair — the CAS loser discards its result, re-reads, and
 never writes the older pair.
 """
+
 import time
 from dataclasses import dataclass
 
@@ -45,7 +46,7 @@ class CasLost:
 # It is stored with a far-future expiry so resolve and the sweeper never try
 # to refresh it; it lives until revoked.
 NON_EXPIRING_S = 10 * 365 * 86400
-DEFAULT_EXPIRES_IN_S = 8 * 3600   # refreshable token that omits expires_in
+DEFAULT_EXPIRES_IN_S = 8 * 3600  # refreshable token that omits expires_in
 
 
 def granted_scopes(tok: dict, scopes: list[str], ceiling: list[str] | None) -> list[str]:
@@ -62,10 +63,15 @@ def scope_widening(tok: dict, ceiling: list[str] | None) -> list[str]:
     return [s for s in (tok.get("scope") or "").split() if s not in ceiling]
 
 
-def entry_from_token_response(tok: dict, gen: int, vendor_uid: str,
-                              scopes: list[str], created_at: float | None = None,
-                              previous_refresh_token: str = "",
-                              ceiling: list[str] | None = None) -> dict:
+def entry_from_token_response(
+    tok: dict,
+    gen: int,
+    vendor_uid: str,
+    scopes: list[str],
+    created_at: float | None = None,
+    previous_refresh_token: str = "",
+    ceiling: list[str] | None = None,
+) -> dict:
     """Build a custody entry. `created_at` is the consent time: pass the
     existing entry's value on refresh; None (a new consent) means now.
     `previous_refresh_token` is kept when a non-rotating vendor returns none."""
@@ -93,13 +99,15 @@ def entry_from_token_response(tok: dict, gen: int, vendor_uid: str,
 def abandoned(entry: dict, refreshing_ttl_s: int) -> bool:
     """A persisted REFRESHING whose owner has been silent past the TTL is
     abandoned — the next lock holder takes over (design §8)."""
-    return (entry.get("state") == "REFRESHING"
-            and time.time() - float(entry.get("refresh_started_at", 0))
-            >= refreshing_ttl_s)
+    return (
+        entry.get("state") == "REFRESHING"
+        and time.time() - float(entry.get("refresh_started_at", 0)) >= refreshing_ttl_s
+    )
 
 
-async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
-                          *, path: str | None = None):
+async def attempt_refresh(
+    b, vendor: str, sub: str, entry: dict, ver: int, *, path: str | None = None
+):
     """Refresh `entry` (which the caller re-read under the lock) and CAS-write
     the outcome. Returns Refreshed | WentStale | VendorDown | CasLost."""
     gen_from = entry["refresh_generation"]
@@ -111,9 +119,12 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
         return await _go_stale(b, vendor, sub, entry, ver, gen_from, anomaly=False)
 
     if b.coord.persist_refreshing:
-        marker = {**entry, "state": "REFRESHING",
-                  "refresh_owner": b.instance_id,
-                  "refresh_started_at": time.time()}
+        marker = {
+            **entry,
+            "state": "REFRESHING",
+            "refresh_owner": b.instance_id,
+            "refresh_started_at": time.time(),
+        }
         try:
             ver = await b.custody.write(vendor, sub, marker, cas=ver)
         except CasConflict:
@@ -139,10 +150,14 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
     new_gen = gen_from + 1
     ceiling = b.vendors.registry().get(vendor, {}).get("scope_ceiling")
     new_entry = entry_from_token_response(
-        tok, new_gen, entry["vendor_user_id"], entry["granted_scopes"],
+        tok,
+        new_gen,
+        entry["vendor_user_id"],
+        entry["granted_scopes"],
         created_at=entry.get("created_at"),
-        previous_refresh_token=entry["refresh_token"],   # non-rotating vendor
-        ceiling=ceiling)
+        previous_refresh_token=entry["refresh_token"],  # non-rotating vendor
+        ceiling=ceiling,
+    )
     try:
         new_ver = await b.custody.write(vendor, sub, new_entry, cas=ver)
     except CasConflict:
@@ -154,13 +169,20 @@ async def attempt_refresh(b, vendor: str, sub: str, entry: dict, ver: int,
     widened = scope_widening(tok, ceiling)
     if widened:
         extra["scope_widened"] = widened
-    audit("broker.refresh", sub=sub, vendor=vendor, **extra,
-          generation_from=gen_from, generation_to=new_gen)
+    audit(
+        "broker.refresh",
+        sub=sub,
+        vendor=vendor,
+        **extra,
+        generation_from=gen_from,
+        generation_to=new_gen,
+    )
     return Refreshed(new_entry, new_ver)
 
 
-async def _go_stale(b, vendor: str, sub: str, entry: dict, ver: int, gen_from: int,
-                    *, anomaly: bool):
+async def _go_stale(
+    b, vendor: str, sub: str, entry: dict, ver: int, gen_from: int, *, anomaly: bool
+):
     """CAS-write STALE with the dead token material blanked (a STALE entry
     is only ever re-consented over or deleted, never used); on a lost CAS,
     report the race instead."""

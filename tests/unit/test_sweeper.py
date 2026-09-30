@@ -1,6 +1,7 @@
 """The maintenance sweeper (design §8), offline: proactive-band refresh,
 REVOKE_PENDING retry, REFRESHING takeover, lock contention, error isolation,
 and consent-record cleanup on the memory backend."""
+
 import time
 
 import pytest
@@ -12,7 +13,7 @@ from token_broker import vendors as vendors_mod
 
 async def test_proactive_band_is_refreshed(capsys):
     h = Harness()
-    h.put(expires_at=time.time() + 600)       # between buffer (300) and 900
+    h.put(expires_at=time.time() + 600)  # between buffer (300) and 900
     await sweeper.sweep_entry(h.broker, VENDOR, "wf-user-1")
     assert h.vendors.refresh_calls == 1
     assert h.stored()["refresh_generation"] == 2
@@ -22,8 +23,8 @@ async def test_proactive_band_is_refreshed(capsys):
 
 async def test_outside_the_band_is_left_alone():
     h = Harness()
-    h.put(sub="far", expires_at=time.time() + 3600)    # not due yet
-    h.put(sub="near", expires_at=time.time() + 100)    # lazy band: resolve's job
+    h.put(sub="far", expires_at=time.time() + 3600)  # not due yet
+    h.put(sub="near", expires_at=time.time() + 100)  # lazy band: resolve's job
     h.put(sub="stale", state="STALE", expires_at=time.time() + 600)
     for sub in ("far", "near", "stale"):
         await sweeper.sweep_entry(h.broker, VENDOR, sub)
@@ -63,8 +64,9 @@ async def test_revoke_pending_retry_never_deletes_a_grant_written_meanwhile(coor
     writes a fresh grant: the sweeper must leave it alone."""
     h = Harness(coord=coord)
     h.put(state="REVOKE_PENDING")
-    h.vendors.on_revoke = lambda: h.put(access_token="at-new", refresh_token="rt-new",
-                                        refresh_generation=1)
+    h.vendors.on_revoke = lambda: h.put(
+        access_token="at-new", refresh_token="rt-new", refresh_generation=1
+    )
     await sweeper.sweep_entry(h.broker, VENDOR, "wf-user-1")
     assert h.vendors.revoke_calls == 1
     assert h.stored()["access_token"] == "at-new"
@@ -74,20 +76,30 @@ async def test_revoke_pending_retry_never_deletes_a_grant_written_meanwhile(coor
 async def test_revoke_pending_retry_waits_for_the_entry_lock(coord):
     h = Harness(coord=coord)
     h.put(state="REVOKE_PENDING")
-    token = await h.coord.try_refresh_lock(VENDOR, "wf-user-1")   # a consent is writing
+    token = await h.coord.try_refresh_lock(VENDOR, "wf-user-1")  # a consent is writing
     await sweeper.sweep_entry(h.broker, VENDOR, "wf-user-1")
     assert h.vendors.revoke_calls == 0 and h.stored()["state"] == "REVOKE_PENDING"
     await h.coord.release_refresh_lock(VENDOR, "wf-user-1", token)
-    await sweeper.sweep_entry(h.broker, VENDOR, "wf-user-1")         # next pass
+    await sweeper.sweep_entry(h.broker, VENDOR, "wf-user-1")  # next pass
     assert h.vendors.revoke_calls == 1 and h.stored() is None
 
 
 async def test_abandoned_refreshing_taken_over_fresh_one_skipped():
     h = Harness(coord="redis")
-    h.put(sub="abandoned", state="REFRESHING", refresh_owner="dead",
-          refresh_started_at=time.time() - 60, expires_at=time.time() + 3600)
-    h.put(sub="fresh", state="REFRESHING", refresh_owner="live",
-          refresh_started_at=time.time(), expires_at=time.time() + 600)
+    h.put(
+        sub="abandoned",
+        state="REFRESHING",
+        refresh_owner="dead",
+        refresh_started_at=time.time() - 60,
+        expires_at=time.time() + 3600,
+    )
+    h.put(
+        sub="fresh",
+        state="REFRESHING",
+        refresh_owner="live",
+        refresh_started_at=time.time(),
+        expires_at=time.time() + 600,
+    )
     await sweeper.sweep_entry(h.broker, VENDOR, "abandoned")
     await sweeper.sweep_entry(h.broker, VENDOR, "fresh")
     assert h.vendors.refresh_calls == 1
@@ -108,7 +120,7 @@ async def test_entry_already_locked_is_skipped():
 
 async def test_bad_entry_is_audited_and_does_not_stop_the_pass(capsys):
     h = Harness()
-    h.custody.write_now(VENDOR, "bad", {"state": "ACTIVE"})     # malformed entry
+    h.custody.write_now(VENDOR, "bad", {"state": "ACTIVE"})  # malformed entry
     h.put(sub="good", expires_at=time.time() + 600)
     await sweeper.sweep_once(h.broker)
     errors = audit_events(capsys, "broker.sweep.error")
@@ -120,5 +132,5 @@ async def test_custody_outage_skips_the_vendor():
     h = Harness()
     h.put(expires_at=time.time() + 600)
     h.custody.fail = True
-    await sweeper.sweep_once(h.broker)          # must not raise
+    await sweeper.sweep_once(h.broker)  # must not raise
     assert h.vendors.refresh_calls == 0

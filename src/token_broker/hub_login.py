@@ -8,6 +8,7 @@ ID token (signature from the hub JWKS, issuer, audience, expiry, nonce). It
 consumes a hub-issued token and issues nothing, so the custodian-not-issuer
 rule holds.
 """
+
 import asyncio
 import hmac
 import logging
@@ -41,8 +42,10 @@ class HubLogin:
     async def _metadata(self) -> dict:
         if self._meta is not None:
             return self._meta
-        url = self._cfg.hub_discovery_url or \
-            f"{self._cfg.hub_issuer.rstrip('/')}/.well-known/openid-configuration"
+        url = (
+            self._cfg.hub_discovery_url
+            or f"{self._cfg.hub_issuer.rstrip('/')}/.well-known/openid-configuration"
+        )
         try:
             async with httpx.AsyncClient(timeout=self._cfg.jwks_timeout_s) as c:
                 r = await c.get(url)
@@ -51,15 +54,20 @@ class HubLogin:
         except (httpx.HTTPError, ValueError) as exc:
             log.debug("hub discovery failed: %r", exc)
             raise HubUnavailable("hub login metadata unavailable") from exc
-        if not isinstance(meta, dict) or meta.get("issuer") != self._cfg.hub_issuer or not all(
-                isinstance(meta.get(k), str)
-                for k in ("authorization_endpoint", "token_endpoint")):
+        if (
+            not isinstance(meta, dict)
+            or meta.get("issuer") != self._cfg.hub_issuer
+            or not all(
+                isinstance(meta.get(k), str) for k in ("authorization_endpoint", "token_endpoint")
+            )
+        ):
             raise HubLoginError("hub discovery document is malformed or names another issuer")
         self._meta = meta
         return meta
 
-    async def authorization_url(self, *, state: str, nonce: str, challenge: str,
-                                login_hint: str | None, redirect_uri: str) -> str:
+    async def authorization_url(
+        self, *, state: str, nonce: str, challenge: str, login_hint: str | None, redirect_uri: str
+    ) -> str:
         meta = await self._metadata()
         params = {
             "client_id": self._cfg.hub_login_client_id,
@@ -75,19 +83,23 @@ class HubLogin:
             params["login_hint"] = login_hint
         return f"{meta['authorization_endpoint']}?{urlencode(params)}"
 
-    async def exchange(self, *, code: str, verifier: str, redirect_uri: str,
-                       nonce: str) -> dict:
+    async def exchange(self, *, code: str, verifier: str, redirect_uri: str, nonce: str) -> dict:
         """Redeem the hub code and return the validated ID-token claims."""
         meta = await self._metadata()
-        form = {"grant_type": "authorization_code", "code": code,
-                "redirect_uri": redirect_uri, "code_verifier": verifier,
-                "client_id": self._cfg.hub_login_client_id}
+        form = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": verifier,
+            "client_id": self._cfg.hub_login_client_id,
+        }
         if self._cfg.hub_login_client_secret:
             form["client_secret"] = self._cfg.hub_login_client_secret
         try:
             async with httpx.AsyncClient(timeout=self._cfg.jwks_timeout_s) as c:
-                r = await c.post(meta["token_endpoint"], data=form,
-                                 headers={"Accept": "application/json"})
+                r = await c.post(
+                    meta["token_endpoint"], data=form, headers={"Accept": "application/json"}
+                )
         except httpx.HTTPError as exc:
             log.debug("hub token endpoint failed: %r", exc)
             raise HubUnavailable("hub token endpoint unavailable") from exc
@@ -97,8 +109,11 @@ class HubLogin:
             body = r.json()
         except ValueError as exc:
             raise HubLoginError("hub token response is not JSON") from exc
-        if r.status_code >= 400 or not isinstance(body, dict) or \
-                not isinstance(body.get("id_token"), str):
+        if (
+            r.status_code >= 400
+            or not isinstance(body, dict)
+            or not isinstance(body.get("id_token"), str)
+        ):
             raise HubLoginError(f"hub code exchange failed ({r.status_code})")
         return await asyncio.to_thread(self._validate_id_token, body["id_token"], nonce)
 
@@ -111,7 +126,8 @@ class HubLogin:
             raise HubLoginError(f"ID token key: {exc}") from exc
         try:
             claims = jwt.decode(
-                id_token, key,
+                id_token,
+                key,
                 algorithms=list(self._cfg.hub_algorithms),
                 issuer=self._cfg.hub_issuer,
                 audience=self._cfg.hub_login_client_id,
