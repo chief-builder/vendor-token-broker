@@ -151,7 +151,7 @@ The registry (`REGISTRY_PATH`) lists the allowed vendors and each vendor's polic
 1. Edit a copy of `registry.example.json`.
 2. Check it against `schemas/vendor-registry.schema.json` with `jsonschema`. CI checks `registry.example.json` on every push (`tests/unit/test_registry.py`). Do the same for your copy locally.
 3. Get the same sign-off for a `scope_ceiling` change as for a token-contract change. The ceiling is a security boundary: a caller can never go past it at runtime.
-4. Hardcode endpoints **only** when the vendor publishes no authorization server metadata (e.g. GitHub). When metadata exists, use `auth_metadata_url`. (Standards: RFC 8414.)
+4. Prefer `auth_metadata_url` (RFC 8414). Hardcode endpoints only when the vendor documents no authorization server metadata. GitHub is the one case: it serves metadata that its documentation does not yet describe (see [design §2.1](design.md#21-per-vendor-deviations)).
 5. Set `resource` only for a vendor whose tokens are bound to one MCP server (Linear, Atlassian, Cloudflare). The broker sends it on authorize, code exchange, and every refresh (RFC 8707), unless `resource_on_refresh` is false (Linear, which refuses it on refresh). Changing either later can break existing connections at their next refresh.
 6. `revocation.type` is `rfc7009` or `github_grant`. For GitHub Enterprise Server, set `revocation.grant_url` (default `https://api.github.com/applications/{client_id}/grant`).
 7. Never put credentials in the registry. They live only in `vendor-clients/*`.

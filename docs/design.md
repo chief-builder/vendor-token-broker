@@ -94,7 +94,7 @@ the reviewed registry and handled in `vendors.py`:
 
 | Deviation | Vendor | What the broker does |
 |---|---|---|
-| No RFC 8414 metadata | GitHub | The registry lists `endpoints` explicitly. Allowed only where no metadata exists |
+| Explicit endpoints instead of RFC 8414 metadata | GitHub | The registry lists `endpoints` explicitly. GitHub now serves metadata at `https://github.com/.well-known/oauth-authorization-server/login/oauth` (observed 2026-09-30), but its documentation does not describe it, so the registry keeps the documented endpoints. Switching to `auth_metadata_url` would also make the callback require `iss` (RFC 9207), which that metadata advertises |
 | Revocation by grant deletion, not RFC 7009 | GitHub (`revocation.type: github_grant`) | `DELETE https://api.github.com/applications/{client_id}/grant` (registry `revocation.grant_url` overrides it, e.g. for GitHub Enterprise Server) with HTTP Basic (client id and secret) and the access token in the JSON body. 204, 404 and 422 count as revoked. Any other status is a vendor outage. An entry with no access token (a blanked STALE entry) needs no call. This deletes the whole user-to-app grant, which is why re-consent never revokes an ACTIVE or STALE predecessor (§4.3) |
 | Token errors in a 200 response | GitHub | Any `error` field is a failure, whatever the HTTP status |
 | `bad_refresh_token` instead of `invalid_grant` | GitHub | Treated exactly like `invalid_grant` (the entry goes STALE) |

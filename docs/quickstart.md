@@ -99,7 +99,7 @@ If sign-in later fails with an error that names an old address, run `claude mcp 
 
    Then generate a client secret, and install the App on the repositories you want to use.
 2. **Linear, Atlassian, and Cloudflare:** these register the broker with a script instead of a developer console ([why](mcp-gateway.md#servers-with-their-own-sign-in)).
-   - For Atlassian, first ask an org admin to allow `http://localhost:*/**` in Atlassian Administration, under **Rovo → MCP → Domain settings**.
+   - For Atlassian, first ask an org admin to allow `http://localhost:*/**` in Atlassian Administration, under **Rovo → Rovo MCP server → Domain settings**.
    - Then register once per service. The script writes the ID and secret into `tests/stack/.env`:
 
      ```sh
