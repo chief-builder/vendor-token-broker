@@ -437,7 +437,10 @@ the broker fails fast listing every missing variable.
 **Not run locally:** the Docker integration suites (memory, redis, gateway,
 multi-replica). Running them replaces the live `vtb-*` stack on the audit
 machine, and the session's sandbox refused that step. They run in CI on the
-pull request; treat that run as the evidence.
+pull request. Result on PR #1 (CI run 36737024437, Python 3.14): integration
+memory **64 passed**, integration redis **64 passed**, gateway **47 passed**,
+multi-replica **7 passed**; every other job (checks, audit, unit, build,
+links, CodeQL for python and actions) green.
 
 **Proposed, not done:** publish the docs site from this repository through
 GitHub Pages (a settings change) instead of copying to a second repository;
