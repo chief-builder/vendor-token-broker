@@ -1,6 +1,6 @@
 # Security and MCP alignment
 
-**Reviewed 2026-09-28 · software 1.1.0 (unreleased) · MCP 2026-07-28.**
+**Reviewed 2026-09-30 · software 1.1.0 (unreleased) · MCP 2026-07-28.**
 
 This page lists which security controls the broker and gateway have, where the proof lives, and what is still missing.
 
@@ -17,7 +17,7 @@ Status words in the table:
 - **External**: another component must provide it.
 - **Planned**: not available here.
 
-Source and test paths refer to the private repository available to maintainers.
+Source and test paths are relative to the root of this repository.
 
 | Control | Status / owner | Implementation and evidence |
 |---|---|---|
@@ -94,6 +94,10 @@ See [scope and lifetime semantics](api.md#resolve-a-token).
 - CAS (the storage write check) stops a losing refresh write from overwriting a newer stored version. It cannot undo a refresh the vendor has already used. A replica failure at that point can burn a rotating-token family and force the user to re-consent.
 - Cache invalidation is best-effort. Its limit is `CACHE_TTL_S` (default 60 seconds).
 
+### Hub signing keys
+
+- The broker trusts a fetched hub key set for up to 5 minutes (`JWKS_CACHE_S` in `hub.py`). A key the hub removes keeps validating until then. `tests/unit/test_hub.py` checks both sides of that window.
+
 ### MCP gateway
 
 - It depends on FastMCP 4.0.10. `requirements-gateway.lock` pins 80 packages by hash, FastMCP included.
@@ -129,6 +133,8 @@ Review baseline: application commit `e6c7f65` (the gateway serving GitHub, Linea
 | Linear, checked by hand against the real service | Consent at `mcp.linear.app` for `read` only. A forced broker refresh (no `resource`) moved the entry from generation 1 to 2 and rotated the refresh token. The token works at the read-only MCP server and is refused by the full one. After `disconnect_linear`, Linear refuses the last access token |
 | Real Atlassian and Cloudflare (at `41e7aab`, before `disconnect_<service>`) | 2 passed, with the broker registered by `tools/register-mcp-client.py` |
 | Claude Code 2.1.283 against the gateway (at `41e7aab`) | One session used all four real services: the Atlassian account and open Jira issues, the Cloudflare Worker's settings, Linear issues, and the GitHub profile. Linear then used an admin-created OAuth app |
+
+Hardening review on 2026-09-30 (Python 3.14.7, refreshed locks, `main.py` split into `broker`, `resolve`, `consent`, and `grants`): unit suite 507 passed with 95% line coverage, mypy clean, `pip-audit` reported no known vulnerabilities in any lock. The Docker suites (memory, redis, gateway, multi-replica) run in CI on every push to `main` and every pull request; see the CI run for that change. `AUDIT.md` at the repository root records the full review.
 
 ### How the single-flight tests stay exact
 

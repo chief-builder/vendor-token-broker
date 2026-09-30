@@ -339,7 +339,7 @@ One failed entry never stops the loop. The sweeper logs
 
 ---
 
-## 5. Multi-replica refresh — persisted REFRESHING, takeover, CAS backstop
+## 5. Multi-replica refresh: persisted REFRESHING, takeover, CAS backstop
 
 This applies to the redis profile only.
 
