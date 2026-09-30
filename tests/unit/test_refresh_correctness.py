@@ -245,3 +245,47 @@ async def test_empty_ceiling_records_the_vendor_scopes_as_given():
     h.vendors.refresh_scope = "repo workflow"
     assert (await h.resolve()).status_code == 200
     assert h.stored()["granted_scopes"] == ["repo", "workflow"]
+
+
+# ------------------------------------ CAS races around the REFRESHING marker
+
+
+async def test_losing_the_marker_cas_never_calls_the_vendor():
+    """Redis profile: another writer moved the entry before our REFRESHING
+    marker landed. The refresh token may already be spent elsewhere, so the
+    vendor is never called with it."""
+    from token_broker import refresh as refresh_mod
+
+    h = Harness("redis")
+    h.put()
+    entry, ver = h.custody.read_now(VENDOR, "wf-user-1")
+    h.custody.write_now(VENDOR, "wf-user-1", {**entry, "access_token": "at-other"})  # moved
+    outcome = await refresh_mod.attempt_refresh(h.broker, VENDOR, "wf-user-1", entry, ver)
+    assert isinstance(outcome, refresh_mod.CasLost)
+    assert h.vendors.refresh_calls == 0
+    assert h.stored()["access_token"] == "at-other"  # the other write stands
+
+
+async def test_vendor_outage_restores_active_even_if_the_restore_loses_its_cas():
+    """Redis profile: the vendor is down, and while restoring ACTIVE another
+    writer moved the entry. The outcome is still VendorDown (503), and the
+    other writer's entry is left alone."""
+    from token_broker import refresh as refresh_mod
+    from token_broker.vendors import VendorUnavailable
+
+    h = Harness("redis")
+    h.put()
+    entry, ver = h.custody.read_now(VENDOR, "wf-user-1")
+
+    def someone_else_writes(n):
+        current, _ = h.custody.read_now(VENDOR, "wf-user-1")
+        h.custody.write_now(
+            VENDOR, "wf-user-1", {**current, "state": "ACTIVE", "access_token": "at-x"}
+        )
+
+    h.vendors.on_refresh = someone_else_writes
+    h.vendors.refresh_error = VendorUnavailable("vendor token endpoint 503")
+    outcome = await refresh_mod.attempt_refresh(h.broker, VENDOR, "wf-user-1", entry, ver)
+    assert isinstance(outcome, refresh_mod.VendorDown)
+    stored = h.stored()
+    assert stored["access_token"] == "at-x" and stored["state"] == "ACTIVE"

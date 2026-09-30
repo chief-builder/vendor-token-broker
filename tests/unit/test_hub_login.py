@@ -7,6 +7,7 @@ import time
 import httpx
 import jwt
 import pytest
+from jwt.exceptions import PyJWKClientConnectionError, PyJWKClientError
 from unit_helpers import StaticJWKS, make_config
 
 from token_broker import hub_login as hub_login_mod
@@ -202,3 +203,28 @@ async def test_internal_discovery_must_name_the_configured_issuer(hub, rsa_key):
     routes[INTERNAL] = httpx.Response(200, json={**META, "issuer": "http://hub.internal:8080"})
     with pytest.raises(HubLoginError):
         await login(rsa_key, hub_discovery_url=INTERNAL).check()
+
+
+class _FailingJWKS:
+    def __init__(self, error):
+        self.error = error
+
+    def get_signing_key_from_jwt(self, token):
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (PyJWKClientConnectionError("Fail to fetch data from the url"), HubUnavailable),
+        (PyJWKClientError('Unable to find a signing key that matches: "k9"'), HubLoginError),
+    ],
+)
+async def test_id_token_key_lookup_failures(hub, rsa_key, error, expected):
+    """A hub JWKS outage is retryable (503 page); an unknown key is a failed login."""
+    routes, _ = hub
+    routes[TOKEN] = httpx.Response(200, json={"id_token": id_token(rsa_key)})
+    config = make_config(hub_issuer=ISSUER)
+    client = HubLogin(config, HubValidator(config, jwks_client=_FailingJWKS(error)))
+    with pytest.raises(expected):
+        await _exchange(client)
