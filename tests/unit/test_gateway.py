@@ -21,6 +21,8 @@ from gateway_helpers import (
     upstream_tool,
 )
 
+from mcp_gateway.upstream import UpstreamRejected
+
 ERAS = ["legacy", "2026-07-28"]
 ACCOUNT = ["connect_github", "disconnect_github"]  # listed for every upstream
 
@@ -245,7 +247,8 @@ async def test_revoke_pending_is_reported_not_reconnected():
 @pytest.mark.parametrize(
     "error, text",
     [
-        (RuntimeError("Client error '401 Unauthorized'"), "reconnect GitHub"),
+        (UpstreamRejected("github answered 401"), "reconnect GitHub"),
+        (RuntimeError("Client error '401 Unauthorized'"), "unavailable"),  # no guessing
         (ConnectionError("boom"), "unavailable"),
     ],
 )

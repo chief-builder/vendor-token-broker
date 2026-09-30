@@ -266,5 +266,5 @@ def test_upstream_sends_its_scheme_and_headers(scheme):
         auth_scheme=scheme,
         headers={"X-MCP-Readonly": "true"},
     )
-    headers = Upstream(spec, 5)._client("tok").transport.headers
+    headers = Upstream(spec, 5)._client("tok", []).transport.headers
     assert headers == {"X-MCP-Readonly": "true", "Authorization": f"{scheme} tok"}

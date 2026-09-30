@@ -42,7 +42,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .clients import Broker, HandoffError, Hub, Unavailable
 from .config import GatewayConfig, UpstreamSpec
-from .upstream import Upstream
+from .upstream import Upstream, UpstreamRejected
 
 log = logging.getLogger("mcp_gateway")
 
@@ -282,7 +282,7 @@ class Gateway:
         try:
             result = await route.client.call_tool(token, tool, arguments)
         except Exception as exc:  # transport or protocol failure upstream
-            rejected = "401" in str(exc)
+            rejected = isinstance(exc, UpstreamRejected)
             detail = str(exc).replace(token, "<token>")[:200]  # never log the token
             audit(
                 "gateway.call",
