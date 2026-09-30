@@ -96,7 +96,7 @@ jobs:
         with:
           args: >-
             --config lychee.toml --no-progress
-            README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md CLAUDE.md AUDIT.md
+            README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md THREAT_MODEL.md CLAUDE.md AUDIT.md
             'docs/**/*.md'
           fail: true
           token: ${{ github.token }}
