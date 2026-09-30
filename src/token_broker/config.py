@@ -7,6 +7,7 @@ existing deployment can point at this broker unchanged.
 """
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -114,7 +115,7 @@ class Config:
             )
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> Config:
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
         env = os.environ if env is None else env
         missing = [name for name in _REQUIRED if not env.get(name)]
 

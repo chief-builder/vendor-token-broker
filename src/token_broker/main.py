@@ -57,15 +57,15 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
     app.state.broker = b
     problem = b.problem
 
-    async def hub_claims(request: Request) -> tuple[dict | None, JSONResponse | None]:
-        """Validate the caller's hub JWT: (claims, None) or (None, problem).
+    async def hub_claims(request: Request) -> dict | JSONResponse:
+        """Validate the caller's hub JWT: its claims, or the problem to return.
         A bad token is 401; an unreachable hub JWKS is a retriable 503."""
         try:
-            return await b.hub.verify(request.headers.get("authorization")), None
+            return await b.hub.verify(request.headers.get("authorization"))
         except HubUnavailable as exc:
-            return None, problem(503, "hub-unavailable", str(exc))
+            return problem(503, "hub-unavailable", str(exc))
         except HubAuthError as exc:
-            return None, problem(401, "invalid-hub-token", str(exc))
+            return problem(401, "invalid-hub-token", str(exc))
 
     @app.get("/healthz")
     async def healthz():
@@ -74,9 +74,9 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
 
     @app.post("/v1/tokens/resolve")
     async def resolve(request: Request):
-        claims, denied = await hub_claims(request)
-        if denied is not None:
-            return denied
+        claims = await hub_claims(request)
+        if isinstance(claims, JSONResponse):
+            return claims
         return await resolve_mod.resolve(b, claims, await request.body())
 
     @app.get("/v1/authorize/{vendor}")
@@ -90,23 +90,23 @@ def create_app(cfg: Config | None = None, broker: Broker | None = None) -> FastA
     # {sub:path}: a hub subject may contain "/" (URI-shaped subs).
     @app.delete("/v1/grants/{vendor}/{sub:path}")
     async def delete_grant(vendor: str, sub: str, request: Request):
-        claims, denied = await hub_claims(request)
-        if denied is not None:
-            return denied
+        claims = await hub_claims(request)
+        if isinstance(claims, JSONResponse):
+            return claims
         return await grants.delete_grant(b, vendor, sub, claims)
 
     @app.get("/v1/grants")
     async def list_grants(request: Request):
-        claims, denied = await hub_claims(request)
-        if denied is not None:
-            return denied
+        claims = await hub_claims(request)
+        if isinstance(claims, JSONResponse):
+            return claims
         return await grants.list_grants(b, claims)
 
     @app.get("/v1/admin/vendors/{vendor}")
     async def vendor_record(vendor: str, request: Request):
-        claims, denied = await hub_claims(request)
-        if denied is not None:
-            return denied
+        claims = await hub_claims(request)
+        if isinstance(claims, JSONResponse):
+            return claims
         groups = claims.get("groups")
         # A list only: `in` on a string claim would be a substring match.
         if not isinstance(groups, list) or cfg.admin_group not in groups:

@@ -117,14 +117,16 @@ class VendorClient:
             raise VendorUnavailable(f"no client credential for {vendor} in custody")
         return creds
 
-    async def _auth_for(self, vendor: str, endpoint_aud: str) -> tuple[dict, tuple | None]:
-        """Form fields + basic-auth tuple per the registry's
-        token_endpoint_auth_method (design §3; client_auth module)."""
+    async def _auth_for(self, vendor: str, endpoint_aud: str) -> tuple[dict, httpx.Auth]:
+        """Form fields + HTTP auth per the registry's token_endpoint_auth_method
+        (design §3; client_auth module). The auth is HTTP Basic for
+        client_secret_basic and a no-op otherwise."""
         method = self._registry[vendor].get("token_endpoint_auth_method", "client_secret_post")
         try:
-            return token_request_auth(method, await self._creds(vendor), endpoint_aud)
+            form, basic = token_request_auth(method, await self._creds(vendor), endpoint_aud)
         except ClientAuthError as exc:
             raise VendorUnavailable(str(exc)) from exc
+        return form, httpx.BasicAuth(*basic) if basic else httpx.Auth()
 
     async def _token_request(self, vendor: str, form: dict) -> dict:
         """POST to the vendor token endpoint with client auth; classify failures."""

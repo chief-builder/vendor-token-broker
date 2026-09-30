@@ -38,6 +38,7 @@ from fastmcp.server.auth import RemoteAuthProvider
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token, get_context
 from fastmcp.tools.base import InputRequiredToolResult, Tool, ToolResult
+from pydantic import AnyHttpUrl
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .clients import Broker, HandoffError, Hub, Unavailable
@@ -120,7 +121,13 @@ class Gateway:
         self.cfg, self.hub, self.broker = cfg, hub, broker
         self.routes = {r.spec.name: r for r in routes}
         self.current_token = current_token
-        self.mcp: FastMCP | None = None
+        self.mcp: FastMCP | None = None  # set by build_server()
+
+    @property
+    def server(self) -> FastMCP:
+        if self.mcp is None:
+            raise RuntimeError("build_server() has not attached an MCP server yet")
+        return self.mcp
 
     # ---------------------------------------------------------- token path
 
@@ -136,10 +143,13 @@ class Gateway:
         name = route.spec.display_name
         with _dependency_errors(who):
             hub_jwt = await self.hub.exchange(raw)
-            era = ctx.request_context.protocol_version
+            request = ctx.request_context
+            era = request.protocol_version if request is not None else ""
             answer = (ctx.input_responses or {}).get(CONSENT_KEY) if era >= MRTR_ERA else None
             if answer is not None:  # MRTR: the client answered
-                return await self._after_answer(hub_jwt, answer.action, route, who)
+                # Anything but an elicitation answer counts as not accepting.
+                action = answer.action if isinstance(answer, mcp_types.ElicitResult) else "cancel"
+                return await self._after_answer(hub_jwt, action, route, who)
             resolved = await self.broker.resolve(hub_jwt, route.spec.vendor)
             if resolved.token:
                 return resolved.token
@@ -211,7 +221,7 @@ class Gateway:
     # ------------------------------------------------------------- catalog
 
     def register(self, route: Route, tool: mcp_types.Tool) -> None:
-        self.mcp.add_tool(
+        self.server.add_tool(
             UpstreamTool(
                 gateway=self,
                 route_name=route.spec.name,
@@ -226,7 +236,7 @@ class Gateway:
     async def _registered(self, route: Route) -> dict[str, Tool]:
         return {
             t.upstream_tool: t
-            for t in await self.mcp.list_tools()
+            for t in await self.server.list_tools()
             if isinstance(t, UpstreamTool) and t.route_name == route.spec.name
         }
 
@@ -414,7 +424,7 @@ def build_auth(cfg: GatewayConfig, verifier: JWTVerifier | None = None) -> Remot
     )
     return RemoteAuthProvider(
         token_verifier=verifier,
-        authorization_servers=[cfg.hub_issuer],
+        authorization_servers=[AnyHttpUrl(cfg.hub_issuer)],
         base_url=cfg.public_url,
         scopes_supported=[cfg.gateway_scope],
         resource_name="vtb mcp-gateway",

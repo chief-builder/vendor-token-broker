@@ -29,25 +29,29 @@ def reconsent_scopes(held: list[str], required: list[str], ceiling: list[str]) -
     return [s for s in ceiling if s in set(held) | set(required)]
 
 
-def parse_resolve_body(raw: bytes) -> tuple[dict | None, str | None]:
-    """Validate the resolve request body. Returns (body, None) or (None, why)."""
+class InvalidRequest(ValueError):
+    """The resolve body is malformed (400 invalid-request); the message says why."""
+
+
+def parse_resolve_body(raw: bytes) -> dict:
+    """The validated resolve request body; raises InvalidRequest."""
     try:
         body = json.loads(raw)
     except ValueError:
-        return None, "body must be JSON"
+        raise InvalidRequest("body must be JSON") from None
     if not isinstance(body, dict):
-        return None, "body must be a JSON object"
+        raise InvalidRequest("body must be a JSON object")
     if not isinstance(body.get("vendor"), str) or not body["vendor"]:
-        return None, "vendor must be a non-empty string"
+        raise InvalidRequest("vendor must be a non-empty string")
     if body.get("sub") is not None and not isinstance(body["sub"], str):
-        return None, "sub must be a string"
+        raise InvalidRequest("sub must be a string")
     ttl = body.get("min_ttl_s", 120)
     if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 0:
-        return None, "min_ttl_s must be a non-negative integer"
+        raise InvalidRequest("min_ttl_s must be a non-negative integer")
     scopes = body.get("required_scopes", [])
     if not isinstance(scopes, list) or not all(isinstance(x, str) for x in scopes):
-        return None, "required_scopes must be a list of strings"
-    return body, None
+        raise InvalidRequest("required_scopes must be a list of strings")
+    return body
 
 
 def ok_response(entry: dict) -> JSONResponse:
@@ -63,8 +67,9 @@ def ok_response(entry: dict) -> JSONResponse:
 async def resolve(b: Broker, claims: dict, raw: bytes) -> JSONResponse:
     """Resolve for the caller whose hub JWT produced `claims`."""
     cfg, problem = b.cfg, b.problem
-    body, invalid = parse_resolve_body(raw)
-    if invalid is not None:
+    try:
+        body = parse_resolve_body(raw)
+    except InvalidRequest as invalid:
         audit(
             "broker.resolve",
             decision="deny",
@@ -72,7 +77,7 @@ async def resolve(b: Broker, claims: dict, raw: bytes) -> JSONResponse:
             hub_jti=claims.get("jti"),
             sub=claims["sub"],
         )
-        return problem(400, "invalid-request", invalid)
+        return problem(400, "invalid-request", str(invalid))
     vendor = body["vendor"]
     sub = claims["sub"]  # the JWT is authoritative; the field is advisory
     if body.get("sub") and body["sub"] != sub:

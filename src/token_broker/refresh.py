@@ -165,7 +165,7 @@ async def attempt_refresh(
         b.drop_cache(vendor, sub)
         return CasLost()
     b.put_cache(vendor, sub, new_entry, new_ver)
-    extra = {"path": path} if path else {}
+    extra: dict[str, object] = {"path": path} if path else {}
     widened = scope_widening(tok, ceiling)
     if widened:
         extra["scope_widened"] = widened

@@ -66,7 +66,7 @@ async def startup_checks(b) -> tuple[int, bool]:
                 waiting.append("hub OIDC discovery unreachable at HUB_ISSUER")
             except HubLoginError as exc:
                 raise StartupError(f"hub login misconfigured: {exc}") from exc
-        if not waiting:
+        if status is not None and not waiting:
             return status
         if time.monotonic() >= deadline:
             raise StartupError(
