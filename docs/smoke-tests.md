@@ -265,7 +265,7 @@ curl -s -X POST localhost:8300/v1/tokens/resolve -d @/tmp/req.json \
 - The authorize link works once. Opening it again returns 400
   `invalid-transaction`.
 - The broker compares the `iss` in the callback URL, as an exact string,
-  with the issuer it recorded when the link was made. It does this
+  with the issuer it recorded when the vendor leg started (after the hub sign-in). It does this
   *before* redeeming the code (this stops mix-up attacks). If the vendor
   says it supports `iss` but leaves it out, the broker rejects the
   callback the same way.

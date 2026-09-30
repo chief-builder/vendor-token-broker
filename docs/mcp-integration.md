@@ -1,6 +1,6 @@
 # Connect your own MCP server
 
-**Reviewed 2026-09-28 · MCP 2026-07-28.**
+**Reviewed 2026-09-30 · MCP 2026-07-28.**
 
 Use this page to connect **your own** MCP server or gateway to the broker.
 

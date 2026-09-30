@@ -2,14 +2,22 @@
 
 Try the whole thing on your own machine: sign in, connect accounts, and call GitHub, Linear, Atlassian, and Cloudflare tools from Claude Code. Everything runs in Docker. You don't need any of those accounts for the first part: stand-ins play all four services.
 
-You need Docker Compose, Python 3.12, and a copy of this repository. Run every command from the repository's top folder.
+You need Docker Compose (Docker Desktop, or Colima with at least 4 GB of memory: Keycloak alone takes about 1.5 GB), Python 3.14, and a copy of this repository. Run every command from the repository's top folder.
+
+The stack publishes host ports 6390, 8180, 8210, 8211, 8300, 8310, 8320, 8330, 8500, and 8600 (the multi-replica profile adds 8400 to 8402), and its containers have fixed names (`vtb-*`), so run one copy per Docker host.
 
 This setup is for trying things out. It uses plain HTTP, test passwords, and storage that is wiped when the containers stop. For a real deployment, see [Deploy and operate](operations.md).
 
 ## Install
 
 ```sh
-python3.12 -m venv .venv
+make install      # creates .venv with python3.14 and installs the hash-pinned dev lock
+```
+
+Without `make`, or if `python3.14` is not on your PATH ([uv](https://docs.astral.sh/uv/) can provide one):
+
+```sh
+uv venv --seed --python 3.14 .venv     # or: python3.14 -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements-dev.lock
 .venv/bin/pip install --no-deps -e .
 ```
@@ -192,6 +200,17 @@ What you should see:
 The test service widens scopes when it refreshes, so step 3 may list both `issues:read` and `issues:write` (see [scope policy](api.md#scope-policy)). For a guided tour with a browser, including attack attempts, see [Smoke tests](smoke-tests.md).
 
 ## Run the automated checks
+
+The Makefile wraps these commands (`make help` lists every target):
+
+| Command | What it runs |
+|---|---|
+| `make check` | Lint, format check, mypy, unit tests with coverage, generated-docs check. No Docker |
+| `make test-all` | `make test`, then starts the stack and runs the broker and gateway suites |
+| `make test-multi` | Restarts the stack in the multi-replica profile (fresh Redis, so no lease to wait out) and runs its suite |
+| `make stack-down` | Stops every profile |
+
+The same, by hand:
 
 ```sh
 .venv/bin/pytest tests/unit -q

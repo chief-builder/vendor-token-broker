@@ -12,6 +12,7 @@ the first connect_<name> call, logging any drift from the snapshot (the
 snapshot stays listed). Check a new snapshot for personal data before
 committing it: some vendors personalize descriptions.
 """
+
 import asyncio
 import json
 import os
@@ -34,19 +35,33 @@ async def main(name: str) -> int:
         print(f"unknown upstream {name!r}; known: {sorted(entries)}", file=sys.stderr)
         return 2
     e = entries[name]
-    spec = UpstreamSpec(name=e["name"], display_name=e["display_name"], vendor=e["vendor"],
-                        url=e["url"], tools=tuple(e["tools"]),
-                        auth_scheme=e.get("auth_scheme", "Bearer"),
-                        headers=dict(e.get("headers", {})), protocol=e.get("protocol", "legacy"))
+    spec = UpstreamSpec(
+        name=e["name"],
+        display_name=e["display_name"],
+        vendor=e["vendor"],
+        url=e["url"],
+        tools=tuple(e["tools"]),
+        auth_scheme=e.get("auth_scheme", "Bearer"),
+        headers=dict(e.get("headers", {})),
+        protocol=e.get("protocol", "legacy"),
+    )
     listed = {t.name: t for t in await Upstream(spec, 30).list_tools(token)}
     missing = [t for t in spec.tools if t not in listed]
     if missing:
-        print(f"{spec.display_name} no longer lists: {missing}; update upstreams.json",
-              file=sys.stderr)
+        print(
+            f"{spec.display_name} no longer lists: {missing}; update upstreams.json",
+            file=sys.stderr,
+        )
         return 1
-    tools = [listed[t].model_dump(mode="json", by_alias=True, exclude_none=True,
-                                  include={"name", "description", "input_schema", "annotations"})
-             for t in spec.tools]
+    tools = [
+        listed[t].model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+            include={"name", "description", "input_schema", "annotations"},
+        )
+        for t in spec.tools
+    ]
     out = PKG / "snapshots" / e["snapshot"]
     out.write_text(json.dumps({"source": spec.url, "tools": tools}, indent=2) + "\n")
     print(f"wrote {len(tools)} tools to {out.relative_to(Path.cwd())}")

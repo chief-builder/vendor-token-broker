@@ -48,7 +48,7 @@ bao token create -policy=broker -period=24h -orphan -display-name=broker
 
 - Give the broker the scoped token from the last command, in `VAULT_TOKEN` or `VAULT_TOKEN_FILE`. **Never give it the root token.**
 - Use a **periodic** token, as shown above. The broker renews its own token at half the remaining TTL. A periodic token can be renewed forever.
-- A token with a hard maximum TTL (for example `-ttl=768h`) can only be renewed up to that maximum. `/healthz` starts failing 10 minutes before it expires. You must then replace the token and restart the broker.
+- A token with a hard maximum TTL (an explicit max TTL such as `-explicit-max-ttl=768h`, or the auth mount's or system's max TTL) can only be renewed up to that maximum. `/healthz` starts failing 10 minutes before it expires. You must then replace the token and restart the broker.
 - The token also needs the built-in `default` policy. It grants `lookup-self` and `renew-self`. The policy is attached unless you pass `-no-default-policy`.
 
 ### Storage auditing
@@ -84,7 +84,7 @@ The credential must match the vendor's `token_endpoint_auth_method` in the regis
 | `token_endpoint_auth_method` | Needs |
 |---|---|
 | `client_secret_post` or `client_secret_basic` | `client_secret` |
-| `private_key_jwt` | `private_key` (PEM, PKCS8). Optional: `alg` (default RS256) and `kid` |
+| `private_key_jwt` | `private_key` (PEM; PKCS#8 or PKCS#1). Optional: `alg` (default RS256) and `kid` |
 
 ### If storage goes down
 
@@ -149,11 +149,12 @@ Serve the broker over https. The consent cookie that ties the flow to one browse
 The registry (`REGISTRY_PATH`) lists the allowed vendors and each vendor's policy. Treat every change as a reviewed change:
 
 1. Edit a copy of `registry.example.json`.
-2. Check it against `schemas/vendor-registry.schema.json` with `jsonschema`. CI does this on every push. Do the same locally.
+2. Check it against `schemas/vendor-registry.schema.json` with `jsonschema`. CI checks `registry.example.json` on every push (`tests/unit/test_registry.py`). Do the same for your copy locally.
 3. Get the same sign-off for a `scope_ceiling` change as for a token-contract change. The ceiling is a security boundary: a caller can never go past it at runtime.
 4. Hardcode endpoints **only** when the vendor publishes no authorization server metadata (e.g. GitHub). When metadata exists, use `auth_metadata_url`. (Standards: RFC 8414.)
 5. Set `resource` only for a vendor whose tokens are bound to one MCP server (Linear, Atlassian, Cloudflare). The broker sends it on authorize, code exchange, and every refresh (RFC 8707), unless `resource_on_refresh` is false (Linear, which refuses it on refresh). Changing either later can break existing connections at their next refresh.
-6. Never put credentials in the registry. They live only in `vendor-clients/*`.
+6. `revocation.type` is `rfc7009` or `github_grant`. For GitHub Enterprise Server, set `revocation.grant_url` (default `https://api.github.com/applications/{client_id}/grant`).
+7. Never put credentials in the registry. They live only in `vendor-clients/*`.
 
 ## Gateway contract
 
@@ -321,9 +322,13 @@ Two broker settings matter when you run it with a real IdP:
 - If the broker reaches the hub by an internal address that differs from the public issuer (as in the Keycloak profile), set `HUB_DISCOVERY_URL`.
 - Set `HUB_LOGIN_HINT=none` for a real IdP.
 
+## Single-replica deployment
+
+`deploy/docker-compose.yml` is the single-replica shape. Next to it, put `.env` (a copy of `.env.example`; every variable in it reaches the broker, including the vendor client IDs that enable registry vendors), your reviewed `registry.json`, and `broker-vault-token`. The image runs as UID 65534, and compose bind-mounts the token file with its host owner and mode: on a Linux host a `0600` file is unreadable, so make it readable by that user (`chown 65534`, or `chmod 0444`). The broker serves plain HTTP on 8300; terminate TLS in front of it and set `BROKER_PUBLIC_URL` to the https address.
+
 ## Multi-replica deployment
 
-Run 2 or more replicas only with `COORD_BACKEND=redis`. See `deploy/docker-compose.multi.yml` for the shape: shared OpenBao and Redis, any L4/L7 load balancer, no session affinity needed.
+Run 2 or more replicas only with `COORD_BACKEND=redis`. See `deploy/docker-compose.multi.yml` for the shape: two replicas sharing OpenBao and Redis. Put any L4/L7 load balancer in front; no session affinity is needed.
 
 Timing rules:
 

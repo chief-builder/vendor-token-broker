@@ -6,6 +6,7 @@ Multi-replica (ADR-0001): only the leader-lease holder sweeps, and
 the interval is jittered ±20% so replicas never thunder together. The
 memory backend keeps the lab's fixed interval and is always the leader.
 """
+
 import asyncio
 import time
 
@@ -33,7 +34,7 @@ async def sweep_once(b) -> None:
     if not keys:
         return
     start = b.sweep_cursor % len(keys)
-    batch = (keys[start:] + keys[:start])[:b.cfg.sweep_max_entries]
+    batch = (keys[start:] + keys[:start])[: b.cfg.sweep_max_entries]
     b.sweep_cursor = start + len(batch)
     for vendor, sub in batch:
         try:
@@ -65,11 +66,9 @@ async def sweep_entry(b, vendor: str, sub: str) -> None:
         if found is None:
             return
         entry, ver = found
-        if entry["state"] != "ACTIVE" and \
-                not refresh_mod.abandoned(entry, b.cfg.refreshing_ttl_s):
+        if entry["state"] != "ACTIVE" and not refresh_mod.abandoned(entry, b.cfg.refreshing_ttl_s):
             return
-        await refresh_mod.attempt_refresh(b, vendor, sub, entry, ver,
-                                          path="proactive")
+        await refresh_mod.attempt_refresh(b, vendor, sub, entry, ver, path="proactive")
     finally:
         await b.coord.release_refresh_lock(vendor, sub, lock_token)
 
@@ -90,7 +89,7 @@ async def retry_revoke(b, vendor: str, sub: str) -> None:
         try:
             await b.vendors.revoke(vendor, entry)
         except vendors_mod.RevocationUnsupported:
-            outcome = "unsupported"   # nothing to retry: local delete only
+            outcome = "unsupported"  # nothing to retry: local delete only
         except vendors_mod.VendorUnavailable:
             return  # still down; retry next pass
         current = await b.custody.read(vendor, sub)
@@ -98,8 +97,7 @@ async def retry_revoke(b, vendor: str, sub: str) -> None:
             return  # replaced or removed while revoking
         await b.custody.delete(vendor, sub)
         await b.invalidate(vendor, sub)
-        audit("broker.revoke", sub=sub, vendor=vendor, outcome=outcome,
-              path="sweep-retry")
+        audit("broker.revoke", sub=sub, vendor=vendor, outcome=outcome, path="sweep-retry")
     finally:
         await b.coord.release_refresh_lock(vendor, sub, lock_token)
 

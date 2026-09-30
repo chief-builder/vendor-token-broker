@@ -4,6 +4,7 @@ STALE lifecycle including the mass-STALE page, and scope enforcement.
 
 Ported from the lab's phase5 gate 3 + §8 tests and phase7 P2/P5.
 """
+
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -43,8 +44,7 @@ def test_twenty_parallel_resolves_one_vendor_refresh():
     with vendor_token_ttl(3600), ThreadPoolExecutor(max_workers=20) as pool:
         results = list(pool.map(lambda _: resolve(tok), range(20)))
 
-    assert all(r.status_code == 200 for r in results), \
-        [r.status_code for r in results]
+    assert all(r.status_code == 200 for r in results), [r.status_code for r in results]
     tokens = {r.json()["access_token"] for r in results}
     assert len(tokens) == 1, "waiters must receive the winner's token"
 
@@ -62,7 +62,8 @@ def test_twenty_parallel_resolves_one_vendor_refresh():
 
 def test_generation_advances_on_next_refresh(alice):
     from stack import sub_of
-    do_consent(alice)                    # its closing resolve refreshes (60 s tokens)
+
+    do_consent(alice)  # its closing resolve refreshes (60 s tokens)
     mine = [e for e in broker_audit("broker.refresh") if e.get("sub") == sub_of(alice)]
     gen_before = mine[-1]["generation_to"]
     r = resolve(alice)
@@ -74,10 +75,10 @@ def test_generation_advances_on_next_refresh(alice):
 def test_vendor_side_revocation_goes_stale_then_reconsent(alice):
     do_consent(alice)
     requests.post(f"{MOCK}/_test/revoke_family", timeout=10)
-    r = resolve(alice)   # refresh hits invalid_grant
+    r = resolve(alice)  # refresh hits invalid_grant
     assert r.status_code == 404 and "authorize_uri" in r.json()
     assert broker_audit("broker.stale")
-    do_consent(alice)               # dance again -> fresh gen=1 entry
+    do_consent(alice)  # dance again -> fresh gen=1 entry
     assert resolve(alice).status_code == 200
 
 
@@ -95,8 +96,9 @@ def test_stale_storm_marks_each_entry_and_audits():
         assert resolve(t).status_code == 404
     stale = broker_audit("broker.stale", since="3m")
     subs = {e.get("sub") for e in stale}
-    assert len(subs & {f"wf-storm-{i}" for i in range(3)}) >= 3, \
+    assert len(subs & {f"wf-storm-{i}" for i in range(3)}) >= 3, (
         f"expected ≥3 distinct STALE subs, got {subs}"
+    )
 
 
 def test_stale_storm_raises_mass_stale_signal():

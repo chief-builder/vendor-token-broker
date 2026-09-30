@@ -1,6 +1,6 @@
 # Security and MCP alignment
 
-**Reviewed 2026-09-28 · software 1.1.0 (unreleased) · MCP 2026-07-28.**
+**Reviewed 2026-09-30 · software 1.1.0 (unreleased) · MCP 2026-07-28.**
 
 This page lists which security controls the broker and gateway have, where the proof lives, and what is still missing.
 
@@ -17,17 +17,17 @@ Status words in the table:
 - **External**: another component must provide it.
 - **Planned**: not available here.
 
-Source and test paths refer to the private repository available to maintainers.
+Source and test paths are relative to the root of this repository.
 
 | Control | Status / owner | Implementation and evidence |
 |---|---|---|
-| PKCE S256, nonce, subject/browser binding | Implemented / broker | `main.py`, `hub_login.py`; `tests/unit/test_consent_binding.py`, `test_hub_login.py`, `tests/integration/test_consent.py` |
-| Vendor callback issuer validation | Partial / broker | `main.py` callback checks; `tests/integration/test_consent.py`; see the metadata limits below |
+| PKCE S256, nonce, subject/browser binding | Implemented / broker | `consent.py`, `hub_login.py`; `tests/unit/test_consent_binding.py`, `test_hub_login.py`, `tests/integration/test_consent.py` |
+| Vendor callback issuer validation | Partial / broker | `consent.py` callback checks; `tests/integration/test_consent.py`; see the metadata limits below |
 | Hub JWT revalidation | Implemented / broker | The hub is your company's sign-in service. `hub.py`; `tests/unit/test_hub.py`, `tests/integration/test_security.py` |
 | Hub signature algorithms | Implemented / broker + gateway | The broker's `HUB_ALGORITHMS` and the gateway's `HUB_ALGORITHM` are checked against one allowlist: PS256/384/512, ES256/384/512, EdDSA. Anything else (RS256, HMAC, `none`) stops startup. `src/token_broker/config.py`, `src/mcp_gateway/config.py`; `tests/unit/test_config.py`, `tests/unit/test_gateway_auth.py` (`test_config_fails_fast`) |
-| Scope ceiling and scope union | Implemented / broker policy | `main.py`, `refresh.py`; `tests/unit/test_scope_math.py`, `tests/integration/test_refresh.py` |
+| Scope ceiling and scope union | Implemented / broker policy | `resolve.py`, `refresh.py`; `tests/unit/test_scope_math.py`, `tests/integration/test_refresh.py` |
 | Per-user custody, generation CAS, single-flight | Implemented / broker + custody + coordination | `custody.py`, `refresh.py`, `coordination.py`; storage, refresh, and multi-replica tests |
-| Revocation | Implemented with exceptions / broker + vendor | Vendor first, then the broker's copy. For RFC 7009 vendors the broker revokes the access token and then the refresh token. Not every vendor revokes the access tokens with the refresh token (Linear's live on for up to 24 hours). A 4xx on the access token is ignored; the refresh token's answer decides. GitHub: grant deletion. `main.py`, `vendors.py`, `sweeper.py`; `tests/unit/test_storage_hygiene.py`, `tests/integration/test_grants.py` |
+| Revocation | Implemented with exceptions / broker + vendor | Vendor first, then the broker's copy. For RFC 7009 vendors the broker revokes the access token and then the refresh token. Not every vendor revokes the access tokens with the refresh token (Linear's live on for up to 24 hours). A 4xx on the access token is ignored; the refresh token's answer decides. GitHub: grant deletion. `grants.py`, `vendors.py`, `sweeper.py`; `tests/unit/test_storage_hygiene.py`, `tests/integration/test_grants.py` |
 | No access-token issuance endpoint | Implemented / broker | `tests/unit/test_routes.py` checks there are exactly seven routes. The broker may still sign client assertions |
 | Sensitive values absent from tested logs | Implemented test coverage / broker | `tests/integration/test_security.py` checks sample hub/vendor tokens, the client secret, and the assertion key. It does not prove every possible provider error is clean |
 | Protected-resource metadata and MCP discovery | Implemented / gateway | `mcp_gateway/server.py` (`build_auth`); `tests/unit/test_gateway_auth.py`, `tests/integration/test_mcp_gateway.py`; checked with Claude Code 2.1.283 |
@@ -94,6 +94,10 @@ See [scope and lifetime semantics](api.md#resolve-a-token).
 - CAS (the storage write check) stops a losing refresh write from overwriting a newer stored version. It cannot undo a refresh the vendor has already used. A replica failure at that point can burn a rotating-token family and force the user to re-consent.
 - Cache invalidation is best-effort. Its limit is `CACHE_TTL_S` (default 60 seconds).
 
+### Hub signing keys
+
+- The broker trusts a fetched hub key set for up to 5 minutes (`JWKS_CACHE_S` in `hub.py`). A key the hub removes keeps validating until then. `tests/unit/test_hub.py` checks both sides of that window.
+
 ### MCP gateway
 
 - It depends on FastMCP 4.0.10. `requirements-gateway.lock` pins 80 packages by hash, FastMCP included.
@@ -129,6 +133,8 @@ Review baseline: application commit `e6c7f65` (the gateway serving GitHub, Linea
 | Linear, checked by hand against the real service | Consent at `mcp.linear.app` for `read` only. A forced broker refresh (no `resource`) moved the entry from generation 1 to 2 and rotated the refresh token. The token works at the read-only MCP server and is refused by the full one. After `disconnect_linear`, Linear refuses the last access token |
 | Real Atlassian and Cloudflare (at `41e7aab`, before `disconnect_<service>`) | 2 passed, with the broker registered by `tools/register-mcp-client.py` |
 | Claude Code 2.1.283 against the gateway (at `41e7aab`) | One session used all four real services: the Atlassian account and open Jira issues, the Cloudflare Worker's settings, Linear issues, and the GitHub profile. Linear then used an admin-created OAuth app |
+
+Hardening review on 2026-09-30 (Python 3.14.7, refreshed locks, `main.py` split into `broker`, `resolve`, `consent`, and `grants`): unit suite 507 passed with 95% line coverage, mypy clean, `pip-audit` reported no known vulnerabilities in any lock. The Docker suites (memory, redis, gateway, multi-replica) run in CI on every push to `main` and every pull request; see the CI run for that change. `AUDIT.md` at the repository root records the full review.
 
 ### How the single-flight tests stay exact
 

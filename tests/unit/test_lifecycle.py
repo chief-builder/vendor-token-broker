@@ -1,4 +1,5 @@
 """Startup verification, custody-token renewal, and /healthz (review H4)."""
+
 import asyncio
 import time
 
@@ -26,11 +27,13 @@ def failing(n_failures: int, exc: Exception, result):
         if calls["n"] <= n_failures:
             raise exc
         return result
+
     fn.calls = calls
     return fn
 
 
 # ------------------------------------------------------------ startup
+
 
 async def test_startup_returns_token_status():
     h = Harness()
@@ -44,7 +47,7 @@ async def test_rejected_custody_token_aborts_immediately():
     started = time.monotonic()
     with pytest.raises(lifecycle.StartupError, match="custody token rejected"):
         await lifecycle.startup_checks(h.broker)
-    assert time.monotonic() - started < 1          # no waiting on a dead token
+    assert time.monotonic() - started < 1  # no waiting on a dead token
 
 
 async def test_unreachable_custody_retries_then_aborts():
@@ -94,6 +97,7 @@ def test_app_starts_and_serves_health():
 
 # ------------------------------------------------------------ renewal
 
+
 async def _run_for(coro, seconds: float):
     task = asyncio.create_task(coro)
     await asyncio.sleep(seconds)
@@ -109,14 +113,14 @@ async def test_renewable_token_is_renewed_before_expiry():
     h = Harness()
     h.custody.renew_ttl = 0.2
     await _run_for(lifecycle.renew_loop(h.broker, ttl=0.2, renewable=True), 0.45)
-    assert h.custody.renewals >= 2       # renewed at ~0.1s, then again at ~0.2s ...
+    assert h.custody.renewals >= 2  # renewed at ~0.1s, then again at ~0.2s ...
 
 
 @pytest.mark.parametrize("ttl,renewable", [(0, False), (0, True), (3600, False)])
 async def test_non_expiring_or_non_renewable_token_is_left_alone(ttl, renewable):
     h = Harness()
     task = await _run_for(lifecycle.renew_loop(h.broker, ttl, renewable), 0.05)
-    assert task.done() and not task.cancelled()   # returned on its own
+    assert task.done() and not task.cancelled()  # returned on its own
     assert h.custody.renewals == 0
 
 
@@ -132,18 +136,22 @@ async def test_failed_renewal_is_audited_and_retried(capsys):
 
 # ------------------------------------------------------------ /healthz
 
+
 async def _health(h):
     async with h.client() as c:
         return await c.get("/healthz")
 
 
-@pytest.mark.parametrize("token,error,status,custody", [
-    ((7200, True), None, 200, "ok"),
-    ((0, False), None, 200, "ok"),                              # never expires
-    ((300, True), None, 503, "token-expiring"),                 # < 10 min left
-    (None, CustodyTokenRejected(), 503, "token-rejected"),
-    (None, CustodyUnavailable(), 200, "unreachable"),           # outage: keep serving
-])
+@pytest.mark.parametrize(
+    "token,error,status,custody",
+    [
+        ((7200, True), None, 200, "ok"),
+        ((0, False), None, 200, "ok"),  # never expires
+        ((300, True), None, 503, "token-expiring"),  # < 10 min left
+        (None, CustodyTokenRejected(), 503, "token-rejected"),
+        (None, CustodyUnavailable(), 200, "unreachable"),  # outage: keep serving
+    ],
+)
 async def test_health_reflects_the_custody_credential(token, error, status, custody):
     h = Harness()
     h.custody.token, h.custody.token_error = token, error
@@ -157,9 +165,9 @@ async def test_health_result_is_cached(monkeypatch):
     h.custody.token = (7200, True)
     assert (await _health(h)).status_code == 200
     h.custody.token_error = CustodyTokenRejected()
-    assert (await _health(h)).status_code == 200            # cached
+    assert (await _health(h)).status_code == 200  # cached
     monkeypatch.setattr(lifecycle, "HEALTH_CACHE_S", 0)
-    assert (await _health(h)).status_code == 503            # re-checked
+    assert (await _health(h)).status_code == 503  # re-checked
 
 
 async def test_startup_waits_for_hub_discovery_then_succeeds():
@@ -172,6 +180,7 @@ async def test_startup_waits_for_hub_discovery_then_succeeds():
 
 async def test_misconfigured_hub_login_aborts_startup():
     from token_broker.hub_login import HubLoginError
+
     h = Harness(startup_timeout_s=30)
     h.hub_login.check_error = HubLoginError("discovery names another issuer")
     with pytest.raises(lifecycle.StartupError, match="hub login misconfigured"):

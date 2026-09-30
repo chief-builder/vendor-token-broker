@@ -9,10 +9,20 @@
 # round-robin nginx for the multi-replica proof.
 # The `gateway` profile adds Keycloak as a real hub plus a broker that
 # trusts it (own OpenBao, so its sweeper never shares custody with `broker`).
+#
+# TEST-ONLY CREDENTIALS: every token, secret, and password in this file and in
+# keycloak/mcp-realm.json (root, vtb-dev-broker-token, mock-secret,
+# hub-login-secret, gateway-dev-secret, admin/admin, alice/alice, bob/bob) is
+# a fixed local-stack value that protects nothing. Never reuse them.
+#
+# One stack per Docker host: container names (vtb-*) and host ports are fixed,
+# and tests find containers by those names. The explicit project name makes
+# the stack easy to spot (`docker compose ls`) whichever directory it ran from.
+name: vtb
 
 services:
   openbao:
-    image: openbao/openbao:2
+    image: openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315
     container_name: vtb-openbao
     environment:
       BAO_DEV_ROOT_TOKEN_ID: root
@@ -23,7 +33,7 @@ services:
       - "8210:8200"
 
   openbao-init:
-    image: curlimages/curl:8.10.1
+    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
     container_name: vtb-openbao-init
     depends_on:
       - openbao
@@ -48,13 +58,15 @@ services:
     entrypoint: ["sh", "/init.sh"]
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: vtb-redis
     ports:
       - "6390:6379"
 
   mock-vendor:
-    build: ./mock-vendor
+    build:
+      context: ../..
+      dockerfile: tests/stack/mock-vendor/Dockerfile
     container_name: vtb-mock-vendor
     environment:
       MOCK_PUBLIC_URL: http://localhost:8310
@@ -70,7 +82,9 @@ services:
       - "8310:8310"
 
   hub-stub:
-    build: ./hub-stub
+    build:
+      context: ../..
+      dockerfile: tests/stack/hub-stub/Dockerfile
     container_name: vtb-hub-stub
     environment:
       HUB_STUB_ISSUER: http://hub-stub:8320
@@ -184,7 +198,7 @@ services:
         condition: service_started
 
   broker-lb:
-    image: nginx:1.27-alpine
+    image: nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
     container_name: vtb-broker-lb
     profiles: ["multi"]
     volumes:
@@ -200,7 +214,7 @@ services:
   # docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
   # pytest tests/integration -m gateway
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.4
+    image: quay.io/keycloak/keycloak:26.7.4@sha256:82a77884f3af238beab1e7afd63b5f530e1b5c0590bd7aa60b40a40463e29b2c
     container_name: vtb-keycloak
     profiles: ["gateway"]
     # Public issuer http://localhost:8180 for browsers and MCP clients (Claude
@@ -226,7 +240,7 @@ services:
       retries: 12
 
   openbao-kc:
-    image: openbao/openbao:2
+    image: openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315
     container_name: vtb-openbao-kc
     profiles: ["gateway"]
     environment:
@@ -238,7 +252,7 @@ services:
       - "8211:8200"
 
   openbao-kc-init:
-    image: curlimages/curl:8.10.1
+    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
     container_name: vtb-openbao-kc-init
     profiles: ["gateway"]
     depends_on:

@@ -6,10 +6,12 @@ sign-off. Endpoints come from RFC 8414 metadata when the vendor publishes
 it; hardcoded registry endpoints are allowed only for vendors without
 metadata (e.g. GitHub).
 """
+
 import json
 import logging
 import os
 import re
+from collections.abc import Mapping
 
 import httpx
 
@@ -20,7 +22,11 @@ from .custody import Custody
 log = logging.getLogger(__name__)
 
 
-VENDOR_ID = re.compile(r"^[a-z0-9-]+$")   # also the registry schema's key pattern
+# GitHub's grant-deletion API (the documented RFC 7009 deviation); a registry
+# entry may override it with revocation.grant_url (GitHub Enterprise Server).
+GITHUB_GRANT_URL = "https://api.github.com/applications/{client_id}/grant"
+
+VENDOR_ID = re.compile(r"^[a-z0-9-]+$")  # also the registry schema's key pattern
 
 
 class VendorError(Exception):
@@ -48,13 +54,21 @@ def _unreachable(what: str, exc: Exception) -> VendorUnavailable:
 
 
 class VendorClient:
-    def __init__(self, cfg: Config, custody: Custody):
+    def __init__(self, cfg: Config, custody: Custody, environ: Mapping[str, str] | None = None):
         self._registry: dict[str, dict] = json.loads(cfg.registry_path.read_text())
         # Vendor ids become custody path segments: enforce the schema's
         # pattern at load, not only in CI, so no id can nest or traverse.
         bad = [v for v in self._registry if not VENDOR_ID.match(v)]
         if bad:
             raise ConfigError(f"registry vendor ids must match {VENDOR_ID.pattern}: {bad}")
+        # A vendor with `enabled_env` is served only where that variable is
+        # set (its client is configured here). Decided once, at startup.
+        environ = os.environ if environ is None else environ
+        self._enabled = frozenset(
+            v
+            for v, spec in self._registry.items()
+            if not spec.get("enabled_env") or environ.get(spec["enabled_env"])
+        )
         self._timeout = cfg.vendor_timeout_s
         self._metadata_cache: dict[str, dict] = {}
         self._custody = custody
@@ -63,13 +77,8 @@ class VendorClient:
         return self._registry
 
     def get_vendor(self, vendor: str) -> dict | None:
-        spec = self._registry.get(vendor)
-        if spec is None:
-            return None
-        enabled_env = spec.get("enabled_env")
-        if enabled_env and not os.environ.get(enabled_env):
-            return None  # vendor present in registry but not configured here
-        return spec
+        """The registry entry, or None if unknown or not enabled here."""
+        return self._registry[vendor] if vendor in self._enabled else None
 
     def resource(self, vendor: str) -> str | None:
         """RFC 8707 resource indicator for vendors whose tokens are bound to
@@ -93,8 +102,8 @@ class VendorClient:
             except (httpx.HTTPError, ValueError) as exc:
                 raise _unreachable(f"{vendor} authorization-server metadata", exc) from exc
             if not isinstance(meta, dict) or not all(
-                    isinstance(meta.get(k), str)
-                    for k in ("authorization_endpoint", "token_endpoint")):
+                isinstance(meta.get(k), str) for k in ("authorization_endpoint", "token_endpoint")
+            ):
                 raise VendorUnavailable(f"{vendor} authorization-server metadata malformed")
             self._metadata_cache[vendor] = meta
         return self._metadata_cache[vendor]
@@ -108,15 +117,16 @@ class VendorClient:
             raise VendorUnavailable(f"no client credential for {vendor} in custody")
         return creds
 
-    async def _auth_for(self, vendor: str, endpoint_aud: str) -> tuple[dict, tuple | None]:
-        """Form fields + basic-auth tuple per the registry's
-        token_endpoint_auth_method (design §3; client_auth module)."""
-        method = self._registry[vendor].get(
-            "token_endpoint_auth_method", "client_secret_post")
+    async def _auth_for(self, vendor: str, endpoint_aud: str) -> tuple[dict, httpx.Auth]:
+        """Form fields + HTTP auth per the registry's token_endpoint_auth_method
+        (design §3; client_auth module). The auth is HTTP Basic for
+        client_secret_basic and a no-op otherwise."""
+        method = self._registry[vendor].get("token_endpoint_auth_method", "client_secret_post")
         try:
-            return token_request_auth(method, await self._creds(vendor), endpoint_aud)
+            form, basic = token_request_auth(method, await self._creds(vendor), endpoint_aud)
         except ClientAuthError as exc:
             raise VendorUnavailable(str(exc)) from exc
+        return form, httpx.BasicAuth(*basic) if basic else httpx.Auth()
 
     async def _token_request(self, vendor: str, form: dict) -> dict:
         """POST to the vendor token endpoint with client auth; classify failures."""
@@ -127,12 +137,17 @@ class VendorClient:
         # and keep the refreshed token bound to the original resource anyway.
         refresh = form.get("grant_type") == "refresh_token"
         if (resource := self.resource(vendor)) and (
-                not refresh or self._registry[vendor].get("resource_on_refresh", True)):
+            not refresh or self._registry[vendor].get("resource_on_refresh", True)
+        ):
             form["resource"] = resource
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as c:
-                r = await c.post(eps["token_endpoint"], data=form, auth=basic,
-                                 headers={"Accept": "application/json"})
+                r = await c.post(
+                    eps["token_endpoint"],
+                    data=form,
+                    auth=basic,
+                    headers={"Accept": "application/json"},
+                )
         except httpx.HTTPError as exc:
             raise _unreachable("vendor token endpoint", exc) from exc
         if r.status_code >= 500:
@@ -155,20 +170,25 @@ class VendorClient:
             raise VendorUnavailable("vendor token endpoint response has no access_token")
         return body
 
-    async def exchange_code(self, vendor: str, code: str, verifier: str,
-                            redirect_uri: str) -> dict:
-        return await self._token_request(vendor, {
-            "grant_type": "authorization_code",
-            "code": code,
-            "code_verifier": verifier,
-            "redirect_uri": redirect_uri,
-        })
+    async def exchange_code(self, vendor: str, code: str, verifier: str, redirect_uri: str) -> dict:
+        return await self._token_request(
+            vendor,
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": verifier,
+                "redirect_uri": redirect_uri,
+            },
+        )
 
     async def refresh(self, vendor: str, refresh_token: str) -> dict:
-        return await self._token_request(vendor, {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        })
+        return await self._token_request(
+            vendor,
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+        )
 
     async def vendor_user_id(self, vendor: str, access_token: str) -> str:
         """Best-effort: the id is for audit joins only, so any failure yields
@@ -181,8 +201,13 @@ class VendorClient:
             if not url:
                 return "unknown"
             async with httpx.AsyncClient(timeout=self._timeout) as c:
-                r = await c.get(url, headers={"Authorization": f"Bearer {access_token}",
-                                              "Accept": "application/json"})
+                r = await c.get(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                    },
+                )
             if r.status_code != 200:
                 return "unknown"
             body = r.json()
@@ -203,13 +228,16 @@ class VendorClient:
                 if kind == "github_grant":
                     creds = await self._creds(vendor)
                     if not entry.get("access_token"):
-                        return   # nothing live to revoke (e.g. a scrubbed STALE entry)
+                        return  # nothing live to revoke (e.g. a scrubbed STALE entry)
                     r = await c.request(
                         "DELETE",
-                        f"https://api.github.com/applications/{creds['client_id']}/grant",
+                        spec["revocation"]
+                        .get("grant_url", GITHUB_GRANT_URL)
+                        .format(client_id=creds["client_id"]),
                         auth=(creds["client_id"], creds["client_secret"]),
                         json={"access_token": entry["access_token"]},
-                        headers={"Accept": "application/vnd.github+json"})
+                        headers={"Accept": "application/vnd.github+json"},
+                    )
                     if r.status_code not in (204, 404, 422):
                         raise VendorUnavailable(f"github grant delete {r.status_code}")
                 else:
@@ -219,8 +247,9 @@ class VendorClient:
                     # on for up to 24 h). A server may refuse access-token
                     # revocation (unsupported_token_type): only the refresh
                     # token's answer decides. A scrubbed STALE entry has neither.
-                    tokens = [(entry[h], h) for h in ("access_token", "refresh_token")
-                              if entry.get(h)]
+                    tokens = [
+                        (entry[h], h) for h in ("access_token", "refresh_token") if entry.get(h)
+                    ]
                     if not tokens:
                         return
                     eps = await self.endpoints(vendor)
@@ -230,9 +259,11 @@ class VendorClient:
                     # accepts any identifier of the AS).
                     for token, hint in tokens:
                         auth_form, basic = await self._auth_for(vendor, eps["token_endpoint"])
-                        r = await c.post(eps["revocation_endpoint"], auth=basic,
-                                         data={"token": token, "token_type_hint": hint,
-                                               **auth_form})
+                        r = await c.post(
+                            eps["revocation_endpoint"],
+                            auth=basic,
+                            data={"token": token, "token_type_hint": hint, **auth_form},
+                        )
                         last = hint == tokens[-1][1]
                         if r.status_code >= 500 or (last and r.status_code >= 400):
                             raise VendorUnavailable(f"revocation endpoint {r.status_code}")

@@ -15,6 +15,7 @@ invalidation. Redis loss fails the refresh path closed (503
 coordination-unavailable) — cache hits still serve, and the KV-v2 CAS
 remains the correctness backstop regardless of lock behavior.
 """
+
 import asyncio
 import json
 import logging
@@ -42,18 +43,20 @@ class CoordinationUnavailable(Exception):
 
 
 class Coordination(Protocol):
-    profile: str
     persist_refreshing: bool
 
     async def start(self, on_invalidate: Callable[[str, str], None]) -> None: ...
     async def close(self) -> None: ...
 
-    async def wait_refresh_lock(self, vendor: str, sub: str,
-                                should_stop) -> tuple[str | None, Any]: ...
+    async def wait_refresh_lock(
+        self, vendor: str, sub: str, should_stop
+    ) -> tuple[str | None, Any]: ...
     async def try_refresh_lock(self, vendor: str, sub: str) -> str | None: ...
     async def release_refresh_lock(self, vendor: str, sub: str, token: str) -> None: ...
 
     async def put_txn(self, txn_id: str, record: dict) -> None: ...
+    # Read without consuming. Not used by the routes (they take_txn); tests
+    # inspect consent transactions through it.
     async def get_txn(self, txn_id: str) -> dict | None: ...
     async def take_txn(self, txn_id: str) -> dict | None: ...
 
@@ -73,7 +76,6 @@ class Coordination(Protocol):
 class MemoryCoordination:
     """The lab's exact single-replica semantics behind the protocol."""
 
-    profile = "memory"
     persist_refreshing = False
 
     def __init__(self, cfg: Config):
@@ -135,7 +137,7 @@ class MemoryCoordination:
         lock = self._locks.get((vendor, sub))
         if lock is not None and lock.locked():
             return None
-        await self._use_lock((vendor, sub)).acquire()   # free: returns at once
+        await self._use_lock((vendor, sub)).acquire()  # free: returns at once
         return "local"
 
     async def release_refresh_lock(self, vendor, sub, token) -> None:
@@ -179,8 +181,10 @@ class MemoryCoordination:
         events = [t for t in self._stale_events.get(vendor, []) if now - t < window]
         events.append(now)
         self._stale_events[vendor] = events
-        page = (len(events) >= self.cfg.mass_stale_threshold
-                and now - self._paged_vendors.get(vendor, 0) > window)
+        page = (
+            len(events) >= self.cfg.mass_stale_threshold
+            and now - self._paged_vendors.get(vendor, 0) > window
+        )
         if page:
             self._paged_vendors[vendor] = now
         return len(events), page
@@ -194,18 +198,17 @@ class MemoryCoordination:
     async def cleanup(self) -> None:
         now = time.time()
         for store in (self._txns, self._states):
-            for key in [k for k, v in store.items()
-                        if now - v["created_at"] > self.cfg.txn_ttl_s]:
+            for key in [k for k, v in store.items() if now - v["created_at"] > self.cfg.txn_ttl_s]:
                 store.pop(key, None)
         for vendor in list(self._stale_events):
-            kept = [t for t in self._stale_events[vendor]
-                    if now - t < self.cfg.mass_stale_window_s]
+            kept = [t for t in self._stale_events[vendor] if now - t < self.cfg.mass_stale_window_s]
             if kept:
                 self._stale_events[vendor] = kept
             else:
                 self._stale_events.pop(vendor, None)
-        for vendor in [v for v, t in self._paged_vendors.items()
-                       if now - t > self.cfg.mass_stale_window_s]:
+        for vendor in [
+            v for v, t in self._paged_vendors.items() if now - t > self.cfg.mass_stale_window_s
+        ]:
             del self._paged_vendors[vendor]
 
     async def publish_invalidate(self, vendor, sub) -> None:
@@ -247,18 +250,22 @@ async def _stop(task: asyncio.Task | None) -> None:
 class RedisCoordination:
     """Multi-replica profile on Redis 7 (ADR-0001)."""
 
-    profile = "redis"
     persist_refreshing = True
 
     def __init__(self, cfg: Config, instance_id: str, client=None):
         import redis.asyncio as aioredis
         from redis import exceptions as redis_exc
+
         self.cfg = cfg
         self.instance_id = instance_id
         self._exc = redis_exc.RedisError
-        self._r = client if client is not None else aioredis.from_url(
-            cfg.redis_url, decode_responses=True,
-            socket_connect_timeout=2, socket_timeout=3)
+        self._r = (
+            client
+            if client is not None
+            else aioredis.from_url(
+                cfg.redis_url, decode_responses=True, socket_connect_timeout=2, socket_timeout=3
+            )
+        )
         self._release = self._r.register_script(_RELEASE_LUA)
         self._renew = self._r.register_script(_RENEW_LUA)
         self._on_invalidate = None
@@ -289,7 +296,7 @@ class RedisCoordination:
             except Exception:
                 await asyncio.sleep(1)
             finally:
-                try:   # release the dead subscription's connection
+                try:  # release the dead subscription's connection
                     await pubsub.aclose()
                 except Exception:
                     pass
@@ -304,8 +311,7 @@ class RedisCoordination:
         key = self._lock_key(vendor, sub)
         while True:
             try:
-                acquired = await self._r.set(key, token, nx=True,
-                                             px=self.cfg.lock_ttl_ms)
+                acquired = await self._r.set(key, token, nx=True, px=self.cfg.lock_ttl_ms)
             except self._exc as exc:
                 raise CoordinationUnavailable(exc) from exc
             if acquired:
@@ -321,8 +327,9 @@ class RedisCoordination:
     async def try_refresh_lock(self, vendor, sub) -> str | None:
         token = secrets.token_hex(16)
         try:
-            acquired = await self._r.set(self._lock_key(vendor, sub), token,
-                                         nx=True, px=self.cfg.lock_ttl_ms)
+            acquired = await self._r.set(
+                self._lock_key(vendor, sub), token, nx=True, px=self.cfg.lock_ttl_ms
+            )
         except self._exc as exc:
             raise CoordinationUnavailable(exc) from exc
         return token if acquired else None
@@ -335,7 +342,7 @@ class RedisCoordination:
 
     async def _setex_json(self, key: str, record: dict) -> None:
         try:
-            await self._r.setex(key, self.cfg.txn_ttl_s, json.dumps(record))
+            await self._r.set(key, json.dumps(record), ex=self.cfg.txn_ttl_s)
         except self._exc as exc:
             raise CoordinationUnavailable(exc) from exc
 
@@ -388,8 +395,9 @@ class RedisCoordination:
             count = int(results[2])
             page = False
             if count >= self.cfg.mass_stale_threshold:
-                page = bool(await self._r.set(f"vtb:paged:{vendor}", "1",
-                                              nx=True, px=window * 1000))
+                page = bool(
+                    await self._r.set(f"vtb:paged:{vendor}", "1", nx=True, px=window * 1000)
+                )
             return count, page
         except self._exc as exc:
             raise CoordinationUnavailable(exc) from exc
@@ -398,11 +406,9 @@ class RedisCoordination:
         """Leader lease: SET NX PX 2×interval; the holder renews, others skip."""
         lease_ms = max(1000, 2 * self.cfg.sweep_interval_s * 1000)
         try:
-            if await self._r.set("vtb:sweep-lease", self.instance_id,
-                                 nx=True, px=lease_ms):
+            if await self._r.set("vtb:sweep-lease", self.instance_id, nx=True, px=lease_ms):
                 return True
-            renewed = await self._renew(keys=["vtb:sweep-lease"],
-                                        args=[self.instance_id, lease_ms])
+            renewed = await self._renew(keys=["vtb:sweep-lease"], args=[self.instance_id, lease_ms])
             return bool(renewed)
         except self._exc as exc:
             raise CoordinationUnavailable(exc) from exc

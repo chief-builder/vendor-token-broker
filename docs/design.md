@@ -1,6 +1,6 @@
 # Vendor Token Broker — Design
 
-**Software:** 1.1.0 (unreleased) · **Reviewed:** 2026-09-27
+**Software:** 1.1.0 (unreleased) · **Reviewed:** 2026-09-30
 
 This page is the normative design of the broker. It says how the broker
 must behave inside. For a gentler start, read the [overview](overview.md),
@@ -95,7 +95,7 @@ the reviewed registry and handled in `vendors.py`:
 | Deviation | Vendor | What the broker does |
 |---|---|---|
 | No RFC 8414 metadata | GitHub | The registry lists `endpoints` explicitly. Allowed only where no metadata exists |
-| Revocation by grant deletion, not RFC 7009 | GitHub (`revocation.type: github_grant`) | `DELETE https://api.github.com/applications/{client_id}/grant` with HTTP Basic (client id and secret) and the access token in the JSON body. 204, 404 and 422 count as revoked. Any other status is a vendor outage. An entry with no access token (a blanked STALE entry) needs no call. This deletes the whole user-to-app grant, which is why re-consent never revokes an ACTIVE or STALE predecessor (§4.3) |
+| Revocation by grant deletion, not RFC 7009 | GitHub (`revocation.type: github_grant`) | `DELETE https://api.github.com/applications/{client_id}/grant` (registry `revocation.grant_url` overrides it, e.g. for GitHub Enterprise Server) with HTTP Basic (client id and secret) and the access token in the JSON body. 204, 404 and 422 count as revoked. Any other status is a vendor outage. An entry with no access token (a blanked STALE entry) needs no call. This deletes the whole user-to-app grant, which is why re-consent never revokes an ACTIVE or STALE predecessor (§4.3) |
 | Token errors in a 200 response | GitHub | Any `error` field is a failure, whatever the HTTP status |
 | `bad_refresh_token` instead of `invalid_grant` | GitHub | Treated exactly like `invalid_grant` (the entry goes STALE) |
 | Scopes set by the vendor, not the request | GitHub App (empty `scope_ceiling`) | The broker requests no scopes and ignores `required_scopes` (§4.1) |
@@ -836,7 +836,7 @@ The event names are wire-frozen:
 
 | Event | Records |
 |---|---|
-| `broker.resolve` | `decision` + `path`, `hub_jti`, `sub`, `vendor`. May add `min_ttl_clamped_from`, `short_ttl`, `missing`, `generation`, `error` |
+| `broker.resolve` | `decision` + `path`, `hub_jti`, `sub`, `vendor`. May add `min_ttl_clamped_from`, `short_ttl`, `missing`, `generation`, `error`; the scope-ceiling denial adds `required` and `ceiling`. A malformed body or a `sub` mismatch is denied with `reason` (`invalid_request`, `sub_mismatch`, plus `claimed_sub`) instead of `path` |
 | `broker.consent.start`, `broker.consent.complete`, `broker.consent.fail` | consent steps. `complete` has `vendor_user_id` (and `scope_widened` when set). `fail` has `reason` and `security_event` |
 | `broker.refresh` | generation transition (`generation_from`, `generation_to`, optional `path`, `scope_widened`) |
 | `broker.stale` | entry went STALE (`generation`) |

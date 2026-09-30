@@ -3,6 +3,7 @@ time; tests build GatewayConfig directly.
 
 Which MCP servers the gateway fronts comes from an upstreams file (JSON): the
 bundled `upstreams.json` unless GATEWAY_UPSTREAMS names another file."""
+
 import json
 import os
 import re
@@ -12,16 +13,22 @@ from pathlib import Path
 
 import mcp_types
 
-_REQUIRED = ("GATEWAY_PUBLIC_URL", "HUB_ISSUER", "HUB_JWKS_URI", "HUB_TOKEN_ENDPOINT",
-             "GATEWAY_CLIENT_ID", "GATEWAY_CLIENT_SECRET", "BROKER_URL")
+_REQUIRED = (
+    "GATEWAY_PUBLIC_URL",
+    "HUB_ISSUER",
+    "HUB_JWKS_URI",
+    "HUB_TOKEN_ENDPOINT",
+    "GATEWAY_CLIENT_ID",
+    "GATEWAY_CLIENT_SECRET",
+    "BROKER_URL",
+)
 
-_NAME = re.compile(r"^[a-z][a-z0-9]{0,19}$")     # becomes the tool-name prefix
-AUTH_SCHEMES = ("Bearer", "Sentry-Bearer")       # Authorization scheme the upstream expects
+_NAME = re.compile(r"^[a-z][a-z0-9]{0,19}$")  # becomes the tool-name prefix
+AUTH_SCHEMES = ("Bearer", "Sentry-Bearer")  # Authorization scheme the upstream expects
 # The broker's hub contract (token_broker.config): asymmetric signatures only,
 # never RS256 (PKCS#1 v1.5), RS384/RS512, or HMAC.
-ALLOWED_HUB_ALGORITHMS = frozenset(
-    {"PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"})
-PROTOCOLS = ("legacy", "auto", "2026-07-28")      # fastmcp Client modes
+ALLOWED_HUB_ALGORITHMS = frozenset({"PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"})
+PROTOCOLS = ("legacy", "auto", "2026-07-28")  # fastmcp Client modes
 
 
 class ConfigError(Exception):
@@ -35,20 +42,23 @@ def _csv(value: str) -> tuple[str, ...]:
 @dataclass(frozen=True)
 class UpstreamSpec:
     """One vendor MCP server behind the gateway."""
-    name: str                        # tool prefix and connect_<name>; lowercase
-    display_name: str                # used in messages ("Connect your Linear account")
-    vendor: str                      # the broker's vendor id for this server's tokens
+
+    name: str  # tool prefix and connect_<name>; lowercase
+    display_name: str  # used in messages ("Connect your Linear account")
+    vendor: str  # the broker's vendor id for this server's tokens
     url: str
-    tools: tuple[str, ...]           # allowlist of upstream tool names
+    tools: tuple[str, ...]  # allowlist of upstream tool names
     auth_scheme: str = "Bearer"
     headers: dict[str, str] = field(default_factory=dict)
-    protocol: str = "legacy"         # GitHub and Linear negotiate at most 2025-11-25
-    snapshot: tuple[mcp_types.Tool, ...] = ()   # pinned schemas, listed from startup
+    protocol: str = "legacy"  # GitHub and Linear negotiate at most 2025-11-25
+    snapshot: tuple[mcp_types.Tool, ...] = ()  # pinned schemas, listed from startup
 
     def __post_init__(self):
         if not _NAME.match(self.name):
-            raise ConfigError(f"upstream name {self.name!r} must be 1-20 lowercase "
-                              "letters or digits, starting with a letter")
+            raise ConfigError(
+                f"upstream name {self.name!r} must be 1-20 lowercase "
+                "letters or digits, starting with a letter"
+            )
         if not self.tools:
             raise ConfigError(f"upstream {self.name}: tools must name at least one tool")
         if self.auth_scheme not in AUTH_SCHEMES:
@@ -84,12 +94,19 @@ def load_upstreams(path: str = "", enabled: tuple[str, ...] = ()) -> tuple[Upstr
         for e in entries:
             if enabled and e.get("name") not in enabled:
                 continue
-            specs.append(UpstreamSpec(
-                name=e["name"], display_name=e["display_name"], vendor=e["vendor"],
-                url=e["url"], tools=tuple(e["tools"]),
-                auth_scheme=e.get("auth_scheme", "Bearer"), headers=dict(e.get("headers", {})),
-                protocol=e.get("protocol", "legacy"),
-                snapshot=_read_snapshot(e.get("snapshot", ""), base)))
+            specs.append(
+                UpstreamSpec(
+                    name=e["name"],
+                    display_name=e["display_name"],
+                    vendor=e["vendor"],
+                    url=e["url"],
+                    tools=tuple(e["tools"]),
+                    auth_scheme=e.get("auth_scheme", "Bearer"),
+                    headers=dict(e.get("headers", {})),
+                    protocol=e.get("protocol", "legacy"),
+                    snapshot=_read_snapshot(e.get("snapshot", ""), base),
+                )
+            )
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"upstreams file {path or '(bundled)'}: {exc}") from exc
     names = [s.name for s in specs]
@@ -105,17 +122,17 @@ def load_upstreams(path: str = "", enabled: tuple[str, ...] = ()) -> tuple[Upstr
 
 @dataclass(frozen=True)
 class GatewayConfig:
-    public_url: str                  # e.g. http://localhost:8500; the resource is {public_url}/mcp
+    public_url: str  # e.g. http://localhost:8500; the resource is {public_url}/mcp
     hub_issuer: str
     hub_jwks_uri: str
     hub_token_endpoint: str
-    client_id: str                   # the gateway's confidential client at the hub
+    client_id: str  # the gateway's confidential client at the hub
     client_secret: str
     broker_url: str
     upstreams: tuple[UpstreamSpec, ...]
     hub_algorithm: str = "PS256"
-    gateway_scope: str = "mcp-gateway"       # MCP clients must request it (no RFC 8707)
-    exchange_scope: str = "hub-tier"         # yields the broker's hub-JWT contract
+    gateway_scope: str = "mcp-gateway"  # MCP clients must request it (no RFC 8707)
+    exchange_scope: str = "hub-tier"  # yields the broker's hub-JWT contract
     min_ttl_s: int = 120
     consent_wait_s: int = 120
     http_timeout_s: float = 15.0
@@ -126,13 +143,15 @@ class GatewayConfig:
 
     def __post_init__(self):
         if self.hub_algorithm not in ALLOWED_HUB_ALGORITHMS:
-            raise ConfigError(f"HUB_ALGORITHM {self.hub_algorithm} is not allowed; use one of "
-                              f"{sorted(ALLOWED_HUB_ALGORITHMS)}")
+            raise ConfigError(
+                f"HUB_ALGORITHM {self.hub_algorithm} is not allowed; use one of "
+                f"{sorted(ALLOWED_HUB_ALGORITHMS)}"
+            )
         if self.min_ttl_s < 0 or self.consent_wait_s < 0:
             raise ConfigError("MIN_TTL_S and CONSENT_WAIT_S must be >= 0")
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> "GatewayConfig":
+    def from_env(cls, env: dict[str, str] | None = None) -> GatewayConfig:
         env = dict(os.environ if env is None else env)
         missing = [k for k in _REQUIRED if not env.get(k)]
         if missing:
@@ -146,8 +165,9 @@ class GatewayConfig:
                 client_id=env["GATEWAY_CLIENT_ID"],
                 client_secret=env["GATEWAY_CLIENT_SECRET"],
                 broker_url=env["BROKER_URL"].rstrip("/"),
-                upstreams=load_upstreams(env.get("GATEWAY_UPSTREAMS", ""),
-                                         _csv(env.get("GATEWAY_ENABLED_UPSTREAMS", ""))),
+                upstreams=load_upstreams(
+                    env.get("GATEWAY_UPSTREAMS", ""), _csv(env.get("GATEWAY_ENABLED_UPSTREAMS", ""))
+                ),
                 hub_algorithm=env.get("HUB_ALGORITHM", cls.hub_algorithm),
                 gateway_scope=env.get("GATEWAY_SCOPE", cls.gateway_scope),
                 exchange_scope=env.get("HUB_EXCHANGE_SCOPE", cls.exchange_scope),

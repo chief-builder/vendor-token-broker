@@ -1,0 +1,20 @@
+# Link check for the Markdown docs (CI job `links`; locally: see CONTRIBUTING.md).
+# Relative links and #anchors are checked too.
+include_fragments = "full"
+max_retries = 3
+timeout = 30
+accept = ["200..=299", "429"]
+exclude_path = ['docs/index\.html$']
+exclude = [
+  # The local test stack (not running in CI) and placeholder hosts.
+  '^https?://(localhost|127\.0\.0\.1)',
+  '^https?://([a-z0-9-]+\.)*example\.(com|org)',
+  '^https?://[a-z-]+:[0-9]+',                     # compose service names
+  # Vendor MCP endpoints and OAuth endpoints answer 401/405 without a token.
+  '^https://api\.githubcopilot\.com/mcp',
+  '^https://mcp\.(linear\.app|atlassian\.com|cloudflare\.com)/',
+  '^https://github\.com/login/oauth/',
+  '^https://github\.com/settings/',
+  # Status badges: a workflow's badge 404s until that workflow first runs on main.
+  '^https://github\.com/[^/]+/[^/]+/actions/workflows/[^/]+/badge\.svg',
+]

@@ -1,4 +1,5 @@
 """Problem responses: RFC 9457 shape and the frozen title vocabulary."""
+
 import json
 
 from token_broker.problems import TITLES, Problems
@@ -33,6 +34,11 @@ def test_configurable_prefix_never_touches_title():
 
 def test_frozen_titles_present():
     # The wire contract set (handler.lua reads `title` on plain 409s).
-    for title in ("needs-consent", "needs-reconsent-scope", "revoke-pending",
-                  "vendor-unavailable", "vault-unavailable"):
+    for title in (
+        "needs-consent",
+        "needs-reconsent-scope",
+        "revoke-pending",
+        "vendor-unavailable",
+        "vault-unavailable",
+    ):
         assert title in TITLES

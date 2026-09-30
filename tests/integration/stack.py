@@ -6,6 +6,7 @@ never collide with the unit suite's modules.
 Ported from the source lab's phase5/phase7 conftests, with Keycloak logins
 replaced by hub-stub minting.
 """
+
 import base64
 import json
 import os
@@ -27,8 +28,7 @@ MOCK_CONTAINER = "vtb-mock-vendor"
 
 
 def mint(sub: str = "wf-user-1", kind: str = "ps256", **extra) -> str:
-    r = requests.post(f"{HUB}/_test/token", json={"sub": sub, "kind": kind, **extra},
-                      timeout=10)
+    r = requests.post(f"{HUB}/_test/token", json={"sub": sub, "kind": kind, **extra}, timeout=10)
     r.raise_for_status()
     return r.json()["access_token"]
 
@@ -42,22 +42,33 @@ def sub_of(token: str) -> str:
     return claims_of(token)["sub"]
 
 
-def resolve(token: str, vendor: str = "mockhub", min_ttl_s: int = 30,
-            sub: str | None = None, required_scopes: list[str] | None = None,
-            ) -> requests.Response:
+def resolve(
+    token: str,
+    vendor: str = "mockhub",
+    min_ttl_s: int = 30,
+    sub: str | None = None,
+    required_scopes: list[str] | None = None,
+) -> requests.Response:
     body: dict = {"vendor": vendor, "min_ttl_s": min_ttl_s}
     if sub is not None:
         body["sub"] = sub
     if required_scopes is not None:
         body["required_scopes"] = required_scopes
-    return requests.post(f"{BROKER}/v1/tokens/resolve", json=body,
-                         headers={"Authorization": f"Bearer {token}"}, timeout=15)
+    return requests.post(
+        f"{BROKER}/v1/tokens/resolve",
+        json=body,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
 
 
 def revoke_grant(token: str, vendor: str = "mockhub") -> None:
     """Self-service revoke so a probe starts from a clean needs-consent state."""
-    requests.delete(f"{BROKER}/v1/grants/{vendor}/{sub_of(token)}",
-                    headers={"Authorization": f"Bearer {token}"}, timeout=15)
+    requests.delete(
+        f"{BROKER}/v1/grants/{vendor}/{sub_of(token)}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
 
 
 def do_consent(token: str, vendor: str = "mockhub") -> None:
@@ -87,11 +98,11 @@ def to_vendor(token: str, vendor: str = "mockhub") -> tuple[requests.Session, st
     assert r.status_code == 404, f"expected needs-consent, got {r.status_code}: {r.text}"
     browser = requests.Session()
     r = browser.get(r.json()["authorize_uri"], allow_redirects=False, timeout=15)
-    assert r.status_code in (302, 307), r.text                       # -> hub login
+    assert r.status_code in (302, 307), r.text  # -> hub login
     r = browser.get(r.headers["location"], allow_redirects=False, timeout=15)
-    assert r.status_code in (302, 307), r.text                       # -> /callback/_hub
+    assert r.status_code in (302, 307), r.text  # -> /callback/_hub
     r = browser.get(r.headers["location"], allow_redirects=False, timeout=15)
-    assert r.status_code in (302, 307), r.text                       # -> vendor
+    assert r.status_code in (302, 307), r.text  # -> vendor
     return browser, r.headers["location"]
 
 
@@ -105,7 +116,7 @@ def new_consent_state(token: str, vendor: str = "mockhub") -> tuple[requests.Ses
 def walk_to_callback(token: str, vendor: str = "mockhub") -> tuple[requests.Session, str]:
     """(browser session, the vendor callback URL), un-redeemed."""
     browser, location = to_vendor(token, vendor)
-    r = browser.get(location, allow_redirects=False, timeout=15)     # vendor consents
+    r = browser.get(location, allow_redirects=False, timeout=15)  # vendor consents
     assert r.status_code in (302, 307)
     return browser, r.headers["location"]
 
@@ -122,19 +133,18 @@ def mock_reset() -> None:
 def vendor_token_ttl(seconds: int):
     """Tokens the mock vendor mints meanwhile live `seconds` (normally 60,
     which is inside REFRESH_BUFFER_S, so every resolve refreshes)."""
-    requests.post(f"{MOCK}/_test/at_ttl", json={"seconds": seconds},
-                  timeout=10).raise_for_status()
+    requests.post(f"{MOCK}/_test/at_ttl", json={"seconds": seconds}, timeout=10).raise_for_status()
     try:
         yield
     finally:
-        requests.post(f"{MOCK}/_test/at_ttl", json={"seconds": 60},
-                      timeout=10).raise_for_status()
+        requests.post(f"{MOCK}/_test/at_ttl", json={"seconds": 60}, timeout=10).raise_for_status()
 
 
 def container_audit_events(container: str, since: str = "5m") -> list[dict]:
     """One-line JSON audit records off a container log."""
-    out = subprocess.run(["docker", "logs", "--since", since, container],
-                         capture_output=True, text=True, check=True)
+    out = subprocess.run(
+        ["docker", "logs", "--since", since, container], capture_output=True, text=True, check=True
+    )
     events = []
     for line in (out.stdout + out.stderr).splitlines():
         for m in re.finditer(r'\{"audit".*?\}', line):
@@ -158,15 +168,19 @@ def broker_audit(event: str | None = None, since: str = "5m") -> list[dict]:
 def stack_containers() -> list[str]:
     out = subprocess.run(
         ["docker", "ps", "--filter", "name=vtb-", "--format", "{{.Names}}"],
-        capture_output=True, text=True, check=True)
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     return [n for n in out.stdout.splitlines() if n.strip()]
 
 
 def grep_container_logs(needle: str, since: str = "30m") -> dict[str, int]:
     hits = {}
     for name in stack_containers():
-        out = subprocess.run(["docker", "logs", "--since", since, name],
-                             capture_output=True, text=True)
+        out = subprocess.run(
+            ["docker", "logs", "--since", since, name], capture_output=True, text=True
+        )
         n = (out.stdout + out.stderr).count(needle)
         if n:
             hits[name] = n

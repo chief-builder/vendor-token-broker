@@ -1,6 +1,7 @@
 """MCP gateway behavior with fake hub, broker and upstream: the tool
 catalog, forwarding, the consent flow in both protocol eras, error mapping,
 and token handling."""
+
 import json
 import logging
 
@@ -20,8 +21,10 @@ from gateway_helpers import (
     upstream_tool,
 )
 
+from mcp_gateway.upstream import UpstreamRejected
+
 ERAS = ["legacy", "2026-07-28"]
-ACCOUNT = ["connect_github", "disconnect_github"]     # listed for every upstream
+ACCOUNT = ["connect_github", "disconnect_github"]  # listed for every upstream
 
 
 async def _names(c) -> list[str]:
@@ -34,9 +37,11 @@ def _catalog_events(caplog) -> list[dict]:
 
 # ------------------------------------------------ pinned tool list (snapshot)
 
+
 async def test_snapshot_tools_are_listed_before_anyone_connects():
-    gw, *_ = make_gateway(snapshot=[upstream_tool(n) for n in
-                                    ("get_me", "issue_read", "create_issue")])
+    gw, *_ = make_gateway(
+        snapshot=[upstream_tool(n) for n in ("get_me", "issue_read", "create_issue")]
+    )
     async with client(gw) as c:
         # create_issue is in the snapshot but not allowlisted.
         assert await _names(c) == [*ACCOUNT, "github_get_me", "github_issue_read"]
@@ -45,8 +50,10 @@ async def test_snapshot_tools_are_listed_before_anyone_connects():
 @pytest.mark.parametrize("mode", ERAS)
 async def test_snapshot_matching_upstream_changes_nothing(mode, caplog):
     caplog.set_level(logging.INFO, logger="mcp_gateway")
-    gw, *_ = make_gateway(snapshot=[upstream_tool("get_me"), upstream_tool("issue_read")],
-                          tools=("get_me", "issue_read"))
+    gw, *_ = make_gateway(
+        snapshot=[upstream_tool("get_me"), upstream_tool("issue_read")],
+        tools=("get_me", "issue_read"),
+    )
     messages = ListChanged()
     async with client(gw, mode=mode, messages=messages) as c:
         await c.call_tool("connect_github", {})
@@ -59,8 +66,9 @@ async def test_drifted_schema_is_reported_but_the_snapshot_stays_listed(caplog):
     """The list is shared by every user: one user's live schema (which a
     vendor may personalize) never replaces the snapshot."""
     caplog.set_level(logging.INFO, logger="mcp_gateway")
-    gw, *_ = make_gateway(snapshot=[upstream_tool("get_me"),
-                                    upstream_tool("issue_read", param="old_param")])
+    gw, *_ = make_gateway(
+        snapshot=[upstream_tool("get_me"), upstream_tool("issue_read", param="old_param")]
+    )
     messages = ListChanged()
     async with client(gw, messages=messages) as c:
         await c.call_tool("connect_github", {})
@@ -83,8 +91,10 @@ async def test_allowlisted_tool_missing_from_snapshot_is_added_and_announced(cap
 
 async def test_tool_the_vendor_dropped_stays_listed_and_is_reported(caplog):
     caplog.set_level(logging.INFO, logger="mcp_gateway")
-    gw, *_ = make_gateway(snapshot=[upstream_tool(n) for n in ("get_me", "list_issues")],
-                          tools=("get_me", "list_issues"))
+    gw, *_ = make_gateway(
+        snapshot=[upstream_tool(n) for n in ("get_me", "list_issues")],
+        tools=("get_me", "list_issues"),
+    )
     async with client(gw) as c:
         await c.call_tool("connect_github", {})
         assert await _names(c) == [*ACCOUNT, "github_get_me", "github_list_issues"]
@@ -92,6 +102,7 @@ async def test_tool_the_vendor_dropped_stays_listed_and_is_reported(caplog):
 
 
 # ----------------------------------------------------------- no snapshot
+
 
 async def test_starts_with_connect_github_only():
     gw, *_ = make_gateway()
@@ -135,13 +146,13 @@ async def test_forwards_with_the_users_vendor_token():
         r = await c.call_tool("github_issue_read", {"owner": "octo"})
     assert r.content[0].text == "issue_read ok {'owner': 'octo'}"
     assert upstream.calls == [(VENDOR_TOKEN, "issue_read", {"owner": "octo"})]
-    assert hub.seen[-1] == MCP_TOKEN          # the MCP token only ever goes to the hub
+    assert hub.seen[-1] == MCP_TOKEN  # the MCP token only ever goes to the hub
 
 
 @pytest.mark.parametrize("mode", ERAS)
 async def test_not_connected_elicits_the_consent_link_then_proceeds(mode):
     gw, _, broker, _ = make_gateway(connected=False)
-    broker.connect_on_poll = True             # user finishes in the browser
+    broker.connect_on_poll = True  # user finishes in the browser
     seen: list = []
     async with client(gw, mode=mode, seen=seen) as c:
         r = await c.call_tool("connect_github", {})
@@ -181,7 +192,7 @@ async def test_waiting_polls_grants_not_resolve():
     broker.connect_on_poll = True
     async with client(gw) as c:
         await c.call_tool("connect_github", {})
-    assert len(broker.resolves) == 2          # first ask + the final token fetch
+    assert len(broker.resolves) == 2  # first ask + the final token fetch
 
 
 @pytest.mark.parametrize("mode", ERAS)
@@ -195,11 +206,16 @@ async def test_broker_outage_while_waiting_is_retryable_not_a_timeout(mode):
     assert "not connected yet" not in r.content[0].text
 
 
-@pytest.mark.parametrize("error, text", [
-    (Unavailable("broker answered 503 vault-unavailable"), "retry shortly"),
-    (HandoffError("broker rejected the hub token (invalid-hub-token)"),
-     "gateway configuration problem"),
-])
+@pytest.mark.parametrize(
+    "error, text",
+    [
+        (Unavailable("broker answered 503 vault-unavailable"), "retry shortly"),
+        (
+            HandoffError("broker rejected the hub token (invalid-hub-token)"),
+            "gateway configuration problem",
+        ),
+    ],
+)
 async def test_broker_failures_never_ask_to_connect(error, text):
     gw, _, broker, _ = make_gateway()
     broker.error = error
@@ -228,10 +244,14 @@ async def test_revoke_pending_is_reported_not_reconnected():
     assert seen == []
 
 
-@pytest.mark.parametrize("error, text", [
-    (RuntimeError("Client error '401 Unauthorized'"), "reconnect GitHub"),
-    (ConnectionError("boom"), "unavailable"),
-])
+@pytest.mark.parametrize(
+    "error, text",
+    [
+        (UpstreamRejected("github answered 401"), "reconnect GitHub"),
+        (RuntimeError("Client error '401 Unauthorized'"), "unavailable"),  # no guessing
+        (ConnectionError("boom"), "unavailable"),
+    ],
+)
 async def test_upstream_failures(error, text):
     gw, _, _, upstream = make_gateway()
     async with client(gw) as c:
@@ -246,8 +266,10 @@ async def test_no_token_material_in_logs_or_results(caplog):
     gw, _, broker, _ = make_gateway(connected=False)
     broker.connect_on_poll = True
     async with client(gw) as c:
-        texts = [(await c.call_tool("connect_github", {})).content[0].text,
-                 (await c.call_tool("github_get_me", {})).content[0].text]
+        texts = [
+            (await c.call_tool("connect_github", {})).content[0].text,
+            (await c.call_tool("github_get_me", {})).content[0].text,
+        ]
     for secret in (VENDOR_TOKEN, HUB_JWT, MCP_TOKEN):
         assert secret not in caplog.text
         assert all(secret not in t for t in texts)
@@ -255,15 +277,21 @@ async def test_no_token_material_in_logs_or_results(caplog):
 
 # ---------------------------------------------------------- several upstreams
 
+
 async def test_every_upstream_is_listed_with_its_prefix():
-    gw, *_ = make_gateway(with_linear=True, snapshot=[upstream_tool("get_me")],
-                          tools=("get_me",))
+    gw, *_ = make_gateway(with_linear=True, snapshot=[upstream_tool("get_me")], tools=("get_me",))
     async with client(gw) as c:
         await c.call_tool("connect_linear", {})
         names = await _names(c)
-    assert names == ["connect_github", "connect_linear", "disconnect_github",
-                     "disconnect_linear", "github_get_me", "linear_get_issue",
-                     "linear_list_issues"]                         # save_issue stays hidden
+    assert names == [
+        "connect_github",
+        "connect_linear",
+        "disconnect_github",
+        "disconnect_linear",
+        "github_get_me",
+        "linear_get_issue",
+        "linear_list_issues",
+    ]  # save_issue stays hidden
 
 
 async def test_connections_are_per_upstream():
@@ -277,7 +305,8 @@ async def test_connections_are_per_upstream():
         r = await c.call_tool("connect_linear", {})
     assert "Linear is connected" in r.content[0].text
     assert [(p.url, p.message) for p in seen] == [
-        (CONSENT_URLS["linear"], "Connect your Linear account to continue.")]
+        (CONSENT_URLS["linear"], "Connect your Linear account to continue.")
+    ]
 
 
 async def test_each_upstream_gets_only_its_own_vendors_token():
@@ -324,6 +353,7 @@ async def test_upstream_error_detail_is_logged_without_the_token(caplog):
 
 # --------------------------------------------------------------- disconnect
 
+
 async def test_disconnect_revokes_and_the_next_call_asks_to_connect(caplog):
     caplog.set_level(logging.INFO, logger="mcp_gateway")
     gw, hub, broker, _ = make_gateway()
@@ -338,11 +368,14 @@ async def test_disconnect_revokes_and_the_next_call_asks_to_connect(caplog):
     assert (event["upstream"], event["sub"], event["outcome"]) == ("github", "alice", "revoked")
 
 
-@pytest.mark.parametrize("outcome, text", [
-    ("not-connected", "GitHub was not connected"),
-    ("unsupported", "remove the app's access in your GitHub account settings"),
-    ("pending", "The broker keeps retrying"),
-])
+@pytest.mark.parametrize(
+    "outcome, text",
+    [
+        ("not-connected", "GitHub was not connected"),
+        ("unsupported", "remove the app's access in your GitHub account settings"),
+        ("pending", "The broker keeps retrying"),
+    ],
+)
 async def test_disconnect_outcomes_are_explained(outcome, text):
     gw, _, broker, _ = make_gateway()
     broker.disconnect_outcome = outcome
@@ -351,11 +384,16 @@ async def test_disconnect_outcomes_are_explained(outcome, text):
     assert text in r.content[0].text
 
 
-@pytest.mark.parametrize("error, text", [
-    (Unavailable("broker answered 503 vault-unavailable"), "retry shortly"),
-    (HandoffError("broker refused the disconnect (403 forbidden)"),
-     "gateway configuration problem"),
-])
+@pytest.mark.parametrize(
+    "error, text",
+    [
+        (Unavailable("broker answered 503 vault-unavailable"), "retry shortly"),
+        (
+            HandoffError("broker refused the disconnect (403 forbidden)"),
+            "gateway configuration problem",
+        ),
+    ],
+)
 async def test_disconnect_failures_are_errors(error, text):
     gw, _, broker, _ = make_gateway()
     broker.error = error

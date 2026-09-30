@@ -14,6 +14,7 @@
   draining or restarting them would discard the cache hits that keep
   serving during the outage (design §9).
 """
+
 import asyncio
 import time
 
@@ -45,7 +46,8 @@ async def startup_checks(b) -> tuple[int, bool]:
             except CustodyTokenRejected as exc:
                 raise StartupError(
                     "custody token rejected: check VAULT_TOKEN / VAULT_TOKEN_FILE "
-                    "and that the token carries the broker and default policies") from exc
+                    "and that the token carries the broker and default policies"
+                ) from exc
             except CustodyUnavailable:
                 waiting.append("custody backend unreachable at VAULT_ADDR")
         if not hub_ok:
@@ -64,18 +66,19 @@ async def startup_checks(b) -> tuple[int, bool]:
                 waiting.append("hub OIDC discovery unreachable at HUB_ISSUER")
             except HubLoginError as exc:
                 raise StartupError(f"hub login misconfigured: {exc}") from exc
-        if not waiting:
+        if status is not None and not waiting:
             return status
         if time.monotonic() >= deadline:
             raise StartupError(
-                f"startup checks failed after {b.cfg.startup_timeout_s}s: " + "; ".join(waiting))
+                f"startup checks failed after {b.cfg.startup_timeout_s}s: " + "; ".join(waiting)
+            )
         await asyncio.sleep(STARTUP_RETRY_S)
 
 
 async def renew_loop(b, ttl: int, renewable: bool) -> None:
     """Keep the custody token alive: renew at half the remaining TTL."""
     if ttl <= 0 or not renewable:
-        return   # never expires, or cannot be renewed (health will warn)
+        return  # never expires, or cannot be renewed (health will warn)
     expires = time.monotonic() + ttl
     delay = max(ttl / 2, MIN_RENEW_INTERVAL_S)
     backoff = MIN_RENEW_INTERVAL_S
@@ -85,8 +88,11 @@ async def renew_loop(b, ttl: int, renewable: bool) -> None:
             ttl = await b.custody.renew_token()
         except CustodyUnavailable as exc:
             remaining = expires - time.monotonic()
-            audit("broker.custody.renew_failed", error=str(exc),
-                  ttl_remaining_s=max(0, int(remaining)))
+            audit(
+                "broker.custody.renew_failed",
+                error=str(exc),
+                ttl_remaining_s=max(0, int(remaining)),
+            )
             delay = max(min(backoff, remaining / 2), MIN_RENEW_INTERVAL_S)
             backoff = min(backoff * 2, MAX_RENEW_BACKOFF_S)
             continue

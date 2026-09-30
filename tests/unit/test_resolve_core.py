@@ -6,6 +6,7 @@ winner's token and never writes its own pair), STALE on invalid_grant with
 the mass-STALE page, VendorDown leaving the entry usable, persisted
 REFRESHING (fresh vs abandoned) on the redis profile, lock timeout, and
 fail-closed custody."""
+
 import asyncio
 import time
 
@@ -20,6 +21,7 @@ def _paths(events):
 
 
 # ------------------------------------------------------------ steady state
+
 
 async def test_cache_path_serves_without_refresh(capsys):
     h = Harness()
@@ -90,14 +92,15 @@ async def test_narrow_grant_409_reconsent_unions_scopes():
 
 # ------------------------------------------------------------ lazy refresh
 
+
 async def test_lazy_refresh_inside_buffer_advances_generation(capsys):
     h = Harness()
-    h.put(expires_at=time.time() + 100)          # < REFRESH_BUFFER_S (300)
+    h.put(expires_at=time.time() + 100)  # < REFRESH_BUFFER_S (300)
     r = await h.resolve()
     assert r.status_code == 200 and r.json()["access_token"] == "at-1"
     stored = h.stored()
     assert stored["refresh_generation"] == 2
-    assert stored["refresh_token"] == "rt-1"     # rotated RT persisted
+    assert stored["refresh_token"] == "rt-1"  # rotated RT persisted
     assert h.vendors.refresh_rts == ["rt-0"]
     events = audit_events(capsys)
     refresh = [e for e in events if e["audit"] == "broker.refresh"]
@@ -129,9 +132,13 @@ async def test_cas_loser_serves_winner_and_never_writes_its_pair(capsys):
     h = Harness()
     h.put(expires_at=time.time() + 100)
 
-    def other_writer(_n):   # another writer lands between our read and our CAS
-        h.put(access_token="at-other", refresh_token="rt-other",
-              refresh_generation=7, expires_at=time.time() + 3600)
+    def other_writer(_n):  # another writer lands between our read and our CAS
+        h.put(
+            access_token="at-other",
+            refresh_token="rt-other",
+            refresh_generation=7,
+            expires_at=time.time() + 3600,
+        )
 
     h.vendors.on_refresh = other_writer
     r = await h.resolve()
@@ -146,6 +153,7 @@ async def test_cas_loser_serves_winner_and_never_writes_its_pair(capsys):
 
 
 # ------------------------------------------------------------ STALE
+
 
 async def test_invalid_grant_goes_stale_and_needs_consent(capsys):
     h = Harness()
@@ -173,6 +181,7 @@ async def test_mass_stale_pages_once_at_threshold(capsys):
 
 # ------------------------------------------------------------ vendor outage
 
+
 async def test_vendor_down_503_entry_untouched_memory():
     h = Harness()
     h.put(expires_at=time.time() + 100)
@@ -181,7 +190,7 @@ async def test_vendor_down_503_entry_untouched_memory():
     assert r.status_code == 503 and r.json()["title"] == "vendor-unavailable"
     stored = h.stored()
     assert stored["state"] == "ACTIVE" and stored["refresh_generation"] == 1
-    assert h.custody.entries[(VENDOR, "wf-user-1")][1] == 1   # no write at all
+    assert h.custody.entries[(VENDOR, "wf-user-1")][1] == 1  # no write at all
 
 
 async def test_vendor_down_restores_active_redis():
@@ -199,6 +208,7 @@ async def test_vendor_down_restores_active_redis():
 
 # ------------------------------------------------------------ persisted REFRESHING
 
+
 async def test_redis_refresh_success_leaves_no_marker():
     h = Harness(coord="redis")
     h.put(expires_at=time.time() + 100)
@@ -209,8 +219,12 @@ async def test_redis_refresh_success_leaves_no_marker():
 
 async def test_fresh_refreshing_marker_is_never_rerefreshed(capsys):
     h = Harness(coord="redis")
-    h.put(state="REFRESHING", refresh_owner="other-replica",
-          refresh_started_at=time.time(), expires_at=time.time() + 100)
+    h.put(
+        state="REFRESHING",
+        refresh_owner="other-replica",
+        refresh_started_at=time.time(),
+        expires_at=time.time() + 100,
+    )
     r = await h.resolve()
     assert r.status_code == 200 and r.json()["access_token"] == "at-0"
     assert h.vendors.refresh_calls == 0
@@ -219,8 +233,12 @@ async def test_fresh_refreshing_marker_is_never_rerefreshed(capsys):
 
 async def test_fresh_refreshing_marker_too_short_to_serve_is_503():
     h = Harness(coord="redis")
-    h.put(state="REFRESHING", refresh_owner="other-replica",
-          refresh_started_at=time.time(), expires_at=time.time() + 10)
+    h.put(
+        state="REFRESHING",
+        refresh_owner="other-replica",
+        refresh_started_at=time.time(),
+        expires_at=time.time() + 10,
+    )
     r = await h.resolve(min_ttl_s=30)
     assert r.status_code == 503 and r.json()["title"] == "vendor-unavailable"
     assert h.vendors.refresh_calls == 0
@@ -228,9 +246,12 @@ async def test_fresh_refreshing_marker_too_short_to_serve_is_503():
 
 async def test_abandoned_refreshing_marker_is_taken_over():
     h = Harness(coord="redis")
-    h.put(state="REFRESHING", refresh_owner="dead-replica",
-          refresh_started_at=time.time() - 60,        # > REFRESHING_TTL_S (30)
-          expires_at=time.time() + 10)
+    h.put(
+        state="REFRESHING",
+        refresh_owner="dead-replica",
+        refresh_started_at=time.time() - 60,  # > REFRESHING_TTL_S (30)
+        expires_at=time.time() + 10,
+    )
     r = await h.resolve()
     assert r.status_code == 200 and r.json()["access_token"] == "at-1"
     stored = h.stored()
@@ -238,6 +259,7 @@ async def test_abandoned_refreshing_marker_is_taken_over():
 
 
 # ------------------------------------------------------------ lock timeout
+
 
 async def test_lock_timeout_rereads_and_serves_usable_token(capsys):
     h = Harness(lock_timeout_s=1)
@@ -265,6 +287,7 @@ async def test_lock_timeout_with_unusable_token_is_503():
 
 # ------------------------------------------------------------ custody outage
 
+
 async def test_custody_outage_fails_closed_uncached():
     h = Harness()
     h.custody.fail = True
@@ -275,13 +298,14 @@ async def test_custody_outage_fails_closed_uncached():
 async def test_custody_outage_still_serves_cache_hit():
     h = Harness()
     h.put(expires_at=time.time() + 3600)
-    assert (await h.resolve()).status_code == 200    # warms the cache
+    assert (await h.resolve()).status_code == 200  # warms the cache
     h.custody.fail = True
     r = await h.resolve()
     assert r.status_code == 200 and r.json()["access_token"] == "at-0"
 
 
 # ------------------------------------------------------------ review fixes (change 2)
+
 
 async def test_refresh_keeps_the_consent_created_at():
     h = Harness()
@@ -311,7 +335,7 @@ async def test_stale_after_lost_cas_is_not_marked_or_counted(capsys):
     events = audit_events(capsys)
     assert not [e for e in events if e["audit"] == "broker.stale"]
     count, _ = await h.coord.record_stale(VENDOR)
-    assert count == 1                          # the window saw nothing before this
+    assert count == 1  # the window saw nothing before this
 
 
 async def test_empty_ceiling_neither_requests_nor_enforces_scopes():

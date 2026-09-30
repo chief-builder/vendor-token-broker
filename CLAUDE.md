@@ -27,17 +27,21 @@ runbook), `docs/adr/0001-redis-coordination.md`, `docs/mcp-gateway.md`
 - **Fail closed, distinguishably.** Custody outage → 503
   `vault-unavailable` (never "absent" → consent); redis outage → 503
   `coordination-unavailable` on every path that needs redis (refresh,
-  consent-link minting, authorize/callbacks, DELETE); resolves that need no
-  refresh keep serving.
+  consent-link minting, authorize, DELETE; the browser callbacks answer an
+  HTML 503 page); resolves that need no refresh keep serving.
 - `memory` coordination backend must keep exact single-replica semantics;
   multi-replica behavior belongs in the `redis` backend only.
 
 ## Commands
 
+Python 3.14 (`.python-version`). `make help` lists the targets; `make check`
+(lint, format check, mypy, unit tests with a 90% coverage floor, docs check)
+is what CI runs without Docker. By hand:
+
 ```sh
 .venv/bin/pip install --require-hashes -r requirements-dev.lock  # once
 .venv/bin/pip install --no-deps -e .
-ruff check src tests
+ruff check src tests tools && ruff format --check src tests tools && mypy
 pytest tests/unit -q                             # offline, no containers
 
 docker compose -f tests/stack/docker-compose.yml up -d --build --wait
@@ -53,13 +57,18 @@ docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build
 pytest tests/integration -m gateway -q
 ```
 
-CI (`.github/workflows/ci.yml`): lint+schema / unit / docker-build /
-integration(memory, redis) / gateway / multi. The integration job is a matrix over
-`COORD_BACKEND`; each leg brings the stack up with that env var.
+CI (`.github/workflows/ci.yml`): checks (ruff, format, mypy, docs) / audit
+(pip-audit over the three locks) / unit (+coverage) / build (wheel + images)
+/ links (lychee) / integration(memory, redis) / gateway / multi; CodeQL in
+`codeql.yml`. The integration job is a matrix over `COORD_BACKEND`; each leg
+brings the stack up with that env var. Locks: `make lock` (uv).
 
 ## Layout
 
-- `src/token_broker/` — `main.py` (app factory + 7 routes), `config.py`
+- `src/token_broker/` — `main.py` (app factory + thin 7-route table),
+  `broker.py` (per-process state + token cache), `resolve.py` (resolve +
+  single-flight waiters), `consent.py` (authorize + both callbacks),
+  `grants.py` (list + self-service revoke/delete), `config.py`
   (fail-fast dataclass), `hub.py` (hub-JWT re-validation), `hub_login.py`
   (consent-leg hub OIDC login), `lifecycle.py` (startup checks, custody-token
   renewal, `/healthz`), `vendors.py`

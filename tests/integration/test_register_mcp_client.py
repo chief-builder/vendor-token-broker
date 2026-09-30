@@ -2,6 +2,7 @@
 server: one dynamic registration with the broker's callback and scope
 ceiling, credentials written where asked, the secret never printed, and a
 second run refused (registering again would disconnect everyone)."""
+
 import json
 import subprocess
 import sys
@@ -14,16 +15,34 @@ SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "register-mcp-client.py
 
 def _register(tmp_path: Path) -> subprocess.CompletedProcess:
     registry = tmp_path / "registry.json"
-    registry.write_text(json.dumps({"mockhub-atlassian": {
-        "vendor_id": "mockhub-atlassian",
-        "auth_metadata_url": "http://localhost:8310/.well-known/oauth-authorization-server/mcp",
-        "token_endpoint_auth_method": "client_secret_post",
-        "scope_ceiling": ["issues:read"]}}))
+    registry.write_text(
+        json.dumps(
+            {
+                "mockhub-atlassian": {
+                    "vendor_id": "mockhub-atlassian",
+                    "auth_metadata_url": "http://localhost:8310/.well-known/oauth-authorization-server/mcp",
+                    "token_endpoint_auth_method": "client_secret_post",
+                    "scope_ceiling": ["issues:read"],
+                }
+            }
+        )
+    )
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "mockhub-atlassian",
-         "--redirect-base", "http://localhost:8600", "--env-file", str(tmp_path / ".env"),
-         "--registry", str(registry)],
-        capture_output=True, text=True, timeout=60)
+        [
+            sys.executable,
+            str(SCRIPT),
+            "mockhub-atlassian",
+            "--redirect-base",
+            "http://localhost:8600",
+            "--env-file",
+            str(tmp_path / ".env"),
+            "--registry",
+            str(registry),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
 
 
 def test_registers_once_and_never_prints_the_secret(tmp_path):

@@ -4,6 +4,7 @@ The mock normally issues 60s tokens, so every other suite takes the refresh
 path. This module switches it to 1-hour tokens so resolves are served from
 the cache, then checks the cache TTL (CACHE_TTL_S=10 in the test stack) and
 that a broker-driven delete invalidates immediately."""
+
 import time
 
 import pytest
@@ -40,8 +41,11 @@ def test_resolves_are_served_from_the_cache_without_refreshing():
     tokens = {resolve(tok).json()["access_token"] for _ in range(5)}
     assert len(tokens) == 1
     assert mock_state()["counters"]["token_refresh"] == refreshes
-    paths = [e["path"] for e in broker_audit("broker.resolve", since="1m")
-             if e.get("sub") == "wf-cache-hit" and e.get("decision") == "allow"]
+    paths = [
+        e["path"]
+        for e in broker_audit("broker.resolve", since="1m")
+        if e.get("sub") == "wf-cache-hit" and e.get("decision") == "allow"
+    ]
     assert paths[-5:] == ["cache"] * 5
     revoke_grant(tok)
 
@@ -58,7 +62,7 @@ def test_cache_entry_expires_after_the_ttl():
     entry = requests.get(path, headers=ROOT, timeout=10).json()["data"]["data"]
     rotated = {**entry, "access_token": "rotated-out-of-band"}
     requests.post(path, headers=ROOT, json={"data": rotated}, timeout=10).raise_for_status()
-    assert resolve(tok).json()["access_token"] == first            # still cached
+    assert resolve(tok).json()["access_token"] == first  # still cached
     time.sleep(CACHE_TTL_S + 1)
     assert resolve(tok).json()["access_token"] == "rotated-out-of-band"
     revoke_grant(tok)
@@ -68,8 +72,11 @@ def test_broker_delete_invalidates_the_cache_at_once():
     tok = mint("wf-cache-del")
     revoke_grant(tok)
     do_consent(tok)
-    assert resolve(tok).status_code == 200                          # cached now
-    r = requests.delete(f"{BROKER}/v1/grants/mockhub/wf-cache-del",
-                        headers={"Authorization": f"Bearer {tok}"}, timeout=15)
+    assert resolve(tok).status_code == 200  # cached now
+    r = requests.delete(
+        f"{BROKER}/v1/grants/mockhub/wf-cache-del",
+        headers={"Authorization": f"Bearer {tok}"},
+        timeout=15,
+    )
     assert r.status_code == 200
-    assert resolve(tok).status_code == 404                          # no stale serve
+    assert resolve(tok).status_code == 404  # no stale serve

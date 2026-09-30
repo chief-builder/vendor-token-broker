@@ -38,11 +38,9 @@ The generated page loads Mermaid from a CDN, pinned to an exact tested version (
 
 The site is one page. It includes Overview, Quickstart, MCP Gateway, Connect Your Own MCP Server, Broker API, Deploy and Operate, Security, Design, Token Lifecycle, Smoke Tests, and the Redis Decision.
 
-`docs-site-review.md` (at the repository root) is review evidence for maintainers. It is not in the reader navigation.
-
 **Where it goes:**
 
-- The source repository is private. The companion GitHub Pages repository, `vendor-token-broker-docs`, is public.
+- The site is served from a companion public repository, `vendor-token-broker-docs` (GitHub Pages). This source repository is public too.
 - Copy the generated `docs/index.html` there only after the local checks pass.
 - Publish these with it, so readers know what they are reading: the source revision, software release status, MCP revision, and review date.
 

@@ -7,7 +7,7 @@ name = "vendor-token-broker"
 version = "1.1.0"
 description = "OAuth credential custodian for third-party SaaS vendors: acquires, custodies, refreshes, and revokes vendor tokens per user. Custodian, not issuer."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { file = "LICENSE" }
 dependencies = [
     "fastapi>=0.115,<1",
@@ -29,6 +29,8 @@ dev = [
     "fakeredis[lua]>=2.23",
     "ruff>=0.6",
     "markdown>=3.6",
+    "mypy>=2.3",
+    "pytest-cov>=7.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -44,7 +46,22 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The page template embeds CSS rules that read best on one line each.
+"tools/build-pages.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.14"
+files = ["src"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["hvac", "hvac.*"]  # ships no type hints
+ignore_missing_imports = true

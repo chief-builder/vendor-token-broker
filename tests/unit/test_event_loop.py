@@ -4,6 +4,7 @@ Uses a real VaultStore whose blocking hvac layer is replaced by time.sleep
 fakes, and a JWKS client that blocks, then measures what else the loop can
 do meanwhile: tick a timer, serve a cache hit, answer /healthz. Also covers
 the sweeper's per-pass budget."""
+
 import asyncio
 import time
 
@@ -40,8 +41,8 @@ class BlockingVault(VaultStore):
 async def _max_stall(coro, tick=0.005) -> tuple[float, object]:
     """Run `coro` while a ticker measures the longest gap between ticks."""
     gaps, done = [], asyncio.Event()
-    started = time.monotonic()   # before `coro` runs: a block before the first
-                                 # tick must count as a stall too
+    started = time.monotonic()  # before `coro` runs: a block before the first
+    # tick must count as a stall too
 
     async def ticker():
         last = started
@@ -63,7 +64,7 @@ async def _max_stall(coro, tick=0.005) -> tuple[float, object]:
 async def test_sweep_over_slow_custody_does_not_stall_the_loop():
     h = Harness()
     vault = BlockingVault(h.cfg)
-    for i in range(200):   # far from expiry: every entry is read, none refreshed
+    for i in range(200):  # far from expiry: every entry is read, none refreshed
         vault.entries[(VENDOR, f"u{i}")] = (make_entry(expires_at=time.time() + 7200), 1)
     h.broker.custody = vault
     stall, _ = await _max_stall(sweeper.sweep_once(h.broker))
@@ -74,7 +75,7 @@ async def test_sweep_over_slow_custody_does_not_stall_the_loop():
 
 async def test_slow_custody_listing_does_not_stall_the_loop():
     h = Harness()
-    vault = BlockingVault(h.cfg, delay=0, list_delay=0.5)   # a large KV list call
+    vault = BlockingVault(h.cfg, delay=0, list_delay=0.5)  # a large KV list call
     vault.entries[(VENDOR, "u1")] = (make_entry(expires_at=time.time() + 7200), 1)
     h.broker.custody = vault
     stall, _ = await _max_stall(sweeper.sweep_once(h.broker))
@@ -89,9 +90,9 @@ async def test_cache_hit_serves_while_a_custody_read_hangs():
     vault.entries[(VENDOR, "fast")] = (make_entry(expires_at=time.time() + 3600), 1)
     vault.entries[(VENDOR, "slow")] = (make_entry(expires_at=time.time() + 3600), 1)
     h.broker.custody = vault
-    assert (await h.resolve(as_sub="fast")).status_code == 200      # warms the cache
+    assert (await h.resolve(as_sub="fast")).status_code == 200  # warms the cache
 
-    slow = asyncio.create_task(h.resolve(as_sub="slow"))            # hangs 1s in custody
+    slow = asyncio.create_task(h.resolve(as_sub="slow"))  # hangs 1s in custody
     await asyncio.sleep(0.05)
     started = time.monotonic()
     r = await h.resolve(as_sub="fast")
@@ -104,11 +105,12 @@ async def test_cache_hit_serves_while_a_custody_read_hangs():
 async def test_blocking_jwks_fetch_does_not_stall_the_loop():
     class SlowJWKS(StaticJWKS):
         def get_signing_key_from_jwt(self, token):
-            time.sleep(1.0)            # a JWKS refetch against a slow hub
+            time.sleep(1.0)  # a JWKS refetch against a slow hub
             return super().get_signing_key_from_jwt(token)
 
     h = Harness()
     from broker_harness import hub_key
+
     h.broker.hub = HubValidator(h.cfg, jwks_client=SlowJWKS(hub_key().public_key()))
     h.put()
     stall, r = await _max_stall(h.resolve())
@@ -118,7 +120,7 @@ async def test_blocking_jwks_fetch_does_not_stall_the_loop():
 
 async def test_sweep_budget_covers_everything_over_consecutive_passes():
     h = Harness(sweep_max_entries=2)
-    for i in range(5):     # all in the proactive band
+    for i in range(5):  # all in the proactive band
         h.put(sub=f"u{i}", expires_at=time.time() + 600)
     calls = []
     for _ in range(3):

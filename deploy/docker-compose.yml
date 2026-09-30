@@ -1,20 +1,30 @@
 # Single-replica deployment shape (COORD_BACKEND=memory).
-# Expects an existing OpenBao/Vault provisioned per docs/operations.md and
-# a reviewed registry.json next to this file. Configure via .env
-# (see ../.env.example for the full reference).
+#
+# Expects, next to this file:
+#   .env                a copy of ../.env.example with your values. Every
+#                       variable in it reaches the broker, including the
+#                       vendor client ids that enable registry vendors
+#                       (enabled_env, e.g. GITHUB_CLIENT_ID) and knobs such
+#                       as HUB_LOGIN_HINT=none for a real IdP.
+#   registry.json       your reviewed vendor registry
+#   broker-vault-token  a scoped custody token, never root (docs/operations.md).
+#                       The image runs as UID 65534 and compose bind-mounts
+#                       the file with its host owner and mode: on a Linux host
+#                       a 0600 file is unreadable and startup fails with
+#                       "VAULT_TOKEN_FILE unreadable". Make it readable by
+#                       that user (chown 65534, or chmod 0444).
+#
+# The broker speaks plain HTTP on 8300. Terminate TLS in front of it and set
+# BROKER_PUBLIC_URL to the https URL (the consent cookie is Secure only then).
 
 services:
   broker:
     build: ..
+    env_file: .env
     environment:
-      HUB_ISSUER: ${HUB_ISSUER}
-      HUB_JWKS_URI: ${HUB_JWKS_URI}
-      BROKER_PUBLIC_URL: ${BROKER_PUBLIC_URL}
-      VAULT_ADDR: ${VAULT_ADDR}
+      # Paths inside the container; they override any value in .env.
       VAULT_TOKEN_FILE: /run/secrets/broker-vault-token
       REGISTRY_PATH: /app/registry.json
-      HUB_LOGIN_CLIENT_ID: ${HUB_LOGIN_CLIENT_ID}
-      HUB_LOGIN_CLIENT_SECRET: ${HUB_LOGIN_CLIENT_SECRET:-}
     volumes:
       - ./registry.json:/app/registry.json:ro
     secrets:
@@ -30,4 +40,4 @@ services:
 
 secrets:
   broker-vault-token:
-    file: ./broker-vault-token   # scoped token, never root
+    file: ./broker-vault-token

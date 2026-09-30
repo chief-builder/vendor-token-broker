@@ -7,6 +7,7 @@ forbidden). Contract shape — the pinned contract version and exactly one
 tier audience — is enforced here so a malformed or cross-tier token never
 reaches the resolve path.
 """
+
 import asyncio
 import logging
 
@@ -17,6 +18,9 @@ from jwt.exceptions import PyJWKClientConnectionError
 from .config import Config
 
 TIER_PREFIX = "mcp://tier/"
+# How long a fetched hub JWKS is trusted before it is fetched again. A key
+# the hub removes keeps validating for at most this long.
+JWKS_CACHE_S = 300
 log = logging.getLogger(__name__)
 
 
@@ -33,8 +37,11 @@ class HubValidator:
         self._cfg = cfg
         # cache_keys stays off: PyJWT's per-kid cache never expires, so a key
         # the hub removed from its JWKS would stay trusted until restart. The
-        # JWK-set cache (300s lifespan) already avoids per-request fetches.
-        self._jwks = jwks_client or PyJWKClient(cfg.hub_jwks_uri, timeout=cfg.jwks_timeout_s)
+        # JWK-set cache (JWKS_CACHE_S) avoids per-request fetches and bounds
+        # how long a removed key is still accepted.
+        self._jwks = jwks_client or PyJWKClient(
+            cfg.hub_jwks_uri, timeout=cfg.jwks_timeout_s, lifespan=JWKS_CACHE_S
+        )
 
     async def verify(self, authorization: str | None) -> dict:
         """Async entry point for the routes: validate() in a worker thread,
@@ -56,6 +63,18 @@ class HubValidator:
         except Exception as exc:  # e.g. "did not contain any signing keys"
             raise HubAuthError(str(exc)) from exc
 
+    def signing_key(self, token: str):
+        """The hub key that signed `token` (blocking; worker thread only).
+        Raises HubUnavailable when the JWKS cannot be fetched and
+        HubAuthError for an unknown kid or a malformed token."""
+        try:
+            return self._jwks.get_signing_key_from_jwt(token).key
+        except (PyJWKClientConnectionError, TimeoutError) as exc:
+            log.debug("hub JWKS fetch failed: %s", exc)
+            raise HubUnavailable("hub signing keys unavailable") from exc
+        except Exception as exc:  # unknown kid, malformed token, ...
+            raise HubAuthError(str(exc)) from exc
+
     def validate(self, authorization: str | None) -> dict:
         """Return verified claims of the Bearer hub JWT. Raises HubAuthError for a
         bad token, HubUnavailable when the hub JWKS cannot be fetched."""
@@ -65,16 +84,11 @@ class HubValidator:
         if len(parts) != 2 or not parts[1]:
             raise HubAuthError("missing bearer token")
         token = parts[1]
-        try:
-            key = self._jwks.get_signing_key_from_jwt(token).key
-        except (PyJWKClientConnectionError, TimeoutError) as exc:
-            log.debug("hub JWKS fetch failed: %s", exc)
-            raise HubUnavailable("hub signing keys unavailable") from exc
-        except Exception as exc:  # unknown kid, malformed token, ...
-            raise HubAuthError(str(exc)) from exc
+        key = self.signing_key(token)
         try:
             claims = jwt.decode(
-                token, key,
+                token,
+                key,
                 algorithms=list(self._cfg.hub_algorithms),
                 issuer=self._cfg.hub_issuer,
                 audience=self._cfg.hub_tier_audience,

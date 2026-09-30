@@ -1,6 +1,6 @@
-# Base image pinned by digest (python:3.12-slim); dependencies installed
+# Base image pinned by digest (python:3.14-slim); dependencies installed
 # from the hash-checked lock, then the package itself without dependencies.
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d
 WORKDIR /app
 COPY requirements.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock

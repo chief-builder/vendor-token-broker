@@ -2,6 +2,7 @@
 encoded KV key each (even with "/"), pre-encoding entries are still served
 and migrate on their next write, only 2 versions are retained, and STALE
 entries hold no token material."""
+
 from urllib.parse import quote
 
 import requests
@@ -18,14 +19,18 @@ def kv(path: str) -> requests.Response:
 
 
 def keys_under(vendor: str) -> list[str]:
-    r = requests.request("LIST", f"{BAO}/v1/vendor-tokens/metadata/{vendor}",
-                         headers=ROOT, timeout=10)
+    r = requests.request(
+        "LIST", f"{BAO}/v1/vendor-tokens/metadata/{vendor}", headers=ROOT, timeout=10
+    )
     return r.json()["data"]["keys"] if r.status_code == 200 else []
 
 
 def delete_grant(token: str, sub: str) -> requests.Response:
-    return requests.delete(f"{BROKER}/v1/grants/mockhub/{quote(sub, safe='')}",
-                           headers={"Authorization": f"Bearer {token}"}, timeout=15)
+    return requests.delete(
+        f"{BROKER}/v1/grants/mockhub/{quote(sub, safe='')}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
 
 
 def test_subject_with_slashes_is_one_key_and_fully_manageable():
@@ -36,9 +41,10 @@ def test_subject_with_slashes_is_one_key_and_fully_manageable():
     assert resolve(tok).status_code == 200
     keys = keys_under("mockhub")
     assert encode_sub(sub) in keys
-    assert not [k for k in keys if k.startswith("https")]     # no nested folder
-    grants = requests.get(f"{BROKER}/v1/grants", timeout=10,
-                          headers={"Authorization": f"Bearer {tok}"}).json()["grants"]
+    assert not [k for k in keys if k.startswith("https")]  # no nested folder
+    grants = requests.get(
+        f"{BROKER}/v1/grants", timeout=10, headers={"Authorization": f"Bearer {tok}"}
+    ).json()["grants"]
     assert [g["vendor"] for g in grants] == ["mockhub"]
     r = delete_grant(tok, sub)
     assert r.status_code == 200, r.text
@@ -54,12 +60,17 @@ def test_pre_encoding_entry_is_served_and_migrates_on_its_next_write():
     do_consent(tok)
     current = kv(f"data/mockhub/{encode_sub(sub)}").json()["data"]["data"]
     # Move it back to where an older broker would have left it.
-    requests.post(f"{BAO}/v1/vendor-tokens/data/mockhub/{sub}", headers=ROOT,
-                  json={"data": current}, timeout=10).raise_for_status()
-    requests.delete(f"{BAO}/v1/vendor-tokens/metadata/mockhub/{encode_sub(sub)}",
-                    headers=ROOT, timeout=10).raise_for_status()
+    requests.post(
+        f"{BAO}/v1/vendor-tokens/data/mockhub/{sub}",
+        headers=ROOT,
+        json={"data": current},
+        timeout=10,
+    ).raise_for_status()
+    requests.delete(
+        f"{BAO}/v1/vendor-tokens/metadata/mockhub/{encode_sub(sub)}", headers=ROOT, timeout=10
+    ).raise_for_status()
 
-    r = resolve(tok)          # 60s mock token: read legacy, refresh, CAS-migrate
+    r = resolve(tok)  # 60s mock token: read legacy, refresh, CAS-migrate
     assert r.status_code == 200, r.text
     assert kv(f"data/mockhub/{sub}").status_code == 404
     migrated = kv(f"data/mockhub/{encode_sub(sub)}").json()["data"]["data"]
@@ -72,7 +83,7 @@ def test_only_two_versions_are_retained():
     tok = mint(sub)
     revoke_grant(tok)
     do_consent(tok)
-    for _ in range(3):        # each resolve refreshes (60s mock tokens)
+    for _ in range(3):  # each resolve refreshes (60s mock tokens)
         assert resolve(tok).status_code == 200
     meta = kv(f"metadata/mockhub/{encode_sub(sub)}").json()["data"]
     assert meta["current_version"] >= 4
@@ -91,4 +102,4 @@ def test_stale_entry_holds_no_token_material():
     stored = kv(f"data/mockhub/{encode_sub(sub)}").json()["data"]["data"]
     assert stored["state"] == "STALE"
     assert stored["access_token"] == "" and stored["refresh_token"] == ""
-    assert delete_grant(tok, sub).status_code == 200    # nothing to revoke, still removable
+    assert delete_grant(tok, sub).status_code == 200  # nothing to revoke, still removable

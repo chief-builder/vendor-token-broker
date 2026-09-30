@@ -73,7 +73,15 @@
       "revocation": {
         "type": "object",
         "required": ["type"],
-        "properties": { "type": { "type": "string" } },
+        "properties": {
+          "type": { "enum": ["rfc7009", "github_grant"] },
+          "grant_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "github_grant only: the grant-deletion URL template, {client_id} substituted (default https://api.github.com/applications/{client_id}/grant; set it for GitHub Enterprise Server)."
+          }
+        },
+        "additionalProperties": false,
         "description": "Revocation strategy: RFC 7009 endpoint or a documented vendor-specific deviation (e.g. GitHub grant deletion). An rfc7009 vendor whose metadata has no revocation_endpoint is deleted locally only (audited outcome: unsupported)."
       },
       "_notes": { "type": "string" }

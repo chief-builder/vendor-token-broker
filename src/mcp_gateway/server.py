@@ -19,6 +19,7 @@ list is shared by every user, and a vendor may personalize what it lists
 description). Vendor tokens are used for one upstream call and never
 logged, cached, or returned.
 """
+
 import asyncio
 import json
 import logging
@@ -37,17 +38,19 @@ from fastmcp.server.auth import RemoteAuthProvider
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token, get_context
 from fastmcp.tools.base import InputRequiredToolResult, Tool, ToolResult
+from pydantic import AnyHttpUrl
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .clients import Broker, HandoffError, Hub, Unavailable
 from .config import GatewayConfig, UpstreamSpec
-from .upstream import Upstream
+from .upstream import Upstream, UpstreamRejected
 
 log = logging.getLogger("mcp_gateway")
 
 URL_ELICITATION = mcp_types.ClientCapabilities(
-    elicitation=mcp_types.ElicitationCapability(url=mcp_types.UrlElicitationCapability()))
-MRTR_ERA = "2026-07-28"      # from this revision, client input is a multi-round-trip result
+    elicitation=mcp_types.ElicitationCapability(url=mcp_types.UrlElicitationCapability())
+)
+MRTR_ERA = "2026-07-28"  # from this revision, client input is a multi-round-trip result
 CONSENT_KEY = "connect"
 POLL_S = 2.0
 
@@ -65,8 +68,10 @@ def _dependency_errors(who: dict) -> Iterator[None]:
         yield
     except HandoffError as exc:
         audit("gateway.call", **who, outcome="error", reason=str(exc))
-        raise ToolError("the gateway could not establish your identity with the "
-                        "token broker; this is a gateway configuration problem") from exc
+        raise ToolError(
+            "the gateway could not establish your identity with the "
+            "token broker; this is a gateway configuration problem"
+        ) from exc
     except Unavailable as exc:
         audit("gateway.call", **who, outcome="unavailable", reason=str(exc))
         raise ToolError(f"a dependency is unavailable ({exc}); retry shortly") from exc
@@ -74,19 +79,19 @@ def _dependency_errors(who: dict) -> Iterator[None]:
 
 DISCONNECTED = {
     "revoked": "{name} is disconnected: {name} was asked to cancel the token, and the "
-               "broker deleted its copy. Run connect_{n} to connect again.",
+    "broker deleted its copy. Run connect_{n} to connect again.",
     "unsupported": "{name} is disconnected here, but {name} can't cancel tokens remotely. "
-                   "To be sure, also remove the app's access in your {name} account settings.",
+    "To be sure, also remove the app's access in your {name} account settings.",
     "not-connected": "{name} was not connected.",
     "pending": "{name} could not be reached to cancel the token. The broker keeps retrying; "
-               "until it succeeds, {name} can't be used here.",
+    "until it succeeds, {name} can't be used here.",
 }
 
 
 def _mcp_token() -> tuple[str, str]:
     """(raw MCP access token, sub) of the verified caller."""
     token = get_access_token()
-    if token is None:                   # auth middleware guarantees this in production
+    if token is None:  # auth middleware guarantees this in production
         raise ToolError("not authenticated")
     return token.token, str(token.claims.get("sub", ""))
 
@@ -105,17 +110,30 @@ class Route:
 
 
 class Gateway:
-    def __init__(self, cfg: GatewayConfig, hub: Hub, broker: Broker, routes: list[Route],
-                 current_token: Callable[[], tuple[str, str]] = _mcp_token):
+    def __init__(
+        self,
+        cfg: GatewayConfig,
+        hub: Hub,
+        broker: Broker,
+        routes: list[Route],
+        current_token: Callable[[], tuple[str, str]] = _mcp_token,
+    ):
         self.cfg, self.hub, self.broker = cfg, hub, broker
         self.routes = {r.spec.name: r for r in routes}
         self.current_token = current_token
-        self.mcp: FastMCP | None = None
+        self.mcp: FastMCP | None = None  # set by build_server()
+
+    @property
+    def server(self) -> FastMCP:
+        if self.mcp is None:
+            raise RuntimeError("build_server() has not attached an MCP server yet")
+        return self.mcp
 
     # ---------------------------------------------------------- token path
 
-    async def vendor_token(self, ctx: Context, route: Route,
-                           tool: str) -> str | mcp_types.InputRequiredResult:
+    async def vendor_token(
+        self, ctx: Context, route: Route, tool: str
+    ) -> str | mcp_types.InputRequiredResult:
         """The caller's token for this route's vendor, running the consent
         flow if needed. On the 2026-07-28 revision this whole tool body
         re-runs after the client answers, so everything before the answer
@@ -125,19 +143,22 @@ class Gateway:
         name = route.spec.display_name
         with _dependency_errors(who):
             hub_jwt = await self.hub.exchange(raw)
-            era = ctx.request_context.protocol_version
+            request = ctx.request_context
+            era = request.protocol_version if request is not None else ""
             answer = (ctx.input_responses or {}).get(CONSENT_KEY) if era >= MRTR_ERA else None
-            if answer is not None:                          # MRTR: the client answered
-                return await self._after_answer(hub_jwt, answer.action, route, who)
+            if answer is not None:  # MRTR: the client answered
+                # Anything but an elicitation answer counts as not accepting.
+                action = answer.action if isinstance(answer, mcp_types.ElicitResult) else "cancel"
+                return await self._after_answer(hub_jwt, action, route, who)
             resolved = await self.broker.resolve(hub_jwt, route.spec.vendor)
             if resolved.token:
                 return resolved.token
             if not resolved.consent_url:
                 audit("gateway.call", **who, outcome="deny", reason=resolved.problem)
-                raise ToolError(f"{name} is not usable right now ({resolved.problem}); "
-                                "try again later")
-            return await self._ask_to_connect(ctx, era, hub_jwt, resolved.consent_url,
-                                              route, who)
+                raise ToolError(
+                    f"{name} is not usable right now ({resolved.problem}); try again later"
+                )
+            return await self._ask_to_connect(ctx, era, hub_jwt, resolved.consent_url, route, who)
 
     async def disconnect(self, route: Route) -> str:
         """Disconnect the caller's account for this route's vendor: the broker
@@ -146,29 +167,34 @@ class Gateway:
         name, n = route.spec.display_name, route.spec.name
         who = {"upstream": n, "tool": f"disconnect_{n}", "sub": sub}
         with _dependency_errors(who):
-            outcome = await self.broker.disconnect(await self.hub.exchange(raw),
-                                                   route.spec.vendor)
+            outcome = await self.broker.disconnect(await self.hub.exchange(raw), route.spec.vendor)
         audit("gateway.disconnect", **who, outcome=outcome)
         return DISCONNECTED[outcome].format(name=name, n=n)
 
-    async def _ask_to_connect(self, ctx: Context, era: str, hub_jwt: str, url: str,
-                              route: Route, who: dict) -> str | mcp_types.InputRequiredResult:
+    async def _ask_to_connect(
+        self, ctx: Context, era: str, hub_jwt: str, url: str, route: Route, who: dict
+    ) -> str | mcp_types.InputRequiredResult:
         name = route.spec.display_name
         message = f"Connect your {name} account to continue."
         if not ctx.session.check_client_capability(URL_ELICITATION):
             audit("gateway.consent", **who, outcome="manual")
-            raise ToolError(f"Connect {name} first: open {url} in your browser, "
-                            "then retry.")
+            raise ToolError(f"Connect {name} first: open {url} in your browser, then retry.")
         audit("gateway.consent", **who, outcome="elicit", era=era)
         elicitation_id = secrets.token_urlsafe(12)
         if era >= MRTR_ERA:
             return mcp_types.InputRequiredResult(
-                input_requests={CONSENT_KEY: mcp_types.ElicitRequest(
-                    params=mcp_types.ElicitRequestURLParams(
-                        message=message, url=url, elicitation_id=elicitation_id))},
-                request_state="consent")
-        result = await ctx.session.elicit_url(message, url, elicitation_id,
-                                              related_request_id=ctx.request_id)
+                input_requests={
+                    CONSENT_KEY: mcp_types.ElicitRequest(
+                        params=mcp_types.ElicitRequestURLParams(
+                            message=message, url=url, elicitation_id=elicitation_id
+                        )
+                    )
+                },
+                request_state="consent",
+            )
+        result = await ctx.session.elicit_url(
+            message, url, elicitation_id, related_request_id=ctx.request_id
+        )
         return await self._after_answer(hub_jwt, result.action, route, who)
 
     async def _after_answer(self, hub_jwt: str, action: str, route: Route, who: dict) -> str:
@@ -182,8 +208,9 @@ class Gateway:
         while not await self.broker.connected(hub_jwt, route.spec.vendor):
             if time.monotonic() >= deadline:
                 audit("gateway.consent", **who, outcome="timeout")
-                raise ToolError(f"{name} is not connected yet; finish connecting in the "
-                                "browser, then retry")
+                raise ToolError(
+                    f"{name} is not connected yet; finish connecting in the browser, then retry"
+                )
             await asyncio.sleep(POLL_S)
         resolved = await self.broker.resolve(hub_jwt, route.spec.vendor)
         if not resolved.token:
@@ -194,14 +221,24 @@ class Gateway:
     # ------------------------------------------------------------- catalog
 
     def register(self, route: Route, tool: mcp_types.Tool) -> None:
-        self.mcp.add_tool(UpstreamTool(
-            gateway=self, route_name=route.spec.name, upstream_tool=tool.name,
-            name=route.exposed(tool.name), description=tool.description or "",
-            parameters=tool.input_schema, annotations=tool.annotations))
+        self.server.add_tool(
+            UpstreamTool(
+                gateway=self,
+                route_name=route.spec.name,
+                upstream_tool=tool.name,
+                name=route.exposed(tool.name),
+                description=tool.description or "",
+                parameters=tool.input_schema,
+                annotations=tool.annotations,
+            )
+        )
 
     async def _registered(self, route: Route) -> dict[str, Tool]:
-        return {t.upstream_tool: t for t in await self.mcp.list_tools()
-                if isinstance(t, UpstreamTool) and t.route_name == route.spec.name}
+        return {
+            t.upstream_tool: t
+            for t in await self.server.list_tools()
+            if isinstance(t, UpstreamTool) and t.route_name == route.spec.name
+        }
 
     async def load_catalog(self, ctx: Context, route: Route, vendor_token: str) -> int:
         """Reconcile this route's listed tools with the vendor's live schemas,
@@ -213,25 +250,38 @@ class Gateway:
         async with route.lock:
             if not route.catalog_loaded:
                 allowed = set(route.spec.tools)
-                live = {t.name: t for t in await route.client.list_tools(vendor_token)
-                        if t.name in allowed}
+                live = {
+                    t.name: t
+                    for t in await route.client.list_tools(vendor_token)
+                    if t.name in allowed
+                }
                 listed = await self._registered(route)
                 added = sorted(set(live) - set(listed))
-                changed = sorted(n for n in set(live) & set(listed)
-                                 if (live[n].description or "", live[n].input_schema)
-                                 != (listed[n].description, listed[n].parameters))
+                changed = sorted(
+                    n
+                    for n in set(live) & set(listed)
+                    if (live[n].description or "", live[n].input_schema)
+                    != (listed[n].description, listed[n].parameters)
+                )
                 for name in added:
                     self.register(route, live[name])
                 missing = sorted(allowed - set(live))
-                audit("gateway.catalog", upstream=route.spec.name, listed=sorted(live),
-                      added=added, changed=changed, missing=missing)
+                audit(
+                    "gateway.catalog",
+                    upstream=route.spec.name,
+                    listed=sorted(live),
+                    added=added,
+                    changed=changed,
+                    missing=missing,
+                )
                 route.catalog_loaded = True
-                if added:        # only older clients act on this; see module docstring
+                if added:  # only older clients act on this; see module docstring
                     await ctx.send_notification(mcp_types.ToolListChangedNotification())
         return len(await self._registered(route))
 
-    async def forward(self, ctx: Context, route: Route, tool: str,
-                      arguments: dict[str, Any]) -> ToolResult:
+    async def forward(
+        self, ctx: Context, route: Route, tool: str, arguments: dict[str, Any]
+    ) -> ToolResult:
         exposed = route.exposed(tool)
         token = await self.vendor_token(ctx, route, exposed)
         if isinstance(token, mcp_types.InputRequiredResult):
@@ -241,14 +291,20 @@ class Gateway:
         name = route.spec.display_name
         try:
             result = await route.client.call_tool(token, tool, arguments)
-        except Exception as exc:     # transport or protocol failure upstream
-            rejected = "401" in str(exc)
-            detail = str(exc).replace(token, "<token>")[:200]   # never log the token
-            audit("gateway.call", **who, outcome="upstream-error",
-                  reason="rejected" if rejected else type(exc).__name__, detail=detail)
+        except Exception as exc:  # transport or protocol failure upstream
+            rejected = isinstance(exc, UpstreamRejected)
+            detail = str(exc).replace(token, "<token>")[:200]  # never log the token
+            audit(
+                "gateway.call",
+                **who,
+                outcome="upstream-error",
+                reason="rejected" if rejected else type(exc).__name__,
+                detail=detail,
+            )
             if rejected:
-                raise ToolError(f"{name} rejected the connection; reconnect {name} "
-                                "and retry") from exc
+                raise ToolError(
+                    f"{name} rejected the connection; reconnect {name} and retry"
+                ) from exc
             raise ToolError(f"{name}'s MCP server is unavailable; retry shortly") from exc
         audit("gateway.call", **who, outcome="ok", is_error=result.is_error)
         return ToolResult.from_mcp_result(result)
@@ -258,6 +314,7 @@ class UpstreamTool(Tool):
     """An allowlisted vendor tool, exposed as <upstream>_<tool> with the
     vendor's schema and forwarded per call under its upstream name.
     Arguments are validated by the vendor, not here."""
+
     gateway: Any = None
     route_name: str = ""
     upstream_tool: str = ""
@@ -275,17 +332,20 @@ def _connect_tool(gateway: Gateway, route: Route):
         count = await gateway.load_catalog(ctx, route, token)
         name = route.spec.display_name
         return f"{name} is connected; {count} {name} tools are available."
+
     return connect
 
 
 def _disconnect_tool(gateway: Gateway, route: Route):
     async def disconnect() -> str:
         return await gateway.disconnect(route)
+
     return disconnect
 
 
 DISCONNECT_ANNOTATIONS = mcp_types.ToolAnnotations(
-    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True)
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True
+)
 
 
 def build_server(gateway: Gateway, auth=None) -> FastMCP:
@@ -293,15 +353,21 @@ def build_server(gateway: Gateway, auth=None) -> FastMCP:
     gateway.mcp = mcp
     for route in gateway.routes.values():
         name = route.spec.display_name
-        mcp.tool(_connect_tool(gateway, route), name=f"connect_{route.spec.name}",
-                 description=f"Connect your {name} account (a browser opens if it isn't "
-                             f"connected yet). The {name} tools start with "
-                             f"{route.spec.name}_.")
-        mcp.tool(_disconnect_tool(gateway, route), name=f"disconnect_{route.spec.name}",
-                 description=f"Disconnect your {name} account: {name} is asked to cancel "
-                             f"the token, and the broker deletes its copy. Run "
-                             f"connect_{route.spec.name} to connect again.",
-                 annotations=DISCONNECT_ANNOTATIONS)
+        mcp.tool(
+            _connect_tool(gateway, route),
+            name=f"connect_{route.spec.name}",
+            description=f"Connect your {name} account (a browser opens if it isn't "
+            f"connected yet). The {name} tools start with "
+            f"{route.spec.name}_.",
+        )
+        mcp.tool(
+            _disconnect_tool(gateway, route),
+            name=f"disconnect_{route.spec.name}",
+            description=f"Disconnect your {name} account: {name} is asked to cancel "
+            f"the token, and the broker deletes its copy. Run "
+            f"connect_{route.spec.name} to connect again.",
+            annotations=DISCONNECT_ANNOTATIONS,
+        )
         for tool in route.spec.snapshot:
             if tool.name in route.spec.tools:
                 gateway.register(route, tool)
@@ -350,11 +416,19 @@ def build_auth(cfg: GatewayConfig, verifier: JWTVerifier | None = None) -> Remot
     Clients are told to request the scope because the hub may not support
     RFC 8707 resource indicators (Keycloak doesn't)."""
     verifier = verifier or AuditingJWTVerifier(
-        jwks_uri=cfg.hub_jwks_uri, issuer=cfg.hub_issuer, audience=cfg.resource_url,
-        algorithm=cfg.hub_algorithm, required_scopes=[cfg.gateway_scope])
-    return RemoteAuthProvider(token_verifier=verifier, authorization_servers=[cfg.hub_issuer],
-                              base_url=cfg.public_url, scopes_supported=[cfg.gateway_scope],
-                              resource_name="vtb mcp-gateway")
+        jwks_uri=cfg.hub_jwks_uri,
+        issuer=cfg.hub_issuer,
+        audience=cfg.resource_url,
+        algorithm=cfg.hub_algorithm,
+        required_scopes=[cfg.gateway_scope],
+    )
+    return RemoteAuthProvider(
+        token_verifier=verifier,
+        authorization_servers=[AnyHttpUrl(cfg.hub_issuer)],
+        base_url=cfg.public_url,
+        scopes_supported=[cfg.gateway_scope],
+        resource_name="vtb mcp-gateway",
+    )
 
 
 class AuditMissingBearer:

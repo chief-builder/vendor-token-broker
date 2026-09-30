@@ -1,6 +1,6 @@
 # MCP gateway
 
-**Reviewed 2026-09-28 · MCP 2026-07-28 · tested with FastMCP 4.0.10, Keycloak 26.7.4, and Claude Code 2.1.283.**
+**Reviewed 2026-09-30 · MCP 2026-07-28 · FastMCP 4.0.10 and Keycloak 26.7.4 in the automated suites; manually tested with Claude Code 2.1.283.**
 
 The MCP gateway lets AI assistants such as Claude Code use tools from several services, each as the signed-in person. It serves **GitHub**, **Linear**, **Atlassian** (Jira and Confluence), and **Cloudflare**.
 
@@ -146,6 +146,7 @@ To update a saved copy from the live service:
 UPSTREAM_TOKEN=$(gh auth token) .venv/bin/python tools/refresh-tool-snapshot.py github
 UPSTREAM_TOKEN=<Linear API key> .venv/bin/python tools/refresh-tool-snapshot.py linear
 UPSTREAM_TOKEN=<token from the broker> .venv/bin/python tools/refresh-tool-snapshot.py atlassian
+UPSTREAM_TOKEN=<token from the broker> .venv/bin/python tools/refresh-tool-snapshot.py cloudflare
 ```
 
 For Atlassian and Cloudflare, the token has to come from the broker: connect the account first, then resolve it at the broker (see [Broker API](api.md)).
@@ -284,7 +285,7 @@ Required settings: `GATEWAY_PUBLIC_URL`, `HUB_ISSUER`, `HUB_JWKS_URI`, `HUB_TOKE
 | `headers` | Optional. Extra headers on every call, such as GitHub's `X-MCP-Readonly`. `Authorization` is not allowed here |
 | `auth_scheme` | Optional. `Bearer` (default), or `Sentry-Bearer` for Sentry's MCP server |
 | `protocol` | Optional. How the gateway, as a client, picks the MCP revision. `legacy` (default): the classic handshake, for servers that stop at MCP 2025-11-25, like GitHub and Linear. `auto`: try revision 2026-07-28 first, and fall back to the classic handshake for servers that don't show they support it. `2026-07-28`: use that revision without trying. All four bundled services use `legacy` |
-| `snapshot` | Optional. The saved tool list. A bare file name (no `/`) always means the bundled `src/mcp_gateway/snapshots/` folder. A value with a `/` is a path relative to the upstreams file. Without it, the service's tools only appear after someone runs its `connect_<name>` tool |
+| `snapshot` | Optional. The saved tool list. A bare file name (no `/`) always means the bundled `src/mcp_gateway/snapshots/` folder. A value with a `/` in a custom upstreams file (`GATEWAY_UPSTREAMS`) is a path relative to that file; in the bundled file it is looked up under `snapshots/` too. Without it, the service's tools only appear after someone runs its `connect_<name>` tool |
 
 The gateway checks the file at startup and refuses to start if:
 
@@ -415,10 +416,11 @@ The stack sets shorter limits so the tests run quickly:
 
 - **No subscription channel.** The saved tool lists avoid needing one. But if you allow a tool that isn't in a saved copy, it only appears after someone runs `connect_<service>`, and clients on MCP 2026-07-28 only see it after they reconnect.
 - **Many dependencies.** `requirements-gateway.lock` pins 80 packages with checksums, including FastMCP 4.0.10 and the broker's own dependencies. Review updates to that file like any other supply-chain change.
+- **FastMCP reads `FASTMCP_*` settings from a `.env` file in the working directory** (override the file name with `FASTMCP_ENV_FILE`). The gateway's own settings come only from the environment. The image's working directory holds no `.env` (`.dockerignore` excludes it), so this matters only when you run the gateway from a checkout.
 - **One swap and one service session per call.** This is simple and keeps nothing between calls, but it adds some delay. The gateway doesn't reuse connections.
 - **Read-only.** Write tools are blocked by the tool lists, and by each service's read-only header, URL, or scope. For Cloudflare, only the scopes do this, because `execute` can call any Cloudflare API. `disconnect_<service>` changes only the person's own connection in the broker, never data at the service.
 - **Linear's and Cloudflare's client secrets expire** after about 90 days. The test registrations expire on 2026-12-27 and 2026-12-26. Register again, update custody, and everyone reconnects. See [Servers with their own sign-in](mcp-gateway.md#servers-with-their-own-sign-in). Put the date in your calendar.
 - **Saved tool lists win.** If a service changes a tool, the gateway keeps listing the saved copy until you refresh it. Cloudflare's `execute` is always reported as `changed` when someone runs `connect_cloudflare`, because its live description is personalized.
 - **Linear account IDs aren't recorded.** Linear's API only speaks GraphQL, so the broker logs Linear connections with `vendor_user_id` `unknown`. This only affects audit joins.
-- **Signing keys are cached for an hour.** New keys from the sign-in service are picked up on first use. But a key the sign-in service removes (for example after a leak) stays trusted by the gateway until the cache runs out. Restart the gateway when you revoke a signing key. (The broker doesn't have this gap, because it never caches single keys.)
+- **Signing keys are cached for an hour.** New keys from the sign-in service are picked up on first use. But a key the sign-in service removes (for example after a leak) stays trusted by the gateway until the cache runs out. Restart the gateway when you revoke a signing key. (The broker's window is shorter: it never caches single keys, and it re-fetches the whole key set at least every 5 minutes (`JWKS_CACHE_S`), so a removed key stops working there within 5 minutes.)
 - **What we saw with Claude Code 2.1.283.** After the sign-in service moved to a new address, Claude Code kept using the old token endpoint. After a failed token refresh, its next tool call arrived with no usable sign-in (logged as `gateway.auth`). In both cases, removing and re-adding the server, then signing in once, fixed it. It also registered itself even when a pre-registered app ID was set.

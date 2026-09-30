@@ -1,9 +1,36 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 .venv/
-.pytest_cache/
-.ruff_cache/
+build/
 dist/
 *.egg-info/
+
+# Tool caches and reports
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local configuration and secrets (the committed example stays tracked)
 .env
+.env.*
+!.env.example
 tests/stack/.env
+deploy/.env
+deploy/registry.json
+deploy/broker-vault-token
+
+# Keys: only the labelled test keypair under tests/stack/keys/ is tracked
+*.pem
+*.key
+!tests/stack/keys/*.pem
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

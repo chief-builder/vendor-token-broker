@@ -12,6 +12,7 @@ The interface is async. hvac is a blocking client, so every call runs in a
 worker thread: a slow or frozen backend never stalls the event loop, and
 cache hits keep serving during a custody outage (§9).
 """
+
 import asyncio
 import base64
 import logging
@@ -43,7 +44,7 @@ def decode_sub(name: str) -> str:
     """KV key name back to the subject; a legacy raw name is the subject."""
     if not name.startswith(SUB_PREFIX):
         return name
-    raw = name[len(SUB_PREFIX):]
+    raw = name[len(SUB_PREFIX) :]
     return base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
 
 
@@ -72,8 +73,7 @@ class CasConflict(Exception):
 
 class Custody(Protocol):
     async def read(self, vendor: str, sub: str) -> tuple[dict, int] | None: ...
-    async def write(self, vendor: str, sub: str, entry: dict,
-                    cas: int | None = None) -> int: ...
+    async def write(self, vendor: str, sub: str, entry: dict, cas: int | None = None) -> int: ...
     async def delete(self, vendor: str, sub: str) -> None: ...
     async def list_subjects(self, vendor: str) -> list[str]: ...
     async def read_client(self, vendor: str) -> dict | None: ...
@@ -89,7 +89,8 @@ class VaultStore:
         # CustodyUnavailable (→ 503, §9 fail-closed) in bounded time
         # instead of hanging the resolve.
         self._client = hvac.Client(
-            url=cfg.vault_addr, token=cfg.vault_token, timeout=cfg.vault_timeout_s)
+            url=cfg.vault_addr, token=cfg.vault_token, timeout=cfg.vault_timeout_s
+        )
         # {(vendor, sub): KV version} for entries last read at their legacy
         # raw path and not yet migrated to the encoded path.
         self._legacy: dict[tuple[str, str], int] = {}
@@ -166,7 +167,8 @@ class VaultStore:
     def _read_at(self, path: str) -> tuple[dict, int] | None:
         try:
             resp = self._client.secrets.kv.v2.read_secret_version(
-                path=path, mount_point=TOKENS_MOUNT, raise_on_deleted_version=True)
+                path=path, mount_point=TOKENS_MOUNT, raise_on_deleted_version=True
+            )
         except hvac_exc.InvalidPath:
             return None
         except Exception as exc:
@@ -185,7 +187,7 @@ class VaultStore:
             self._delete_legacy(vendor, sub)
             return version
         version = self._write_at(self._path(vendor, sub), entry, cas)
-        if cas is None:   # an overwrite (consent) supersedes any legacy entry
+        if cas is None:  # an overwrite (consent) supersedes any legacy entry
             self._legacy.pop(key, None)
             self._delete_legacy(vendor, sub)
         return version
@@ -201,7 +203,8 @@ class VaultStore:
     def _write_at(self, path: str, entry: dict, cas: int | None) -> int:
         try:
             resp = self._client.secrets.kv.v2.create_or_update_secret(
-                path=path, secret=entry, cas=cas, mount_point=TOKENS_MOUNT)
+                path=path, secret=entry, cas=cas, mount_point=TOKENS_MOUNT
+            )
         except hvac_exc.InvalidRequest as exc:
             if "check-and-set" in str(exc):
                 raise CasConflict(str(exc)) from exc
@@ -218,7 +221,8 @@ class VaultStore:
     def _delete_at(self, path: str) -> None:
         try:
             self._client.secrets.kv.v2.delete_metadata_and_all_versions(
-                path=path, mount_point=TOKENS_MOUNT)
+                path=path, mount_point=TOKENS_MOUNT
+            )
         except hvac_exc.InvalidPath:
             pass
         except Exception as exc:
@@ -226,8 +230,7 @@ class VaultStore:
 
     def _list_subjects(self, vendor: str) -> list[str]:
         try:
-            resp = self._client.secrets.kv.v2.list_secrets(
-                path=vendor, mount_point=TOKENS_MOUNT)
+            resp = self._client.secrets.kv.v2.list_secrets(path=vendor, mount_point=TOKENS_MOUNT)
         except hvac_exc.InvalidPath:
             return []
         except Exception as exc:
@@ -241,7 +244,8 @@ class VaultStore:
     def _read_client(self, vendor: str) -> dict | None:
         try:
             resp = self._client.secrets.kv.v2.read_secret_version(
-                path=vendor, mount_point=CLIENTS_MOUNT, raise_on_deleted_version=True)
+                path=vendor, mount_point=CLIENTS_MOUNT, raise_on_deleted_version=True
+            )
         except hvac_exc.InvalidPath:
             return None
         except Exception as exc:

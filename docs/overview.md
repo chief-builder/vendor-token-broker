@@ -66,7 +66,7 @@ sequenceDiagram
     G-->>C: result, with no token in it
 ```
 
-The person signs in once (`/mcp`, then **Authenticate**). After that, each hop uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for all of them. See [Security](security.md).
+The person signs in once (`/mcp`, then **Authenticate**). After that, each hop uses its own credential. The sign-in token never reaches the broker or a service. A service token never reaches the assistant, the chat, or a log. A test searches every container's logs for the sign-in token, the hub JWT, and the GitHub, Linear, and Atlassian stand-in tokens. See [Security](security.md).
 
 ## The first time someone uses a service
 
@@ -191,9 +191,9 @@ stateDiagram-v2
 
 ## Status
 
-Software **1.1.0**, marked **unreleased** in the changelog. Tested end to end with Keycloak as the sign-in service, Claude Code 2.1.283 as the assistant, and the real GitHub, Linear, Atlassian, and Cloudflare MCP servers.
+Software **1.1.0**, marked **unreleased** in the changelog. Tested manually end to end (September 2026) with Keycloak as the sign-in service, Claude Code 2.1.283 as the assistant, and the real GitHub, Linear, Atlassian, and Cloudflare MCP servers. The automated suites use stand-ins for all four.
 
-These docs describe MCP **2026-07-28** (the MCP specification version) and were reviewed against the code on **2026-09-28**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
+These docs describe MCP **2026-07-28** (the MCP specification version) and were reviewed against the code on **2026-09-30**. [Security](security.md) lists which controls are built in, which are partial, and which your deployment must supply. This project makes no blanket claim of MCP conformance.
 
 ## Words used in these docs
 
