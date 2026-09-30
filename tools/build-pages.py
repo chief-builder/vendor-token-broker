@@ -101,7 +101,7 @@ SECTION_BY_FILE = {fname: sid for sid, _, fname, _ in SECTIONS}
 MERMAID_BLOCK = re.compile(r'<pre><code class="language-mermaid">(.*?)</code></pre>', re.S)
 
 
-def render(md_path: Path, section_id: str) -> str:
+def render(md_path: Path) -> str:
     text = md_path.read_text()
     body = markdown.markdown(text, extensions=["fenced_code", "tables", "toc"])
     body = MERMAID_BLOCK.sub(r'<pre class="mermaid">\1</pre>', body)
@@ -127,7 +127,7 @@ def build_page() -> str:
     sections_html = []
     nav_html = []
     for sid, title, fname, blurb in SECTIONS:
-        body = render(DOCS / fname, sid)
+        body = render(DOCS / fname)
         nav_html.append(f'<a href="#{sid}">{title}</a>')
         sections_html.append(
             f'<section id="{sid}">\n'

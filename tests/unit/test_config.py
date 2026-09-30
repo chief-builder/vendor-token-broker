@@ -133,3 +133,12 @@ def test_login_hint_defaults_to_sub_and_accepts_none():
 def test_unknown_login_hint_mode_is_a_config_error():
     with pytest.raises(ConfigError, match="HUB_LOGIN_HINT"):
         Config.from_env({**FULL_ENV, "HUB_LOGIN_HINT": "email"})
+
+
+def test_broker_and_gateway_share_one_algorithm_allowlist():
+    """The gateway keeps its own copy (its image must not import the broker);
+    the two must never drift apart."""
+    from mcp_gateway.config import ALLOWED_HUB_ALGORITHMS as gateway_allowed
+    from token_broker.config import ALLOWED_HUB_ALGORITHMS as broker_allowed
+
+    assert gateway_allowed == broker_allowed

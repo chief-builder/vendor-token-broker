@@ -43,7 +43,6 @@ class CoordinationUnavailable(Exception):
 
 
 class Coordination(Protocol):
-    profile: str
     persist_refreshing: bool
 
     async def start(self, on_invalidate: Callable[[str, str], None]) -> None: ...
@@ -56,6 +55,8 @@ class Coordination(Protocol):
     async def release_refresh_lock(self, vendor: str, sub: str, token: str) -> None: ...
 
     async def put_txn(self, txn_id: str, record: dict) -> None: ...
+    # Read without consuming. Not used by the routes (they take_txn); tests
+    # inspect consent transactions through it.
     async def get_txn(self, txn_id: str) -> dict | None: ...
     async def take_txn(self, txn_id: str) -> dict | None: ...
 
@@ -75,7 +76,6 @@ class Coordination(Protocol):
 class MemoryCoordination:
     """The lab's exact single-replica semantics behind the protocol."""
 
-    profile = "memory"
     persist_refreshing = False
 
     def __init__(self, cfg: Config):
@@ -250,7 +250,6 @@ async def _stop(task: asyncio.Task | None) -> None:
 class RedisCoordination:
     """Multi-replica profile on Redis 7 (ADR-0001)."""
 
-    profile = "redis"
     persist_refreshing = True
 
     def __init__(self, cfg: Config, instance_id: str, client=None):
