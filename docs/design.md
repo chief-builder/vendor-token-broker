@@ -893,7 +893,7 @@ flowchart TB
         LB["any balancer"]
         A2["broker A"]
         B2["broker B"]
-        R2["redis 7<br/>locks · consent state · sweep<br/>lease · invalidation pub/sub"]
+        R2["redis 8<br/>locks · consent state · sweep<br/>lease · invalidation pub/sub"]
         K2["custody KV-v2<br/>(CAS = correctness backstop)"]
         LB --> A2
         LB --> B2
@@ -929,7 +929,7 @@ flowchart TB
 
 ### Multi-replica (`COORD_BACKEND=redis`)
 
-Redis 7 provides:
+Redis (7.4 or later; the stack runs 8.10) provides:
 
 - the distributed single-flight lock (`LOCK_TTL_MS`, default 20000; it
   must be at least `(VENDOR_TIMEOUT_S + 2 × VAULT_TIMEOUT_S) × 1000` or

@@ -32,6 +32,12 @@ updates:
     directories:
       - /tests/stack
       - /deploy
+    ignore:
+      # nginx's odd minor versions are mainline; the stack tracks the stable
+      # line (1.30.x). Stable patches still come; move to the next stable
+      # line (1.32) by hand.
+      - dependency-name: nginx
+        update-types: ["version-update:semver-minor"]
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }   # let fresh releases settle first
     groups:

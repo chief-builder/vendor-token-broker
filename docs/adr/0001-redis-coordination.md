@@ -4,6 +4,8 @@
 
 This record explains why the broker uses Redis 7 to coordinate more than one replica.
 
+*Update 2026-09-30:* the test stack and the multi-replica deploy shape moved to Redis 8.10.2. The commands the broker uses (`SET NX PX`, `GETDEL`, Lua, sorted sets, pub/sub) are unchanged, and the redis and multi-replica suites pass on it.
+
 ## Context
 
 The source lab ran the broker as one replica. There:
