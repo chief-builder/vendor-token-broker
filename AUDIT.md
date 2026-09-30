@@ -391,6 +391,61 @@ it.
 
 ---
 
+## Phase 2 outcome (2026-09-30)
+
+Decisions taken: Python 3.14; one formatting commit; delete
+`docs-site-review.md`; split `main.py`; add a Makefile. The Atlassian
+metadata ID (U7) was checked: Atlassian's public, unauthenticated
+protected-resource metadata for `https://mcp.atlassian.com/v2/mcp` names
+exactly `https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3`, so it
+is Atlassian's global MCP authorization server, not tenant-specific. It stays.
+
+| Finding | Status | Commit |
+|---|---|---|
+| W1-W3, W5, W7-W13, U1, U4, U5, minor imprecisions | Fixed | `18f1ba2`, `e26b1b5` |
+| W4, W14 (CHANGELOG) | Fixed | `c032b4f` |
+| W6 (deploy env pass-through), token-file ownership (checked on a Linux Docker host: a 0600 file is unreadable by UID 65534, 0444 works), TLS note | Fixed | `0bc0866` |
+| W15 `docs-site-review.md` | Deleted (stale working notes with `/tmp` paths and a wrong "private" claim) | `276d2fc` |
+| W13 wording vs. extending the test | Docs narrowed to what the test checks; adding a Cloudflare tool call to the leak test was left out rather than written blind | `18f1ba2` |
+| Python 3.14, relocked, base digests, stub images on the hashed lock, `.dockerignore` | Done | `1788e00` |
+| Compose images pinned (exact version + digest), project name | Done; **redis held at 7.4.11** (major bump, needs a multi-replica run) | `eceda03` |
+| D1 split `main.py` | Done, behavior-neutral (statement-level diff checked) | `11654b0` |
+| D2 enabled vendors from injectable env | Done | `5acc319` |
+| D3 GitHub grant URL in registry; D14 revocation enum | Done (+ first tests of the `github_grant` path) | `f891145` |
+| D4 shared signing-key lookup | Done | `ddedf8d` |
+| D5 upstream 401 | **Real bug**, fixed: with MCP SDK 2.2.0 a 401 surfaces as a generic `MCPError(-32603)`, so "reconnect" never fired | `7bc1dd1` |
+| D5 malformed hub/broker answers | Fixed | `b1cbd49` |
+| D5 shared `httpx.AsyncClient` never closed | **Not done**: only matters at process exit; a lifespan hook around FastMCP's app is more change than it is worth | — |
+| D6 two audit implementations | **Not changed**: event names and the stdout JSON-line format are frozen wire contract (SIEM joins); documented as is | — |
+| D7 allowlist parity test; D8 dead code | Done | `e097245` |
+| D9 vendor metadata cache without TTL | **Not done** (restart refreshes it; low risk) | — |
+| D10 mypy | Clean; in CI | `bf4c9a4`, `76ced5d` |
+| D11 formatting | Done; enforced in CI; blame-ignored | `fa2793e`, `b81f8f0` |
+| D12 deprecated `setex` | Done | `c46b5f9` |
+| D13 FastMCP `.env` | Documented | `faaee53` |
+| JWKS test relied on aliasing (found during the PyJWT upgrade) | Fixed; window explicit (`JWKS_CACHE_S`) and tested both sides | `e95371a` |
+| Untested security paths (§5) | Tests added (positive and negative); mutation-checked | `12b57ac`, `b1cbd49`, `7bc1dd1`, `f891145` |
+| CI gaps (§6) | Done: Node 24 actions, permissions, concurrency, timeouts, format, mypy, coverage floor 90%, build, pip-audit, lychee, CodeQL, Dependabot; actionlint and zizmor clean | `76ced5d`, `f4485fb` |
+| Hygiene | `.gitignore`, `.editorconfig`, SECURITY, CONTRIBUTING, templates, Makefile | `24af3d0`, `5d65ab9`, `76ced5d` |
+
+**Results after Phase 2** (from a clean clone of the branch, `make check`):
+507 unit tests pass, **95% line coverage** (was 91%), ruff and mypy clean,
+docs generator check passes, lychee reports 0 broken links, `pip-audit`
+reports no known vulnerabilities, all five images build on Python 3.14 and
+the broker fails fast listing every missing variable.
+
+**Not run locally:** the Docker integration suites (memory, redis, gateway,
+multi-replica). Running them replaces the live `vtb-*` stack on the audit
+machine, and the session's sandbox refused that step. They run in CI on the
+pull request; treat that run as the evidence.
+
+**Proposed, not done:** publish the docs site from this repository through
+GitHub Pages (a settings change) instead of copying to a second repository;
+adopt CIMD for vendor MCP registration once vendors support it; bump Redis
+to 8.x after a multi-replica run.
+
+---
+
 ## Appendix A — Verified claims (condensed)
 
 | Document | Verified examples (evidence) |
