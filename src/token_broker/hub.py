@@ -18,6 +18,9 @@ from jwt.exceptions import PyJWKClientConnectionError
 from .config import Config
 
 TIER_PREFIX = "mcp://tier/"
+# How long a fetched hub JWKS is trusted before it is fetched again. A key
+# the hub removes keeps validating for at most this long.
+JWKS_CACHE_S = 300
 log = logging.getLogger(__name__)
 
 
@@ -34,8 +37,11 @@ class HubValidator:
         self._cfg = cfg
         # cache_keys stays off: PyJWT's per-kid cache never expires, so a key
         # the hub removed from its JWKS would stay trusted until restart. The
-        # JWK-set cache (300s lifespan) already avoids per-request fetches.
-        self._jwks = jwks_client or PyJWKClient(cfg.hub_jwks_uri, timeout=cfg.jwks_timeout_s)
+        # JWK-set cache (JWKS_CACHE_S) avoids per-request fetches and bounds
+        # how long a removed key is still accepted.
+        self._jwks = jwks_client or PyJWKClient(
+            cfg.hub_jwks_uri, timeout=cfg.jwks_timeout_s, lifespan=JWKS_CACHE_S
+        )
 
     async def verify(self, authorization: str | None) -> dict:
         """Async entry point for the routes: validate() in a worker thread,

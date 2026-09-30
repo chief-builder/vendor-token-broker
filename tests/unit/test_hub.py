@@ -126,17 +126,23 @@ def test_custom_pins_honored(rsa_key):
     assert v.validate(bearer(token))["iss"] == "https://other.test"
 
 
-def test_key_removed_from_jwks_stops_validating(cfg, rsa_key):
+def test_key_removed_from_jwks_stops_validating_after_the_set_cache(
+    cfg, rsa_key, monkeypatch
+):
     """No per-kid cache: once the hub drops a key from its JWKS, tokens
-    signed with it stop validating (no restart needed)."""
+    signed with it stop validating when the JWK-set cache expires
+    (JWKS_CACHE_S), with no restart. Within that window the key still works."""
     import jwt as pyjwt
+    from jwt import jwk_set_cache
     from jwt.algorithms import RSAAlgorithm
+
+    from token_broker.hub import JWKS_CACHE_S
 
     v = HubValidator(cfg)  # the real PyJWKClient
     jwk = RSAAlgorithm.to_jwk(rsa_key.public_key(), as_dict=True)
     jwk.update({"kid": "k1", "use": "sig"})
     published = {"keys": [jwk]}
-    v._jwks.fetch_data = lambda: published  # stands in for the HTTP fetch
+    v._jwks.fetch_data = lambda: {"keys": list(published["keys"])}  # the HTTP fetch
 
     claims = pyjwt.decode(
         mint_hub_token(rsa_key, "PS256", cfg), options={"verify_signature": False}
@@ -145,6 +151,10 @@ def test_key_removed_from_jwks_stops_validating(cfg, rsa_key):
     assert v.validate(bearer(token))["sub"] == "wf-user-1"
 
     published["keys"] = []  # the hub rotates the key out
+    assert v.validate(bearer(token))["sub"] == "wf-user-1"  # cached set, same window
+
+    now = time.monotonic()
+    monkeypatch.setattr(jwk_set_cache.time, "monotonic", lambda: now + JWKS_CACHE_S + 1)
     with pytest.raises(HubAuthError):
         v.validate(bearer(token))
 
