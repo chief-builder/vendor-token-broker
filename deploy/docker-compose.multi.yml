@@ -1,6 +1,10 @@
-# Multi-replica deployment shape (COORD_BACKEND=redis): two broker
-# replicas sharing OpenBao custody and Redis coordination behind any
-# balancer — no session affinity required (docs/design.md §14).
+# Multi-replica deployment shape (COORD_BACKEND=redis): two broker replicas
+# sharing OpenBao custody and Redis coordination. Put any L4/L7 balancer in
+# front (no session affinity needed; docs/design.md §14) and set
+# BROKER_PUBLIC_URL to its public https URL.
+#
+# Same files as docker-compose.yml: .env (every variable reaches both
+# replicas), registry.json, and broker-vault-token readable by UID 65534.
 
 services:
   redis:
@@ -8,15 +12,11 @@ services:
 
   broker-a: &replica
     build: ..
-    environment: &replica-env
-      HUB_ISSUER: ${HUB_ISSUER}
-      HUB_JWKS_URI: ${HUB_JWKS_URI}
-      BROKER_PUBLIC_URL: ${BROKER_PUBLIC_URL}   # the balancer's public URL
-      VAULT_ADDR: ${VAULT_ADDR}
+    env_file: .env
+    environment:
+      # Fixed for this shape; they override any value in .env.
       VAULT_TOKEN_FILE: /run/secrets/broker-vault-token
       REGISTRY_PATH: /app/registry.json
-      HUB_LOGIN_CLIENT_ID: ${HUB_LOGIN_CLIENT_ID}
-      HUB_LOGIN_CLIENT_SECRET: ${HUB_LOGIN_CLIENT_SECRET:-}
       COORD_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
     volumes:
@@ -30,4 +30,4 @@ services:
 
 secrets:
   broker-vault-token:
-    file: ./broker-vault-token   # scoped token, never root
+    file: ./broker-vault-token
