@@ -83,6 +83,7 @@ out of the snapshot-refresh examples.
 
 - **Description:** accurate ("Jira" is served through Atlassian, together with
   Confluence). **Homepage URL is empty**; recommend the docs site.
+  *Resolved 2026-10-03: homepage set to the docs site.*
 - **Published site** (https://chief-builder.github.io/vendor-token-broker-docs/):
   HTTP 200 and byte-identical to `docs/index.html`, so it is current. It is
   published by hand-copying into a second public repo.
@@ -426,6 +427,7 @@ is Atlassian's global MCP authorization server, not tenant-specific. It stays.
 | JWKS test relied on aliasing (found during the PyJWT upgrade) | Fixed; window explicit (`JWKS_CACHE_S`) and tested both sides | `e95371a` |
 | Untested security paths (§5) | Tests added (positive and negative); mutation-checked | `12b57ac`, `b1cbd49`, `7bc1dd1`, `f891145` |
 | CI gaps (§6) | Done: Node 24 actions, permissions, concurrency, timeouts, format, mypy, coverage floor 90%, build, pip-audit, lychee, CodeQL, Dependabot; actionlint and zizmor clean | `76ced5d`, `f4485fb` |
+| Homepage URL empty (§2.3) | Done: set to https://chief-builder.github.io/vendor-token-broker-docs/ (repo setting, 2026-10-03) | — |
 | Hygiene | `.gitignore`, `.editorconfig`, SECURITY, CONTRIBUTING, templates, Makefile | `24af3d0`, `5d65ab9`, `76ced5d` |
 
 **Results after Phase 2** (from a clean clone of the branch, `make check`):
