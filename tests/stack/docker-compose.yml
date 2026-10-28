@@ -22,7 +22,7 @@ name: vtb
 
 services:
   openbao:
-    image: openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315
+    image: openbao/openbao:2.7.1@sha256:6d2b93856e3fcf7b18ad855a0b51eaba474dc8b79cf554379ea32034797d2acf
     container_name: vtb-openbao
     environment:
       BAO_DEV_ROOT_TOKEN_ID: root
@@ -33,7 +33,7 @@ services:
       - "8210:8200"
 
   openbao-init:
-    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
     container_name: vtb-openbao-init
     depends_on:
       - openbao
@@ -214,7 +214,7 @@ services:
   # docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
   # pytest tests/integration -m gateway
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.4@sha256:82a77884f3af238beab1e7afd63b5f530e1b5c0590bd7aa60b40a40463e29b2c
+    image: quay.io/keycloak/keycloak:26.8.1-1@sha256:a78d6b79572168cb25886b80a8b5b8d4ed4390743e3eecb810538683e209dd6b
     container_name: vtb-keycloak
     profiles: ["gateway"]
     # Public issuer http://localhost:8180 for browsers and MCP clients (Claude
@@ -240,7 +240,7 @@ services:
       retries: 12
 
   openbao-kc:
-    image: openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315
+    image: openbao/openbao:2.7.1@sha256:6d2b93856e3fcf7b18ad855a0b51eaba474dc8b79cf554379ea32034797d2acf
     container_name: vtb-openbao-kc
     profiles: ["gateway"]
     environment:
@@ -252,7 +252,7 @@ services:
       - "8211:8200"
 
   openbao-kc-init:
-    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
     container_name: vtb-openbao-kc-init
     profiles: ["gateway"]
     depends_on:
