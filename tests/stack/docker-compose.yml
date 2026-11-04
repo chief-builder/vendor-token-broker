@@ -22,7 +22,7 @@ name: vtb
 
 services:
   openbao:
-    image: openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315
+    image: openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f
     container_name: vtb-openbao
     environment:
       BAO_DEV_ROOT_TOKEN_ID: root
@@ -58,7 +58,7 @@ services:
     entrypoint: ["sh", "/init.sh"]
 
   redis:
-    image: redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
+    image: redis:8.10.2-alpine@sha256:9f8d2d789b9a1d1e3f283f979aa9cbf393373806472e1ccd460e2f9c869b833b
     container_name: vtb-redis
     ports:
       - "6390:6379"
@@ -214,7 +214,7 @@ services:
   # docker compose -f tests/stack/docker-compose.yml --profile gateway up -d --build --wait
   # pytest tests/integration -m gateway
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.4@sha256:82a77884f3af238beab1e7afd63b5f530e1b5c0590bd7aa60b40a40463e29b2c
+    image: quay.io/keycloak/keycloak:26.8.1-2@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
     container_name: vtb-keycloak
     profiles: ["gateway"]
     # Public issuer http://localhost:8180 for browsers and MCP clients (Claude
@@ -240,7 +240,7 @@ services:
       retries: 12
 
   openbao-kc:
-    image: openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315
+    image: openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f
     container_name: vtb-openbao-kc
     profiles: ["gateway"]
     environment:
